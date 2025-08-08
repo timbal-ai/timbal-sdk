@@ -1,0 +1,68 @@
+{
+  "name": "@timbal-ai/timbal-sdk",
+  "version": "0.1.2",
+  "description": "Official TypeScript SDK for the Timbal platform",
+  "main": "dist/index.cjs",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "private": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun run clean && bun run build:js && bun run build:types",
+    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs",
+    "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "clean": "rm -rf dist",
+    "test": "SKIP_INTEGRATION_TESTS=true bun test src/__tests__",
+    "test:unit": "SKIP_INTEGRATION_TESTS=true bun test src/__tests__",
+    "test:integration": "bun test src/__tests__/ --testNamePattern='Integration Tests'",
+    "test:all": "bun test src/__tests__/",
+    "test:watch": "SKIP_INTEGRATION_TESTS=true bun test --watch src/__tests__",
+    "test:coverage": "bun test --coverage src/__tests__",
+    "dev": "bun --watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json}\"",
+    "prepublishOnly": "bun run build && bun run test && bun run typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/bun": "latest",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "eslint": "^9.32.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5"
+  },
+  "keywords": [
+    "timbal",
+    "sdk",
+    "api",
+    "typescript",
+    "analytics",
+    "projects",
+    "platform"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timbal-ai/timbal-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/timbal-ai/timbal-sdk/issues"
+  },
+  "homepage": "https://github.com/timbal-ai/timbal-sdk#readme"
+}
