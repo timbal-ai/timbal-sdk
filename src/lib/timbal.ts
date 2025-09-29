@@ -150,6 +150,32 @@ export class Timbal {
   }
 
   /**
+   * Delete a table from a knowledge base.
+   *
+   * @param options Table deletion parameters (orgId, kbId, name, cascade)
+   */
+  async deleteTable(options: {
+    orgId?: string;
+    kbId?: string;
+    name: string;
+    cascade?: boolean;
+  }): Promise<void> {
+    return this.tableService.deleteTable(options);
+  }
+
+  /**
+   * Delete a table with positional parameters
+   */
+  async deleteTableByParams(
+    orgId: string,
+    kbId: string,
+    name: string,
+    cascade?: boolean
+  ): Promise<void> {
+    return this.tableService.deleteTableByParams(orgId, kbId, name, cascade);
+  }
+
+  /**
    * Test API connectivity with a simple query
    */
   async testConnection(): Promise<boolean> {

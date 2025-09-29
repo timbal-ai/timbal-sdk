@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeAll } from 'bun:test';
+import { test, expect, describe, beforeAll, afterEach } from 'bun:test';
 import { TableService } from '../lib/services/table';
 import type { ApiClient } from '../lib/api';
 import type { Column } from '../types';
@@ -11,6 +11,9 @@ const mockApiClient: ApiClient = {
     return { data: null, success: true, statusCode: 200 };
   },
   postText: async (_path: string, _text: string, _contentType: string) => {
+    return { data: null, success: true, statusCode: 200 };
+  },
+  delete: async (_path: string, _data?: any) => {
     return { data: null, success: true, statusCode: 200 };
   },
 } as any;
@@ -27,18 +30,18 @@ describe('TableService', () => {
 
   test('should create table with required parameters', async () => {
     const tableService = new TableService(mockApiClient);
-    
+
     const columns: Column[] = [
-      {
-        name: 'id',
-        dataType: 'serial',
-        isNullable: false,
-        isUnique: true,
-        isPrimary: true,
-      },
       {
         name: 'name',
         dataType: 'varchar(255)',
+        isNullable: false,
+        isUnique: false,
+        isPrimary: true,
+      },
+      {
+        name: 'age',
+        dataType: 'integer',
         isNullable: false,
         isUnique: false,
         isPrimary: false,
@@ -55,13 +58,13 @@ describe('TableService', () => {
 
   test('should throw error when orgId is missing', async () => {
     const tableService = new TableService(mockApiClient);
-    
+
     const columns: Column[] = [
       {
-        name: 'id',
-        dataType: 'serial',
+        name: 'name',
+        dataType: 'varchar(255)',
         isNullable: false,
-        isUnique: true,
+        isUnique: false,
         isPrimary: true,
       },
     ];
@@ -75,13 +78,13 @@ describe('TableService', () => {
 
   test('should throw error when kbId is missing', async () => {
     const tableService = new TableService(mockApiClient);
-    
+
     const columns: Column[] = [
       {
-        name: 'id',
-        dataType: 'serial',
+        name: 'name',
+        dataType: 'varchar(255)',
         isNullable: false,
-        isUnique: true,
+        isUnique: false,
         isPrimary: true,
       },
     ];
@@ -109,13 +112,13 @@ describe('TableService', () => {
       orgId: 'default-org',
       kbId: 'default-kb',
     });
-    
+
     const columns: Column[] = [
       {
-        name: 'id',
-        dataType: 'serial',
+        name: 'name',
+        dataType: 'varchar(255)',
         isNullable: false,
-        isUnique: true,
+        isUnique: false,
         isPrimary: true,
       },
     ];
@@ -128,13 +131,13 @@ describe('TableService', () => {
 
   test('should handle positional parameters', async () => {
     const tableService = new TableService(mockApiClient);
-    
+
     const columns: Column[] = [
       {
-        name: 'id',
-        dataType: 'serial',
+        name: 'name',
+        dataType: 'varchar(255)',
         isNullable: false,
-        isUnique: true,
+        isUnique: false,
         isPrimary: true,
       },
     ];
@@ -236,12 +239,72 @@ describe('TableService', () => {
       csvPath: tempCsvPath,
     })).resolves.toBeUndefined();
   });
+
+  test('should delete table with required parameters', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(tableService.deleteTable({
+      orgId: 'test-org',
+      kbId: 'test-kb',
+      name: 'test_table',
+    })).resolves.toBeUndefined();
+  });
+
+  test('should throw error when orgId is missing for delete', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(tableService.deleteTable({
+      kbId: 'test-kb',
+      name: 'test_table',
+    })).rejects.toThrow('orgId is required');
+  });
+
+  test('should throw error when kbId is missing for delete', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(tableService.deleteTable({
+      orgId: 'test-org',
+      name: 'test_table',
+    })).rejects.toThrow('kbId is required');
+  });
+
+  test('should throw error when name is missing for delete', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(tableService.deleteTable({
+      orgId: 'test-org',
+      kbId: 'test-kb',
+      name: '',
+    })).rejects.toThrow('name is required');
+  });
+
+  test('should handle positional parameters for delete', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(tableService.deleteTableByParams(
+      'test-org',
+      'test-kb',
+      'test_table'
+    )).resolves.toBeUndefined();
+  });
+
+  test('should use defaults for delete when set', async () => {
+    const tableService = new TableService(mockApiClient, {
+      orgId: 'default-org',
+      kbId: 'default-kb',
+    });
+
+    await expect(tableService.deleteTable({
+      name: 'test_table',
+    })).resolves.toBeUndefined();
+  });
 });
 
 // Integration Tests for TableService
 describe("TableService Integration Tests", () => {
   let timbal: Timbal;
   const testTableName = `test_table_${Date.now()}`;
+  const tablesToCleanup: string[] = [];
 
   beforeAll(() => {
     logIntegrationTestConfig();
@@ -249,23 +312,40 @@ describe("TableService Integration Tests", () => {
     timbal = createTestTimbal();
   });
 
+  afterEach(async () => {
+    if (!shouldRunIntegrationTests()) return;
+
+    // Clean up any tables created during tests
+    for (const tableName of tablesToCleanup) {
+      try {
+        await timbal.deleteTable({ name: tableName });
+        console.log(`🧹 Cleaned up table: ${tableName}`);
+      } catch (error) {
+        console.log(`ℹ️  Failed to cleanup table ${tableName} (may not exist): ${error.message}`);
+      }
+    }
+    tablesToCleanup.length = 0; // Clear the array
+  });
+
   test.skipIf(!shouldRunIntegrationTests())("should create table and verify it exists", async () => {
+    tablesToCleanup.push(testTableName);
+
     const columns: Column[] = [
-      {
-        name: 'id',
-        dataType: 'serial',
-        isNullable: false,
-        isUnique: true,
-        isPrimary: true,
-        comment: 'Primary key'
-      },
       {
         name: 'name',
         dataType: 'varchar(255)',
         isNullable: false,
         isUnique: false,
-        isPrimary: false,
+        isPrimary: true,
         comment: 'Name field'
+      },
+      {
+        name: 'age',
+        dataType: 'integer',
+        isNullable: false,
+        isUnique: false,
+        isPrimary: false,
+        comment: 'Age field'
       },
       {
         name: 'created_at',
@@ -297,16 +377,18 @@ describe("TableService Integration Tests", () => {
     
     // Check that our expected columns exist
     const columnNames = result.map((row: any) => row.column_name);
-    expect(columnNames).toContain('id');
     expect(columnNames).toContain('name');
+    expect(columnNames).toContain('age');
     expect(columnNames).toContain('created_at');
   });
 
   test.skipIf(!shouldRunIntegrationTests())("should handle table creation errors gracefully", async () => {
+    const invalidTableName = `invalid_table_${Date.now()}`;
+
     // Try to create a table with invalid column type
     const invalidColumns: Column[] = [
       {
-        name: 'id',
+        name: 'name',
         dataType: 'invalid_type',
         isNullable: false,
         isUnique: false,
@@ -316,7 +398,7 @@ describe("TableService Integration Tests", () => {
 
     try {
       await timbal.createTable({
-        name: `invalid_table_${Date.now()}`,
+        name: invalidTableName,
         columns: invalidColumns,
       });
       expect(false).toBe(true); // Should not reach here
@@ -325,21 +407,25 @@ describe("TableService Integration Tests", () => {
       // The API should return some kind of error for invalid data type
       expect(error.message).toMatch(/unprocessable|invalid|type|error/i);
     }
+
+    // Note: No need to add to cleanup since table creation should fail
   });
 
   test.skipIf(!shouldRunIntegrationTests())("should create table, import CSV, and verify data", async () => {
     const csvTableName = `csv_test_table_${Date.now()}`;
     const csvFilePath = `/tmp/test_data_${Date.now()}.csv`;
-    
+
+    tablesToCleanup.push(csvTableName);
+
     // Create test CSV data
     const csvContent = `name,age,city
 John Doe,25,New York
 Jane Smith,30,San Francisco
 Bob Johnson,35,Chicago`;
-    
+
     // Write CSV file
     await Bun.write(csvFilePath, csvContent);
-    
+
     try {
       // Create a simple table
       const columns: Column[] = [
@@ -348,7 +434,7 @@ Bob Johnson,35,Chicago`;
           dataType: 'varchar(100)',
           isNullable: false,
           isUnique: false,
-          isPrimary: false,
+          isPrimary: true,
         },
         {
           name: 'age',

@@ -155,6 +155,53 @@ export class TableService {
     return this.importCsv({ orgId, kbId, tableName, csvPath, mode });
   }
 
+  /**
+   * Delete a table from a knowledge base.
+   *
+   * @param orgId The organization ID.
+   * @param kbId The knowledge base ID containing the table.
+   * @param name The name of the table to delete.
+   * @param cascade Whether to cascade delete (optional, defaults to false).
+   */
+  async deleteTable(options: {
+    orgId?: string;
+    kbId?: string;
+    name: string;
+    cascade?: boolean;
+  }): Promise<void> {
+    const orgId = this.resolveDefault('orgId', options.orgId);
+    const kbId = this.resolveDefault('kbId', options.kbId);
+
+    if (!orgId) {
+      throw new Error('orgId is required. Provide it in the method call or set a default.');
+    }
+    if (!kbId) {
+      throw new Error('kbId is required. Provide it in the method call or set a default.');
+    }
+    if (!options.name) {
+      throw new Error('name is required.');
+    }
+
+    const path = `orgs/${orgId}/kbs/${kbId}/tables/${options.name}`;
+    const payload = {
+      cascade: options.cascade ?? false
+    };
+
+    await this.apiClient.delete(path, payload);
+  }
+
+  /**
+   * Convenience method for deleting a table with positional parameters
+   */
+  async deleteTableByParams(
+    orgId: string,
+    kbId: string,
+    name: string,
+    cascade?: boolean
+  ): Promise<void> {
+    return this.deleteTable({ orgId, kbId, name, cascade });
+  }
+
   private resolveDefault(key: keyof TableOptions, value?: string): string | undefined {
     if (value !== undefined) return value;
     

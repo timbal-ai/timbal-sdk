@@ -41,7 +41,7 @@ export const logIntegrationTestConfig = () => {
   if (shouldRunIntegrationTests()) {
     console.log("🔧 Integration test config:", {
       apiKey: process.env.TIMBAL_API_KEY?.substring(0, 10) + '...',
-      baseUrl: process.env.TIMBAL_BASE_URL || 'https://api.timbal.ai',
+      baseUrl: process.env.TIMBAL_BASE_URL || 'https://dev.timbal.ai',
       orgId: process.env.TIMBAL_ORG_ID,
       kbId: process.env.TIMBAL_KB_ID,
     });
