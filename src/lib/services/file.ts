@@ -8,7 +8,10 @@ export interface FileOptions {
 export class FileService {
   private defaultOrgId?: string;
 
-  constructor(private apiClient: ApiClient, defaults: FileOptions = {}) {
+  constructor(
+    private apiClient: ApiClient,
+    defaults: FileOptions = {}
+  ) {
     this.defaultOrgId = defaults.orgId;
   }
 
@@ -18,10 +21,7 @@ export class FileService {
    * @param options Upload options containing orgId and filePath
    * @returns Promise resolving to the uploaded File object
    */
-  async uploadFile(options: {
-    orgId?: string;
-    filePath: string;
-  }): Promise<File> {
+  async uploadFile(options: { orgId?: string; filePath: string }): Promise<File> {
     const orgId = this.resolveDefault('orgId', options.orgId);
 
     if (!orgId) {
@@ -58,10 +58,7 @@ export class FileService {
   /**
    * Upload a file with positional parameters
    */
-  async uploadFileByParams(
-    orgId: string,
-    filePath: string
-  ): Promise<File> {
+  async uploadFileByParams(orgId: string, filePath: string): Promise<File> {
     return this.uploadFile({ orgId, filePath });
   }
 
@@ -121,8 +118,10 @@ export class FileService {
     if (value !== undefined) return value;
 
     switch (key) {
-      case 'orgId': return this.defaultOrgId;
-      default: return undefined;
+      case 'orgId':
+        return this.defaultOrgId;
+      default:
+        return undefined;
     }
   }
 }

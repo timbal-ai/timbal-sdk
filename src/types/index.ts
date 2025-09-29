@@ -38,41 +38,46 @@ export interface Table {
   constraints: any[];
 }
 
-export type MessageRole = "user" | "assistant" | "tool" | "system";
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
 export interface BaseContent {
   type: string;
 }
 
 export interface TextContent extends BaseContent {
-  type: "text";
+  type: 'text';
   text: string;
 }
 
 export interface ThinkingContent extends BaseContent {
-  type: "thinking";
+  type: 'thinking';
   thinking: string;
 }
 
 export interface ToolUseContent extends BaseContent {
-  type: "tool_use";
+  type: 'tool_use';
   id: string;
   name: string;
   input: Record<string, any>;
 }
 
 export interface ToolResultContent extends BaseContent {
-  type: "tool_result";
+  type: 'tool_result';
   id: string;
   content: (TextContent | ThinkingContent | FileContent)[];
 }
 
 export interface FileContent extends BaseContent {
-  type: "file";
+  type: 'file';
   file: string; // Will always be a url or data url
 }
 
-export type MessageContent = TextContent | ThinkingContent | ToolUseContent | ToolResultContent | FileContent;
+export type MessageContent =
+  | TextContent
+  | ThinkingContent
+  | ToolUseContent
+  | ToolResultContent
+  | FileContent;
 
 export interface Message {
   role: MessageRole;

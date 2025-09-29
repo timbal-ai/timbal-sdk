@@ -29,23 +29,24 @@ export class ApiClient {
     retryCount = 0
   ): Promise<ApiResponse<T>> {
     // Ensure proper URL construction with single slash
-    const baseUrl = this.config.baseUrl.endsWith('/') 
-      ? this.config.baseUrl.slice(0, -1) 
+    const baseUrl = this.config.baseUrl.endsWith('/')
+      ? this.config.baseUrl.slice(0, -1)
       : this.config.baseUrl;
     const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
     const url = `${baseUrl}${path}`;
-    
+
     // Build headers - don't set Content-Type by default, let the browser/runtime handle it for FormData
     const headers = new Headers({
-      'Authorization': `Bearer ${this.config.apiKey}`,
+      Authorization: `Bearer ${this.config.apiKey}`,
     });
 
     // Add custom headers from options
     if (options.headers) {
-      const optHeaders = options.headers instanceof Headers 
-        ? options.headers 
-        : new Headers(options.headers as Record<string, string>);
-      
+      const optHeaders =
+        options.headers instanceof Headers
+          ? options.headers
+          : new Headers(options.headers as Record<string, string>);
+
       optHeaders.forEach((value, key) => {
         headers.set(key, value);
       });
@@ -82,7 +83,7 @@ export class ApiClient {
         );
       }
 
-      const data = await response.json() as T;
+      const data = (await response.json()) as T;
       return {
         data,
         success: true,
@@ -123,7 +124,7 @@ export class ApiClient {
 
   private async parseErrorResponse(response: Response): Promise<ApiError> {
     try {
-      const errorData = await response.json() as any;
+      const errorData = (await response.json()) as any;
       return {
         message: errorData.message || errorData.error || 'Unknown error',
         statusCode: response.status,
@@ -169,9 +170,11 @@ export class ApiClient {
   public async delete<T>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'DELETE',
-      headers: data ? {
-        'Content-Type': 'application/json',
-      } : undefined,
+      headers: data
+        ? {
+            'Content-Type': 'application/json',
+          }
+        : undefined,
       body: data ? JSON.stringify(data) : undefined,
     });
   }
@@ -187,8 +190,8 @@ export class ApiClient {
   }
 
   public async postFile<T>(
-    endpoint: string, 
-    file: File | Blob, 
+    endpoint: string,
+    file: File | Blob,
     contentType?: string
   ): Promise<ApiResponse<T>> {
     const headers: Record<string, string> = {};
@@ -204,8 +207,8 @@ export class ApiClient {
   }
 
   public async postText<T>(
-    endpoint: string, 
-    text: string, 
+    endpoint: string,
+    text: string,
     contentType = 'text/plain'
   ): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
@@ -217,10 +220,7 @@ export class ApiClient {
     });
   }
 
-  public async request<T>(
-    endpoint: string,
-    options: RequestInit
-  ): Promise<ApiResponse<T>> {
+  public async request<T>(endpoint: string, options: RequestInit): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, options);
   }
 

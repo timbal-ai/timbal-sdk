@@ -10,7 +10,10 @@ export class TableService {
   private defaultOrgId?: string;
   private defaultKbId?: string;
 
-  constructor(private apiClient: ApiClient, defaults: TableOptions = {}) {
+  constructor(
+    private apiClient: ApiClient,
+    defaults: TableOptions = {}
+  ) {
     this.defaultOrgId = defaults.orgId;
     this.defaultKbId = defaults.kbId;
   }
@@ -99,8 +102,8 @@ export class TableService {
   /**
    * Upload a CSV file to a table in a knowledge base.
    *
-   * This function imports data from a CSV file into an existing table in the specified knowledge base. 
-   * The CSV file must match the table's schema (column names and types). 
+   * This function imports data from a CSV file into an existing table in the specified knowledge base.
+   * The CSV file must match the table's schema (column names and types).
    * You can choose to either overwrite the table's contents or append to it.
    *
    * @param orgId The organization ID.
@@ -134,11 +137,11 @@ export class TableService {
     }
 
     const path = `orgs/${orgId}/kbs/${kbId}/tables/${options.tableName}/csv?mode=${mode}`;
-    
+
     // Read the CSV file
     const file = Bun.file(options.csvPath);
     const csvData = await file.text();
-    
+
     await this.apiClient.postText(path, csvData, 'text/csv');
   }
 
@@ -184,7 +187,7 @@ export class TableService {
 
     const path = `orgs/${orgId}/kbs/${kbId}/tables/${options.name}`;
     const payload = {
-      cascade: options.cascade ?? false
+      cascade: options.cascade ?? false,
     };
 
     await this.apiClient.delete(path, payload);
@@ -204,11 +207,14 @@ export class TableService {
 
   private resolveDefault(key: keyof TableOptions, value?: string): string | undefined {
     if (value !== undefined) return value;
-    
+
     switch (key) {
-      case 'orgId': return this.defaultOrgId;
-      case 'kbId': return this.defaultKbId;
-      default: return undefined;
+      case 'orgId':
+        return this.defaultOrgId;
+      case 'kbId':
+        return this.defaultKbId;
+      default:
+        return undefined;
     }
   }
 }

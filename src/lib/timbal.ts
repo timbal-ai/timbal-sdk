@@ -1,6 +1,14 @@
 import type { TimbalConfig, Column, File } from '../types';
 import { ApiClient } from './api';
-import { QueryService, QueryOptions, QueryResult, TableService, TableOptions, FileService, FileOptions } from './services';
+import {
+  QueryService,
+  QueryOptions,
+  QueryResult,
+  TableService,
+  TableOptions,
+  FileService,
+  FileOptions,
+} from './services';
 
 export class Timbal {
   private apiClient: ApiClient;
@@ -44,22 +52,14 @@ export class Timbal {
    * @param options Query parameters (orgId, kbId, sql)
    * @returns The query results as a list of dictionaries, where each dictionary represents a row.
    */
-  async query(options: {
-    orgId?: string;
-    kbId?: string;
-    sql?: string;
-  }): Promise<QueryResult[]> {
+  async query(options: { orgId?: string; kbId?: string; sql?: string }): Promise<QueryResult[]> {
     return this.queryService.query(options);
   }
 
   /**
    * Execute a SQL query with positional parameters
    */
-  async queryByParams(
-    orgId: string,
-    kbId: string,
-    sql: string
-  ): Promise<QueryResult[]> {
+  async queryByParams(orgId: string, kbId: string, sql: string): Promise<QueryResult[]> {
     return this.queryService.queryByParams(orgId, kbId, sql);
   }
 
@@ -122,8 +122,8 @@ export class Timbal {
   /**
    * Upload a CSV file to a table in a knowledge base.
    *
-   * This function imports data from a CSV file into an existing table in the specified knowledge base. 
-   * The CSV file must match the table's schema (column names and types). 
+   * This function imports data from a CSV file into an existing table in the specified knowledge base.
+   * The CSV file must match the table's schema (column names and types).
    * You can choose to either overwrite the table's contents or append to it.
    *
    * @param options CSV import parameters (orgId, kbId, tableName, csvPath, mode)
@@ -182,20 +182,14 @@ export class Timbal {
    *
    * @param options File upload parameters (orgId, filePath)
    */
-  async uploadFile(options: {
-    orgId?: string;
-    filePath: string;
-  }): Promise<File> {
+  async uploadFile(options: { orgId?: string; filePath: string }): Promise<File> {
     return this.fileService.uploadFile(options);
   }
 
   /**
    * Upload a file with positional parameters
    */
-  async uploadFileByParams(
-    orgId: string,
-    filePath: string
-  ): Promise<File> {
+  async uploadFileByParams(orgId: string, filePath: string): Promise<File> {
     return this.fileService.uploadFileByParams(orgId, filePath);
   }
 

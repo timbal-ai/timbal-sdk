@@ -15,7 +15,10 @@ export class QueryService {
   private defaultKbId?: string;
   private defaultSql?: string;
 
-  constructor(private apiClient: ApiClient, defaults: QueryOptions = {}) {
+  constructor(
+    private apiClient: ApiClient,
+    defaults: QueryOptions = {}
+  ) {
     this.defaultOrgId = defaults.orgId;
     this.defaultKbId = defaults.kbId;
     this.defaultSql = defaults.sql;
@@ -31,7 +34,7 @@ export class QueryService {
    *
    * Notes:
    * - SQL syntax must follow PostgreSQL conventions.
-   * - Table and column names are case sensitive. If your identifiers use uppercase or mixed case, 
+   * - Table and column names are case sensitive. If your identifiers use uppercase or mixed case,
    *   you must escape them with double quotes (e.g., "Documents", "FileName").
    * - Unescaped identifiers are automatically lowercased by PostgreSQL.
    *
@@ -45,11 +48,7 @@ export class QueryService {
    * });
    * ```
    */
-  async query(options: {
-    orgId?: string;
-    kbId?: string;
-    sql?: string;
-  }): Promise<QueryResult[]> {
+  async query(options: { orgId?: string; kbId?: string; sql?: string }): Promise<QueryResult[]> {
     const orgId = this.resolveDefault('orgId', options.orgId);
     const kbId = this.resolveDefault('kbId', options.kbId);
     const sql = this.resolveDefault('sql', options.sql);
@@ -74,11 +73,7 @@ export class QueryService {
   /**
    * Convenience method for querying with positional parameters
    */
-  async queryByParams(
-    orgId: string,
-    kbId: string,
-    sql: string
-  ): Promise<QueryResult[]> {
+  async queryByParams(orgId: string, kbId: string, sql: string): Promise<QueryResult[]> {
     return this.query({ orgId, kbId, sql });
   }
 
@@ -104,12 +99,16 @@ export class QueryService {
 
   private resolveDefault(key: keyof QueryOptions, value?: string): string | undefined {
     if (value !== undefined) return value;
-    
+
     switch (key) {
-      case 'orgId': return this.defaultOrgId;
-      case 'kbId': return this.defaultKbId;
-      case 'sql': return this.defaultSql;
-      default: return undefined;
+      case 'orgId':
+        return this.defaultOrgId;
+      case 'kbId':
+        return this.defaultKbId;
+      case 'sql':
+        return this.defaultSql;
+      default:
+        return undefined;
     }
   }
 }
