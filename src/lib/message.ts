@@ -34,6 +34,12 @@ export class TimbalMessage implements Message {
       return value;
     }
 
+    // Handle direct content arrays
+    if (Array.isArray(value)) {
+      const processedContent = value.map((item: unknown) => MessageContentFactory.from(item));
+      return new TimbalMessage("user", processedContent);
+    }
+
     if (typeof value === "object" && value !== null) {
       const obj = value as Record<string, unknown>;
       const role = (obj.role as MessageRole) || "user";

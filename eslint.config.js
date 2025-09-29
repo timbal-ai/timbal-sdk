@@ -34,6 +34,8 @@ export default [
         FormData: 'readonly',
         File: 'readonly',
         Blob: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
         
         // Bun globals
         Bun: 'readonly',

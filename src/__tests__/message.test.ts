@@ -107,6 +107,53 @@ describe("TimbalMessage", () => {
       expect(toolResult.content).toHaveLength(1);
       expect(toolResult.content[0]).toEqual({ type: "text", text: "Analysis complete" });
     });
+
+    test("should handle direct content array", () => {
+      const contentArray = [
+        { type: "text", text: "First message" },
+        { type: "text", text: "Second message" }
+      ];
+      const message = TimbalMessage.from(contentArray);
+
+      expect(message.role).toBe("user");
+      expect(message.content).toHaveLength(2);
+      expect(message.content[0]).toEqual({ type: "text", text: "First message" });
+      expect(message.content[1]).toEqual({ type: "text", text: "Second message" });
+    });
+
+    test("should handle direct content array with mixed types", () => {
+      const contentArray = [
+        { type: "text", text: "Text content" },
+        {
+          type: "tool_use",
+          id: "call_456",
+          name: "search",
+          input: { query: "test" }
+        }
+      ];
+      const message = TimbalMessage.from(contentArray);
+
+      expect(message.role).toBe("user");
+      expect(message.content).toHaveLength(2);
+      expect(message.content[0]).toEqual({ type: "text", text: "Text content" });
+      expect(message.content[1]).toEqual({
+        type: "tool_use",
+        id: "call_456",
+        name: "search",
+        input: { query: "test" }
+      });
+    });
+
+    test("should handle direct content array with primitive values", () => {
+      const contentArray = ["Hello", 42, true];
+      const message = TimbalMessage.from(contentArray);
+
+      expect(message.role).toBe("user");
+      expect(message.content).toHaveLength(3);
+      expect(message.content[0]).toEqual({ type: "text", text: "Hello" });
+      expect(message.content[1]).toEqual({ type: "text", text: "42" });
+      expect(message.content[2]).toEqual({ type: "text", text: "true" });
+    });
   });
 
 
