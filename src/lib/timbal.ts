@@ -1,18 +1,20 @@
-import type { TimbalConfig, Column } from '../types';
+import type { TimbalConfig, Column, File } from '../types';
 import { ApiClient } from './api';
-import { QueryService, QueryOptions, QueryResult, TableService, TableOptions } from './services';
+import { QueryService, QueryOptions, QueryResult, TableService, TableOptions, FileService, FileOptions } from './services';
 
 export class Timbal {
   private apiClient: ApiClient;
   private queryService: QueryService;
   private tableService: TableService;
+  private fileService: FileService;
 
   constructor(config: TimbalConfig) {
     this.apiClient = new ApiClient(config);
-    
+
     // Initialize services
     this.queryService = new QueryService(this.apiClient);
     this.tableService = new TableService(this.apiClient);
+    this.fileService = new FileService(this.apiClient);
   }
 
   /**
@@ -176,6 +178,54 @@ export class Timbal {
   }
 
   /**
+   * Upload a file to an organization.
+   *
+   * @param options File upload parameters (orgId, filePath)
+   */
+  async uploadFile(options: {
+    orgId?: string;
+    filePath: string;
+  }): Promise<File> {
+    return this.fileService.uploadFile(options);
+  }
+
+  /**
+   * Upload a file with positional parameters
+   */
+  async uploadFileByParams(
+    orgId: string,
+    filePath: string
+  ): Promise<File> {
+    return this.fileService.uploadFileByParams(orgId, filePath);
+  }
+
+  /**
+   * Upload a file from a Buffer or Uint8Array with custom filename
+   */
+  async uploadFileFromBuffer(options: {
+    orgId?: string;
+    data: ArrayBuffer | Uint8Array;
+    filename: string;
+    contentType?: string;
+  }): Promise<File> {
+    return this.fileService.uploadFileFromBuffer(options);
+  }
+
+  /**
+   * Set default values for future file operations
+   */
+  setFileDefaults(defaults: FileOptions): void {
+    this.fileService.setDefaults(defaults);
+  }
+
+  /**
+   * Get current file default values
+   */
+  getFileDefaults(): FileOptions {
+    return this.fileService.getDefaults();
+  }
+
+  /**
    * Test API connectivity with a simple query
    */
   async testConnection(): Promise<boolean> {
@@ -186,7 +236,7 @@ export class Timbal {
         await this.query({ sql: 'SELECT 1' });
         return true;
       }
-      
+
       // Otherwise just try to make a basic request to see if the API is reachable
       await this.apiClient.get('/');
       return true;

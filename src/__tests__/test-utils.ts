@@ -34,6 +34,10 @@ export const createTestTimbal = (): Timbal => {
     kbId: process.env.TIMBAL_KB_ID!,
   });
 
+  timbal.setFileDefaults({
+    orgId: process.env.TIMBAL_ORG_ID!,
+  });
+
   return timbal;
 };
 

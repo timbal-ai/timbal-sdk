@@ -78,3 +78,13 @@ export interface Message {
   role: MessageRole;
   content: MessageContent[];
 }
+
+export interface File {
+  id: number;
+  name: string;
+  content_type: string;
+  content_length: number;
+  created_at: string;
+  expires_at?: string | null;
+  url: string;
+}
