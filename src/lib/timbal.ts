@@ -1,4 +1,4 @@
-import type { TimbalConfig, Column, File } from '../types';
+import type { TimbalConfig, Column, File, AppRunResponse } from '../types';
 import { ApiClient } from './api';
 import {
   QueryService,
@@ -8,6 +8,8 @@ import {
   TableOptions,
   FileService,
   FileOptions,
+  AppService,
+  AppOptions,
 } from './services';
 
 export class Timbal {
@@ -15,6 +17,7 @@ export class Timbal {
   private queryService: QueryService;
   private tableService: TableService;
   private fileService: FileService;
+  private appService: AppService;
 
   constructor(config: TimbalConfig) {
     this.apiClient = new ApiClient(config);
@@ -23,6 +26,7 @@ export class Timbal {
     this.queryService = new QueryService(this.apiClient);
     this.tableService = new TableService(this.apiClient);
     this.fileService = new FileService(this.apiClient);
+    this.appService = new AppService(this.apiClient);
   }
 
   /**
@@ -217,6 +221,50 @@ export class Timbal {
    */
   getFileDefaults(): FileOptions {
     return this.fileService.getDefaults();
+  }
+
+  /**
+   * Run an app on the platform.
+   *
+   * @param options App run parameters (orgId, appId, input, and optional parameters)
+   */
+  async runApp(options: {
+    orgId?: string;
+    appId: string;
+    version_id?: string;
+    input: Record<string, any>;
+    group_id?: string;
+    parent_id?: string;
+  }): Promise<AppRunResponse> {
+    return this.appService.runApp(options);
+  }
+
+  /**
+   * Run an app with positional parameters
+   */
+  async runAppByParams(
+    orgId: string,
+    appId: string,
+    input: Record<string, any>,
+    version_id?: string,
+    group_id?: string,
+    parent_id?: string
+  ): Promise<AppRunResponse> {
+    return this.appService.runAppByParams(orgId, appId, input, version_id, group_id, parent_id);
+  }
+
+  /**
+   * Set default values for future app operations
+   */
+  setAppDefaults(defaults: AppOptions): void {
+    this.appService.setDefaults(defaults);
+  }
+
+  /**
+   * Get current app default values
+   */
+  getAppDefaults(): AppOptions {
+    return this.appService.getDefaults();
   }
 
   /**

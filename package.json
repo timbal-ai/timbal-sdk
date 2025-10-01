@@ -1,6 +1,6 @@
 {
   "name": "@timbal-ai/timbal-sdk",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Official TypeScript SDK for the Timbal platform",
   "main": "dist/index.cjs",
   "module": "dist/index.esm.js",

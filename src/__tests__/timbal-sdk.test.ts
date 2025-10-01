@@ -1,27 +1,36 @@
-import { test, expect, describe, beforeEach, mock } from 'bun:test';
+import { test, expect, describe, beforeEach, mock, afterEach } from 'bun:test';
 import { Timbal } from '../lib/timbal';
 import type { TimbalConfig } from '../types';
-
-// Mock fetch
-global.fetch = mock(() =>
-  Promise.resolve({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ status: 'ok' }),
-  })
-) as any;
 
 describe('Timbal', () => {
   let timbal: Timbal;
   let config: TimbalConfig;
+  let originalFetch: any;
+  let mockFetch: any;
 
   beforeEach(() => {
+    // Store original fetch and create mock
+    originalFetch = global.fetch;
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ status: 'ok' }),
+      })
+    );
+    global.fetch = mockFetch as any;
+
     config = {
       apiKey: 'test-key',
       baseUrl: 'https://api.test.com',
     };
     timbal = new Timbal(config);
-    (global.fetch as any).mockClear();
+    mockFetch.mockClear();
+  });
+
+  afterEach(() => {
+    // Restore original fetch
+    global.fetch = originalFetch;
   });
 
   describe('initialization', () => {
@@ -39,7 +48,7 @@ describe('Timbal', () => {
 
   describe('testConnection', () => {
     test('should return true for successful connection', async () => {
-      (global.fetch as any).mockResolvedValueOnce({
+      mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
         json: () => Promise.resolve({ status: 'healthy' }),
@@ -50,7 +59,7 @@ describe('Timbal', () => {
     });
 
     test('should return false for failed connection', async () => {
-      (global.fetch as any).mockRejectedValueOnce(new Error('Network error'));
+      mockFetch.mockRejectedValueOnce(new Error('Network error'));
 
       const result = await timbal.testConnection();
       expect(result).toBe(false);

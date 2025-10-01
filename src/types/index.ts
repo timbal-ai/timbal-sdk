@@ -93,3 +93,14 @@ export interface File {
   expires_at?: string | null;
   url: string;
 }
+
+export interface AppRunRequest {
+  version_id?: string;
+  input: Record<string, any>;
+  group_id?: string;
+  parent_id?: string;
+}
+
+export interface AppRunResponse {
+  [key: string]: any;
+}
