@@ -21,6 +21,11 @@ export class ApiClient {
 
   constructor(config: TimbalConfig) {
     this.config = deepMerge(DEFAULT_CONFIG, config) as Required<TimbalConfig>;
+    
+    // Validate that at least one auth method is provided
+    if (!this.config.apiKey && !this.config.authToken) {
+      throw new Error('Authentication required: provide apiKey or authToken');
+    }
   }
 
   private async makeRequest<T>(
@@ -36,9 +41,14 @@ export class ApiClient {
     const url = `${baseUrl}${path}`;
 
     // Build headers - don't set Content-Type by default, let the browser/runtime handle it for FormData
-    const headers = new Headers({
-      Authorization: `Bearer ${this.config.apiKey}`,
-    });
+    const headers = new Headers();
+    
+    // Set authorization header based on available auth method (priority: apiKey > authToken)
+    if (this.config.apiKey) {
+      headers.set('Authorization', `Bearer ${this.config.apiKey}`);
+    } else if (this.config.authToken) {
+      headers.set('x-auth-token', this.config.authToken);
+    } 
 
     // Add custom headers from options
     if (options.headers) {

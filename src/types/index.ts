@@ -1,5 +1,6 @@
 export interface TimbalConfig {
-  apiKey: string;
+  apiKey?: string;
+  authToken?: string;
   baseUrl?: string;
   timeout?: number;
   retryAttempts?: number;
