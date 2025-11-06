@@ -20,6 +20,41 @@ const mockApiClient: ApiClient = {
   delete: async (_path: string, _data?: any) => {
     return { data: null, success: true, statusCode: 200 };
   },
+  get: async (_path: string, _params?: any) => {
+    return {
+      data: {
+        tables: [
+          {
+            name: 'test_table',
+            columns: [
+              {
+                name: 'id',
+                data_type: 'integer',
+                default_value: null,
+                is_nullable: false,
+                is_unique: true,
+                is_primary: true,
+                comment: null,
+              },
+              {
+                name: 'name',
+                data_type: 'varchar(255)',
+                default_value: null,
+                is_nullable: false,
+                is_unique: false,
+                is_primary: false,
+                comment: 'Name field',
+              },
+            ],
+            comment: 'Test table',
+            constraints: [],
+          },
+        ],
+      },
+      success: true,
+      statusCode: 200,
+    };
+  },
 } as any;
 
 describe('TableService', () => {
@@ -176,20 +211,6 @@ describe('TableService', () => {
         kbId: 'test-kb',
         tableName: 'test_table',
         csvPath: tempCsvPath,
-        mode: 'overwrite',
-      })
-    ).resolves.toBeUndefined();
-  });
-
-  test('should use default mode when not specified for CSV import', async () => {
-    const tableService = new TableService(mockApiClient);
-
-    await expect(
-      tableService.importCsv({
-        orgId: 'test-org',
-        kbId: 'test-kb',
-        tableName: 'test_table',
-        csvPath: tempCsvPath,
       })
     ).resolves.toBeUndefined();
   });
@@ -248,7 +269,7 @@ describe('TableService', () => {
     const tableService = new TableService(mockApiClient);
 
     await expect(
-      tableService.importCsvByParams('test-org', 'test-kb', 'test_table', tempCsvPath, 'append')
+      tableService.importCsvByParams('test-org', 'test-kb', 'test_table', tempCsvPath)
     ).resolves.toBeUndefined();
   });
 
@@ -330,6 +351,172 @@ describe('TableService', () => {
       tableService.deleteTable({
         name: 'test_table',
       })
+    ).resolves.toBeUndefined();
+  });
+
+  test('should get tables with required parameters', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    const tables = await tableService.getTables({
+      orgId: 'test-org',
+      kbId: 'test-kb',
+    });
+
+    expect(Array.isArray(tables)).toBe(true);
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables[0]).toHaveProperty('name');
+    expect(tables[0]).toHaveProperty('columns');
+    expect(tables[0]).toHaveProperty('comment');
+    expect(tables[0]).toHaveProperty('constraints');
+    expect(tables[0].columns[0]).toHaveProperty('name');
+    expect(tables[0].columns[0]).toHaveProperty('dataType');
+    expect(tables[0].columns[0]).toHaveProperty('isNullable');
+  });
+
+  test('should throw error when orgId is missing for getTables', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.getTables({
+        kbId: 'test-kb',
+      })
+    ).rejects.toThrow('orgId is required');
+  });
+
+  test('should throw error when kbId is missing for getTables', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.getTables({
+        orgId: 'test-org',
+      })
+    ).rejects.toThrow('kbId is required');
+  });
+
+  test('should use defaults for getTables when set', async () => {
+    const tableService = new TableService(mockApiClient, {
+      orgId: 'default-org',
+      kbId: 'default-kb',
+    });
+
+    const tables = await tableService.getTables({});
+    expect(Array.isArray(tables)).toBe(true);
+  });
+
+  test('should handle getTables with positional parameters', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    const tables = await tableService.getTablesByParams('test-org', 'test-kb');
+    expect(Array.isArray(tables)).toBe(true);
+  });
+
+  test('should import records with required parameters', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    const records = [
+      { id: 1, name: 'John', age: 25 },
+      { id: 2, name: 'Jane', age: 30 },
+    ];
+
+    await expect(
+      tableService.importRecords({
+        orgId: 'test-org',
+        kbId: 'test-kb',
+        tableName: 'test_table',
+        records,
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  test('should throw error when orgId is missing for importRecords', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.importRecords({
+        kbId: 'test-kb',
+        tableName: 'test_table',
+        records: [{ id: 1 }],
+      })
+    ).rejects.toThrow('orgId is required');
+  });
+
+  test('should throw error when kbId is missing for importRecords', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.importRecords({
+        orgId: 'test-org',
+        tableName: 'test_table',
+        records: [{ id: 1 }],
+      })
+    ).rejects.toThrow('kbId is required');
+  });
+
+  test('should throw error when tableName is missing for importRecords', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.importRecords({
+        orgId: 'test-org',
+        kbId: 'test-kb',
+        tableName: '',
+        records: [{ id: 1 }],
+      })
+    ).rejects.toThrow('tableName is required');
+  });
+
+  test('should throw error when records are empty for importRecords', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.importRecords({
+        orgId: 'test-org',
+        kbId: 'test-kb',
+        tableName: 'test_table',
+        records: [],
+      })
+    ).rejects.toThrow('records are required and cannot be empty');
+  });
+
+  test('should throw error when records are missing for importRecords', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    await expect(
+      tableService.importRecords({
+        orgId: 'test-org',
+        kbId: 'test-kb',
+        tableName: 'test_table',
+        records: null as any,
+      })
+    ).rejects.toThrow('records are required and cannot be empty');
+  });
+
+  test('should use defaults for importRecords when set', async () => {
+    const tableService = new TableService(mockApiClient, {
+      orgId: 'default-org',
+      kbId: 'default-kb',
+    });
+
+    const records = [{ id: 1, name: 'Test' }];
+
+    await expect(
+      tableService.importRecords({
+        tableName: 'test_table',
+        records,
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  test('should handle importRecords with positional parameters', async () => {
+    const tableService = new TableService(mockApiClient);
+
+    const records = [
+      { id: 1, name: 'John' },
+      { id: 2, name: 'Jane' },
+    ];
+
+    await expect(
+      tableService.importRecordsByParams('test-org', 'test-kb', 'test_table', records)
     ).resolves.toBeUndefined();
   });
 });
@@ -503,12 +690,11 @@ Bob Johnson,35,Chicago`;
         });
         console.log(`✅ Table ${csvTableName} created successfully`);
 
-        // Step 2: Import CSV data (overwrite mode)
-        console.log(`Importing CSV data to ${csvTableName} (overwrite mode)`);
+        // Step 2: Import CSV data
+        console.log(`Importing CSV data to ${csvTableName}`);
         await timbal.importCsv({
           tableName: csvTableName,
           csvPath: csvFilePath,
-          mode: 'overwrite',
         });
         console.log(`✅ CSV data imported successfully`);
 
@@ -540,29 +726,24 @@ Bob Johnson,35,Chicago`;
 
         console.log(`✅ All imported data verified correctly`);
 
-        // Step 4: Test append mode by adding more data
-        const additionalCsvContent = `name,age,city
-Alice Brown,28,Boston
-Charlie Wilson,32,Seattle`;
-
-        const additionalCsvPath = `/tmp/additional_data_${Date.now()}.csv`;
-        await Bun.write(additionalCsvPath, additionalCsvContent);
-
-        console.log(`Importing additional CSV data (append mode)`);
-        await timbal.importCsv({
+        // Step 4: Test importRecords by adding more data
+        console.log(`Importing additional records using importRecords`);
+        await timbal.importRecords({
           tableName: csvTableName,
-          csvPath: additionalCsvPath,
-          mode: 'append',
+          records: [
+            { name: 'Alice Brown', age: 28, city: 'Boston' },
+            { name: 'Charlie Wilson', age: 32, city: 'Seattle' },
+          ],
         });
-        console.log(`✅ Additional CSV data appended successfully`);
+        console.log(`✅ Additional records imported successfully`);
 
-        // Step 5: Query again to verify append worked
+        // Step 5: Query again to verify importRecords worked
         const appendResults = await timbal.query({
           sql: `SELECT COUNT(*) as count FROM ${csvTableName}`,
         });
 
-        expect(appendResults[0].count).toBe(5); // 3 original + 2 appended
-        console.log(`✅ Append mode verified - total rows: ${appendResults[0].count}`);
+        expect(appendResults[0].count).toBe(5); // 3 original + 2 added
+        console.log(`✅ Import records verified - total rows: ${appendResults[0].count}`);
 
         // Step 6: Query all data to see the final result
         const allResults = await timbal.query({
@@ -579,12 +760,128 @@ Charlie Wilson,32,Seattle`;
         expect(allResults.map((r: any) => r.name)).toContain('Alice Brown');
         expect(allResults.map((r: any) => r.name)).toContain('Charlie Wilson');
 
-        // Clean up additional CSV file
-        await Bun.write(additionalCsvPath, '');
       } finally {
         // Clean up CSV file
         await Bun.write(csvFilePath, '');
       }
+    }
+  );
+
+  test.skipIf(!shouldRunIntegrationTests())(
+    'should get tables and verify structure',
+    async () => {
+      const testTableName = `get_tables_test_${Date.now()}`;
+      tablesToCleanup.push(testTableName);
+
+      // Create a test table first
+      const columns: Column[] = [
+        {
+          name: 'id',
+          dataType: 'integer',
+          isNullable: false,
+          isUnique: true,
+          isPrimary: true,
+        },
+        {
+          name: 'name',
+          dataType: 'varchar(100)',
+          isNullable: false,
+          isUnique: false,
+          isPrimary: false,
+          comment: 'Name field',
+        },
+      ];
+
+      await timbal.createTable({
+        name: testTableName,
+        columns,
+        comment: 'Test table for getTables integration test',
+      });
+
+      // Get all tables
+      const tables = await timbal.getTables({});
+
+      expect(Array.isArray(tables)).toBe(true);
+      expect(tables.length).toBeGreaterThan(0);
+
+      // Find our test table
+      const testTable = tables.find((t) => t.name === testTableName);
+      expect(testTable).toBeDefined();
+      expect(testTable?.name).toBe(testTableName);
+      expect(testTable?.comment).toBe('Test table for getTables integration test');
+      expect(Array.isArray(testTable?.columns)).toBe(true);
+      expect(testTable?.columns.length).toBe(2);
+      expect(testTable?.columns[0].name).toBe('id');
+      expect(testTable?.columns[0].dataType).toBe('integer');
+      expect(testTable?.columns[1].name).toBe('name');
+      expect(testTable?.columns[1].dataType).toBe('varchar(100)');
+      expect(testTable?.columns[1].comment).toBe('Name field');
+    }
+  );
+
+  test.skipIf(!shouldRunIntegrationTests())(
+    'should create table, import records, and verify data',
+    async () => {
+      const recordsTableName = `records_test_table_${Date.now()}`;
+      tablesToCleanup.push(recordsTableName);
+
+      // Create a test table
+      const columns: Column[] = [
+        {
+          name: 'id',
+          dataType: 'integer',
+          isNullable: false,
+          isUnique: true,
+          isPrimary: true,
+        },
+        {
+          name: 'name',
+          dataType: 'varchar(100)',
+          isNullable: false,
+          isUnique: false,
+          isPrimary: false,
+        },
+        {
+          name: 'email',
+          dataType: 'varchar(255)',
+          isNullable: true,
+          isUnique: false,
+          isPrimary: false,
+        },
+      ];
+
+      await timbal.createTable({
+        name: recordsTableName,
+        columns,
+        comment: 'Test table for importRecords integration test',
+      });
+
+      // Import records
+      const records = [
+        { id: 1, name: 'John Doe', email: 'john@example.com' },
+        { id: 2, name: 'Jane Smith', email: 'jane@example.com' },
+        { id: 3, name: 'Bob Johnson', email: null },
+      ];
+
+      await timbal.importRecords({
+        tableName: recordsTableName,
+        records,
+      });
+
+      // Verify data was imported
+      const results = await timbal.query({
+        sql: `SELECT id, name, email FROM ${recordsTableName} ORDER BY id`,
+      });
+
+      expect(Array.isArray(results)).toBe(true);
+      expect(results.length).toBe(3);
+      expect(results[0].id).toBe(1);
+      expect(results[0].name).toBe('John Doe');
+      expect(results[0].email).toBe('john@example.com');
+      expect(results[1].id).toBe(2);
+      expect(results[1].name).toBe('Jane Smith');
+      expect(results[2].id).toBe(3);
+      expect(results[2].name).toBe('Bob Johnson');
     }
   );
 });
