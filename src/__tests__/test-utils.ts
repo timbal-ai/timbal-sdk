@@ -16,7 +16,7 @@ export const createTestTimbal = (): Timbal => {
 
   const timbal = new Timbal({
     apiKey: process.env.TIMBAL_API_KEY!,
-    baseUrl: process.env.TIMBAL_BASE_URL || 'https://api.timbal.ai',
+    baseUrl: process.env.TIMBAL_BASE_URL || 'https://dev.timbal.ai',
   });
 
   // Set defaults
