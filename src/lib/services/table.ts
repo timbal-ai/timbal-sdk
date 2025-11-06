@@ -1,5 +1,5 @@
 import type { ApiClient } from '../api';
-import type { Column } from '../../types';
+import type { Column, Table } from '../../types';
 
 export interface TableOptions {
   orgId?: string;
@@ -100,28 +100,138 @@ export class TableService {
   }
 
   /**
+   * List all tables in a knowledge base.
+   *
+   * @param orgId The organization ID.
+   * @param kbId The knowledge base ID.
+   * @returns A list of Table models, each containing the table's name, columns, comment, and constraints.
+   */
+  async getTables(options: {
+    orgId?: string;
+    kbId?: string;
+  }): Promise<Table[]> {
+    const orgId = this.resolveDefault('orgId', options.orgId);
+    const kbId = this.resolveDefault('kbId', options.kbId);
+
+    if (!orgId) {
+      throw new Error('orgId is required. Provide it in the method call or set a default.');
+    }
+    if (!kbId) {
+      throw new Error('kbId is required. Provide it in the method call or set a default.');
+    }
+
+    const path = `orgs/${orgId}/kbs/${kbId}/tables`;
+    const params = { format: 'full' };
+
+    const response = await this.apiClient.get<{ tables: any[] }>(path, params);
+    const tables = response.data.tables || [];
+
+    return tables.map((table: any) => ({
+      name: table.name,
+      columns: (table.columns || []).map((column: any) => ({
+        name: column.name,
+        dataType: column.data_type,
+        defaultValue: column.default_value,
+        isNullable: column.is_nullable,
+        isUnique: column.is_unique,
+        isPrimary: column.is_primary,
+        comment: column.comment,
+      })),
+      comment: table.comment,
+      constraints: table.constraints || [],
+    }));
+  }
+
+  /**
+   * Convenience method for getting tables with positional parameters
+   */
+  async getTablesByParams(orgId: string, kbId: string): Promise<Table[]> {
+    return this.getTables({ orgId, kbId });
+  }
+
+  /**
+   * Import records into a table in a knowledge base.
+   *
+   * @param orgId The organization ID.
+   * @param kbId The knowledge base ID containing the table.
+   * @param tableName The name of the table to import records to.
+   * @param records The records to import. Each record should be a dictionary where keys match the table's column names.
+   *
+   * @example
+   * ```typescript
+   * // For an example table "Documents" with columns: id, filename, content
+   * await tableService.importRecords({
+   *   orgId: "10",
+   *   kbId: "48",
+   *   tableName: "Documents",
+   *   records: [
+   *     { id: 1, filename: "foo.txt", content: "Hello world!" },
+   *     { id: 2, filename: "bar.txt", content: "Another document" }
+   *   ]
+   * });
+   * ```
+   */
+  async importRecords(options: {
+    orgId?: string;
+    kbId?: string;
+    tableName: string;
+    records: Record<string, any>[];
+  }): Promise<void> {
+    const orgId = this.resolveDefault('orgId', options.orgId);
+    const kbId = this.resolveDefault('kbId', options.kbId);
+
+    if (!orgId) {
+      throw new Error('orgId is required. Provide it in the method call or set a default.');
+    }
+    if (!kbId) {
+      throw new Error('kbId is required. Provide it in the method call or set a default.');
+    }
+    if (!options.tableName) {
+      throw new Error('tableName is required.');
+    }
+    if (!options.records || options.records.length === 0) {
+      throw new Error('records are required and cannot be empty.');
+    }
+
+    const path = `orgs/${orgId}/kbs/${kbId}/tables/${options.tableName}/records`;
+    const payload = {
+      records: options.records,
+    };
+
+    await this.apiClient.post(path, payload);
+  }
+
+  /**
+   * Convenience method for importing records with positional parameters
+   */
+  async importRecordsByParams(
+    orgId: string,
+    kbId: string,
+    tableName: string,
+    records: Record<string, any>[]
+  ): Promise<void> {
+    return this.importRecords({ orgId, kbId, tableName, records });
+  }
+
+  /**
    * Upload a CSV file to a table in a knowledge base.
    *
    * This function imports data from a CSV file into an existing table in the specified knowledge base.
    * The CSV file must match the table's schema (column names and types).
-   * You can choose to either overwrite the table's contents or append to it.
    *
    * @param orgId The organization ID.
    * @param kbId The knowledge base ID containing the table.
    * @param tableName The name of the table to upload the CSV to.
    * @param csvPath The path to the CSV file on disk.
-   * @param mode Import mode. Use "overwrite" to replace all existing data in the table, or "append" to add to it. Default is "overwrite".
    */
   async importCsv(options: {
     orgId?: string;
     kbId?: string;
     tableName: string;
     csvPath: string;
-    mode?: 'append' | 'overwrite';
   }): Promise<void> {
     const orgId = this.resolveDefault('orgId', options.orgId);
     const kbId = this.resolveDefault('kbId', options.kbId);
-    const mode = options.mode ?? 'overwrite';
 
     if (!orgId) {
       throw new Error('orgId is required. Provide it in the method call or set a default.');
@@ -136,7 +246,7 @@ export class TableService {
       throw new Error('csvPath is required.');
     }
 
-    const path = `orgs/${orgId}/kbs/${kbId}/tables/${options.tableName}/csv?mode=${mode}`;
+    const path = `orgs/${orgId}/kbs/${kbId}/tables/${options.tableName}/csv`;
 
     // Read the CSV file
     const file = Bun.file(options.csvPath);
@@ -152,10 +262,9 @@ export class TableService {
     orgId: string,
     kbId: string,
     tableName: string,
-    csvPath: string,
-    mode: 'append' | 'overwrite' = 'overwrite'
+    csvPath: string
   ): Promise<void> {
-    return this.importCsv({ orgId, kbId, tableName, csvPath, mode });
+    return this.importCsv({ orgId, kbId, tableName, csvPath });
   }
 
   /**

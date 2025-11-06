@@ -1,4 +1,4 @@
-import type { TimbalConfig, Column, File, AppRunResponse } from '../types';
+import type { TimbalConfig, Column, File, AppRunResponse, Table } from '../types';
 import { ApiClient } from './api';
 import {
   QueryService,
@@ -128,16 +128,14 @@ export class Timbal {
    *
    * This function imports data from a CSV file into an existing table in the specified knowledge base.
    * The CSV file must match the table's schema (column names and types).
-   * You can choose to either overwrite the table's contents or append to it.
    *
-   * @param options CSV import parameters (orgId, kbId, tableName, csvPath, mode)
+   * @param options CSV import parameters (orgId, kbId, tableName, csvPath)
    */
   async importCsv(options: {
     orgId?: string;
     kbId?: string;
     tableName: string;
     csvPath: string;
-    mode?: 'append' | 'overwrite';
   }): Promise<void> {
     return this.tableService.importCsv(options);
   }
@@ -150,9 +148,8 @@ export class Timbal {
     kbId: string,
     tableName: string,
     csvPath: string,
-    mode: 'append' | 'overwrite' = 'overwrite'
   ): Promise<void> {
-    return this.tableService.importCsvByParams(orgId, kbId, tableName, csvPath, mode);
+    return this.tableService.importCsvByParams(orgId, kbId, tableName, csvPath);
   }
 
   /**
@@ -179,6 +176,52 @@ export class Timbal {
     cascade?: boolean
   ): Promise<void> {
     return this.tableService.deleteTableByParams(orgId, kbId, name, cascade);
+  }
+
+  /**
+   * List all tables in a knowledge base.
+   *
+   * @param options Table listing parameters (orgId, kbId)
+   * @returns A list of Table models, each containing the table's name, columns, comment, and constraints.
+   */
+  async getTables(options: {
+    orgId?: string;
+    kbId?: string;
+  }): Promise<Table[]> {
+    return this.tableService.getTables(options);
+  }
+
+  /**
+   * Get tables with positional parameters
+   */
+  async getTablesByParams(orgId: string, kbId: string): Promise<Table[]> {
+    return this.tableService.getTablesByParams(orgId, kbId);
+  }
+
+  /**
+   * Import records into a table in a knowledge base.
+   *
+   * @param options Record import parameters (orgId, kbId, tableName, records)
+   */
+  async importRecords(options: {
+    orgId?: string;
+    kbId?: string;
+    tableName: string;
+    records: Record<string, any>[];
+  }): Promise<void> {
+    return this.tableService.importRecords(options);
+  }
+
+  /**
+   * Import records with positional parameters
+   */
+  async importRecordsByParams(
+    orgId: string,
+    kbId: string,
+    tableName: string,
+    records: Record<string, any>[]
+  ): Promise<void> {
+    return this.tableService.importRecordsByParams(orgId, kbId, tableName, records);
   }
 
   /**

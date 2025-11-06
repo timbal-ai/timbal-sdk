@@ -42,7 +42,7 @@ import Timbal from '@timbal-ai/timbal-sdk';
 
 const timbal = new Timbal({
   apiKey: 'your-api-key-here',
-  baseUrl: 'https://api.timbal.ai', // Optional: default API endpoint
+  baseUrl: 'https://dev.timbal.ai', // Optional: default API endpoint
   timeout: 30000,                   // Optional: request timeout in ms
   retryAttempts: 3,                 // Optional: number of retry attempts
   retryDelay: 1000,                 // Optional: delay between retries in ms
@@ -96,7 +96,7 @@ const results = await timbal.query({
 
 ### Table Service
 
-The table service allows you to create tables and import CSV data into them.
+The table service allows you to create tables, list tables, import CSV data, and import records into them.
 
 #### Creating Tables
 
@@ -117,7 +117,7 @@ await timbal.createTable({
     },
     {
       name: 'name',
-      dataType: 'varchar(255)',
+      dataType: 'TEXT',
       isNullable: false,
       isUnique: false,
       isPrimary: false,
@@ -125,7 +125,7 @@ await timbal.createTable({
     },
     {
       name: 'email',
-      dataType: 'varchar(255)',
+      dataType: 'TEXT',
       isNullable: false,
       isUnique: true,
       isPrimary: false,
@@ -159,7 +159,7 @@ await timbal.createTableByParams(
     },
     {
       name: 'name',
-      dataType: 'varchar(255)',
+      dataType: 'TEXT',
       isNullable: false,
       isUnique: false,
       isPrimary: false
@@ -185,6 +185,62 @@ await timbal.createTable({
 });
 ```
 
+#### Listing Tables
+
+```typescript
+// Get all tables in a knowledge base
+const tables = await timbal.getTables({
+  orgId: '10',
+  kbId: '48',
+});
+
+// Each table contains name, columns, comment, and constraints
+tables.forEach(table => {
+  console.log(`Table: ${table.name}`);
+  console.log(`Columns: ${table.columns.length}`);
+  console.log(`Comment: ${table.comment}`);
+});
+
+// Use positional parameters
+const tables = await timbal.getTablesByParams('10', '48');
+
+// Using defaults
+const tables = await timbal.getTables({});
+```
+
+#### Importing Records
+
+```typescript
+// Import records directly into a table
+await timbal.importRecords({
+  orgId: '10',
+  kbId: '48',
+  tableName: 'users',
+  records: [
+    { id: 1, name: 'John Doe', email: 'john@example.com' },
+    { id: 2, name: 'Jane Smith', email: 'jane@example.com' },
+  ],
+});
+
+// Use positional parameters
+await timbal.importRecordsByParams(
+  '10',           // orgId
+  '48',           // kbId
+  'users',        // table name
+  [               // records
+    { id: 3, name: 'Bob Johnson', email: 'bob@example.com' },
+  ]
+);
+
+// Using defaults
+await timbal.importRecords({
+  tableName: 'users',
+  records: [
+    { id: 4, name: 'Alice Brown', email: 'alice@example.com' },
+  ],
+});
+```
+
 #### CSV Import
 
 ```typescript
@@ -194,7 +250,6 @@ await timbal.importCsv({
   kbId: '48',
   tableName: 'users',
   csvPath: './data/users.csv',
-  mode: 'overwrite' // 'overwrite' or 'append'
 });
 
 // Use positional parameters
@@ -203,21 +258,17 @@ await timbal.importCsvByParams(
   '48',           // kbId
   'users',        // table name
   './data/users.csv', // CSV file path
-  'append'        // mode (optional, defaults to 'overwrite')
 );
 
 // Using defaults
 await timbal.importCsv({
   tableName: 'users',
   csvPath: './data/users.csv',
-  mode: 'append'
 });
 ```
 
 **CSV Import Notes:**
 - The CSV file must match the table's schema (column names and types)
-- `mode: 'overwrite'` replaces all existing data in the table
-- `mode: 'append'` adds the CSV data to existing table data
 - CSV files should have a header row with column names
 - Column names in CSV must match table column names exactly
 
@@ -236,18 +287,19 @@ await timbal.createTable({
   comment: 'Daily sales data'
 });
 
-// 2. Import initial data
+// 2. Import initial data from CSV
 await timbal.importCsv({
   tableName: 'sales_data',
   csvPath: './data/january_sales.csv',
-  mode: 'overwrite'
 });
 
-// 3. Append more data
-await timbal.importCsv({
+// 3. Add more data using importRecords
+await timbal.importRecords({
   tableName: 'sales_data',
-  csvPath: './data/february_sales.csv',
-  mode: 'append'
+  records: [
+    { date: '2024-02-01', product: 'Product A', amount: 150.00, region: 'North' },
+    { date: '2024-02-02', product: 'Product B', amount: 200.00, region: 'South' },
+  ],
 });
 
 // 4. Query the data
@@ -323,6 +375,7 @@ import type {
   QueryResult,
   QueryOptions,
   Column,
+  Table,
   TableOptions
 } from '@timbal-ai/timbal-sdk';
 
@@ -349,7 +402,7 @@ const columns: Column[] = [
   },
   {
     name: 'name',
-    dataType: 'varchar(255)',
+    dataType: 'TEXT',
     isNullable: false,
     isUnique: false,
     isPrimary: false,
@@ -362,6 +415,12 @@ await timbal.createTable({
   name: 'my_table',
   columns,
   comment: 'Example table'
+});
+
+// Get tables with type safety
+const tables: Table[] = await timbal.getTables({
+  orgId: '10',
+  kbId: '48',
 });
 ```
 
@@ -449,7 +508,7 @@ Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 - [GitHub Issues](https://github.com/timbal-ai/timbal-sdk/issues)
 - [Documentation](https://docs.timbal.ai)
-- [API Reference](https://api.timbal.ai/docs)
+- [API Reference](https://docs.timbal.ai/api-reference/)
 
 ---
 
