@@ -1,332 +1,99 @@
-import type { TimbalConfig, Column, File, AppRunResponse, Table } from '../types';
+import type {
+  TimbalConfig,
+  File,
+  Session,
+  QueryResult,
+  QueryOptions,
+  FileOptions,
+  WorkforceContext,
+  WorkforceItem,
+  PlatformConfig,
+} from '../types';
 import { ApiClient } from './api';
 import {
-  QueryService,
-  QueryOptions,
-  QueryResult,
-  TableService,
-  TableOptions,
-  FileService,
-  FileOptions,
-  AppService,
-  AppOptions,
-} from './services';
+  query as queryFn,
+  uploadFile as uploadFileFn,
+  uploadFileFromBuffer as uploadFileFromBufferFn,
+  getSession as getSessionFn,
+  listWorkforces as listWorkforcesFn,
+  callWorkforce as callWorkforceFn,
+  streamWorkforce as streamWorkforceFn,
+  clearDeploymentCache as clearDeploymentCacheFn,
+} from './functions';
 
 export class Timbal {
   private apiClient: ApiClient;
-  private queryService: QueryService;
-  private tableService: TableService;
-  private fileService: FileService;
-  private appService: AppService;
 
   constructor(config: TimbalConfig) {
     this.apiClient = new ApiClient(config);
-
-    // Initialize services
-    this.queryService = new QueryService(this.apiClient);
-    this.tableService = new TableService(this.apiClient);
-    this.fileService = new FileService(this.apiClient);
-    this.appService = new AppService(this.apiClient);
   }
 
   /**
-   * Get the underlying API client for custom requests
+   * Create a scoped client with overridden config. Cheap to call per-request.
+   */
+  as(config: Partial<TimbalConfig>): Timbal {
+    return new Timbal({ ...this.apiClient.getConfig(), ...config });
+  }
+
+  /**
+   * Get the underlying API client for custom requests.
    */
   getApiClient(): ApiClient {
     return this.apiClient;
   }
 
-  /**
-   * Update SDK configuration
-   */
-  updateConfig(newConfig: Partial<TimbalConfig>): void {
-    this.apiClient.updateConfig(newConfig);
+  // ── Session ──
+
+  async getSession(): Promise<Session> {
+    return getSessionFn(this.apiClient);
   }
 
-  /**
-   * Get current SDK configuration
-   */
-  getConfig(): Required<TimbalConfig> {
-    return this.apiClient.getConfig();
+  // ── Query ──
+
+  async query(sql: string, params?: unknown[], options?: QueryOptions): Promise<QueryResult[]> {
+    return queryFn(this.apiClient, sql, params, options);
   }
 
-  /**
-   * Execute a SQL query against a knowledge base table (PostgreSQL dialect).
-   *
-   * @param options Query parameters (orgId, kbId, sql)
-   * @returns The query results as a list of dictionaries, where each dictionary represents a row.
-   */
-  async query(options: { orgId?: string; kbId?: string; sql?: string }): Promise<QueryResult[]> {
-    return this.queryService.query(options);
+  // ── Files ──
+
+  async uploadFile(filePath: string, options?: FileOptions): Promise<File> {
+    return uploadFileFn(this.apiClient, filePath, options);
   }
 
-  /**
-   * Execute a SQL query with positional parameters
-   */
-  async queryByParams(orgId: string, kbId: string, sql: string): Promise<QueryResult[]> {
-    return this.queryService.queryByParams(orgId, kbId, sql);
+  async uploadFileFromBuffer(
+    data: ArrayBuffer | Uint8Array,
+    filename: string,
+    contentType?: string,
+    options?: FileOptions
+  ): Promise<File> {
+    return uploadFileFromBufferFn(this.apiClient, data, filename, contentType, options);
   }
 
-  /**
-   * Set default values for future queries
-   */
-  setQueryDefaults(defaults: QueryOptions): void {
-    this.queryService.setDefaults(defaults);
+  // ── Workforce ──
+
+  async listWorkforces(ctx?: WorkforceContext, workforceDir?: string): Promise<WorkforceItem[]> {
+    return listWorkforcesFn(this.apiClient, ctx, workforceDir);
   }
 
-  /**
-   * Get current query default values
-   */
-  getQueryDefaults(): QueryOptions {
-    return this.queryService.getDefaults();
+  async callWorkforce(
+    manifestId: string,
+    input?: Record<string, unknown>,
+    ctx?: WorkforceContext,
+    platformConfig?: PlatformConfig
+  ): Promise<Response> {
+    return callWorkforceFn(this.apiClient, manifestId, input, ctx, platformConfig);
   }
 
-  /**
-   * Create a new table in a knowledge base.
-   *
-   * @param options Table creation parameters (orgId, kbId, name, columns, comment)
-   */
-  async createTable(options: {
-    orgId?: string;
-    kbId?: string;
-    name: string;
-    columns: Column[];
-    comment?: string | null;
-  }): Promise<void> {
-    return this.tableService.createTable(options);
+  async streamWorkforce(
+    manifestId: string,
+    input?: Record<string, unknown>,
+    ctx?: WorkforceContext,
+    platformConfig?: PlatformConfig
+  ): Promise<Response> {
+    return streamWorkforceFn(this.apiClient, manifestId, input, ctx, platformConfig);
   }
 
-  /**
-   * Create a table with positional parameters
-   */
-  async createTableByParams(
-    orgId: string,
-    kbId: string,
-    name: string,
-    columns: Column[],
-    comment?: string | null
-  ): Promise<void> {
-    return this.tableService.createTableByParams(orgId, kbId, name, columns, comment);
-  }
-
-  /**
-   * Set default values for future table operations
-   */
-  setTableDefaults(defaults: TableOptions): void {
-    this.tableService.setDefaults(defaults);
-  }
-
-  /**
-   * Get current table default values
-   */
-  getTableDefaults(): TableOptions {
-    return this.tableService.getDefaults();
-  }
-
-  /**
-   * Upload a CSV file to a table in a knowledge base.
-   *
-   * This function imports data from a CSV file into an existing table in the specified knowledge base.
-   * The CSV file must match the table's schema (column names and types).
-   *
-   * @param options CSV import parameters (orgId, kbId, tableName, csvPath)
-   */
-  async importCsv(options: {
-    orgId?: string;
-    kbId?: string;
-    tableName: string;
-    csvPath: string;
-  }): Promise<void> {
-    return this.tableService.importCsv(options);
-  }
-
-  /**
-   * Import CSV with positional parameters
-   */
-  async importCsvByParams(
-    orgId: string,
-    kbId: string,
-    tableName: string,
-    csvPath: string,
-  ): Promise<void> {
-    return this.tableService.importCsvByParams(orgId, kbId, tableName, csvPath);
-  }
-
-  /**
-   * Delete a table from a knowledge base.
-   *
-   * @param options Table deletion parameters (orgId, kbId, name, cascade)
-   */
-  async deleteTable(options: {
-    orgId?: string;
-    kbId?: string;
-    name: string;
-    cascade?: boolean;
-  }): Promise<void> {
-    return this.tableService.deleteTable(options);
-  }
-
-  /**
-   * Delete a table with positional parameters
-   */
-  async deleteTableByParams(
-    orgId: string,
-    kbId: string,
-    name: string,
-    cascade?: boolean
-  ): Promise<void> {
-    return this.tableService.deleteTableByParams(orgId, kbId, name, cascade);
-  }
-
-  /**
-   * List all tables in a knowledge base.
-   *
-   * @param options Table listing parameters (orgId, kbId)
-   * @returns A list of Table models, each containing the table's name, columns, comment, and constraints.
-   */
-  async getTables(options: {
-    orgId?: string;
-    kbId?: string;
-  }): Promise<Table[]> {
-    return this.tableService.getTables(options);
-  }
-
-  /**
-   * Get tables with positional parameters
-   */
-  async getTablesByParams(orgId: string, kbId: string): Promise<Table[]> {
-    return this.tableService.getTablesByParams(orgId, kbId);
-  }
-
-  /**
-   * Import records into a table in a knowledge base.
-   *
-   * @param options Record import parameters (orgId, kbId, tableName, records)
-   */
-  async importRecords(options: {
-    orgId?: string;
-    kbId?: string;
-    tableName: string;
-    records: Record<string, any>[];
-  }): Promise<void> {
-    return this.tableService.importRecords(options);
-  }
-
-  /**
-   * Import records with positional parameters
-   */
-  async importRecordsByParams(
-    orgId: string,
-    kbId: string,
-    tableName: string,
-    records: Record<string, any>[]
-  ): Promise<void> {
-    return this.tableService.importRecordsByParams(orgId, kbId, tableName, records);
-  }
-
-  /**
-   * Upload a file to an organization.
-   *
-   * @param options File upload parameters (orgId, filePath)
-   */
-  async uploadFile(options: { orgId?: string; filePath: string }): Promise<File> {
-    return this.fileService.uploadFile(options);
-  }
-
-  /**
-   * Upload a file with positional parameters
-   */
-  async uploadFileByParams(orgId: string, filePath: string): Promise<File> {
-    return this.fileService.uploadFileByParams(orgId, filePath);
-  }
-
-  /**
-   * Upload a file from a Buffer or Uint8Array with custom filename
-   */
-  async uploadFileFromBuffer(options: {
-    orgId?: string;
-    data: ArrayBuffer | Uint8Array;
-    filename: string;
-    contentType?: string;
-  }): Promise<File> {
-    return this.fileService.uploadFileFromBuffer(options);
-  }
-
-  /**
-   * Set default values for future file operations
-   */
-  setFileDefaults(defaults: FileOptions): void {
-    this.fileService.setDefaults(defaults);
-  }
-
-  /**
-   * Get current file default values
-   */
-  getFileDefaults(): FileOptions {
-    return this.fileService.getDefaults();
-  }
-
-  /**
-   * Run an app on the platform.
-   *
-   * @param options App run parameters (orgId, appId, input, and optional parameters)
-   */
-  async runApp(options: {
-    orgId?: string;
-    appId: string;
-    version_id?: string;
-    input: Record<string, any>;
-    group_id?: string;
-    parent_id?: string;
-  }): Promise<AppRunResponse> {
-    return this.appService.runApp(options);
-  }
-
-  /**
-   * Run an app with positional parameters
-   */
-  async runAppByParams(
-    orgId: string,
-    appId: string,
-    input: Record<string, any>,
-    version_id?: string,
-    group_id?: string,
-    parent_id?: string
-  ): Promise<AppRunResponse> {
-    return this.appService.runAppByParams(orgId, appId, input, version_id, group_id, parent_id);
-  }
-
-  /**
-   * Set default values for future app operations
-   */
-  setAppDefaults(defaults: AppOptions): void {
-    this.appService.setDefaults(defaults);
-  }
-
-  /**
-   * Get current app default values
-   */
-  getAppDefaults(): AppOptions {
-    return this.appService.getDefaults();
-  }
-
-  /**
-   * Test API connectivity with a simple query
-   */
-  async testConnection(): Promise<boolean> {
-    try {
-      // Test with a simple query if we have defaults set
-      const defaults = this.queryService.getDefaults();
-      if (defaults.orgId && defaults.kbId) {
-        await this.query({ sql: 'SELECT 1' });
-        return true;
-      }
-
-      // Otherwise just try to make a basic request to see if the API is reachable
-      await this.apiClient.get('/');
-      return true;
-    } catch {
-      return false;
-    }
+  clearDeploymentCache(): void {
+    clearDeploymentCacheFn();
   }
 }

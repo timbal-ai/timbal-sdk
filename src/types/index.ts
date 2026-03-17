@@ -1,13 +1,20 @@
-export interface TimbalConfig {
-  apiKey?: string;
-  authToken?: string;
+// ── Config ──
+
+export interface ClientConfig {
   baseUrl?: string;
   timeout?: number;
   retryAttempts?: number;
   retryDelay?: number;
 }
 
-export interface ApiResponse<T = any> {
+export interface TimbalConfig extends ClientConfig {
+  apiKey?: string;
+  authToken?: string;
+}
+
+// ── API ──
+
+export interface ApiResponse<T = unknown> {
   data: T;
   success: boolean;
   message?: string;
@@ -19,25 +26,69 @@ export interface ApiError {
   message: string;
   statusCode: number;
   code?: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
-export interface Column {
-  name: string;
-  dataType: string;
-  defaultValue?: string | null;
-  isNullable: boolean;
-  isUnique: boolean;
-  isPrimary: boolean;
-  comment?: string | null;
+// ── Session ──
+
+export interface Session {
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  user_photo_url: string | null;
+  user_phone: string | null;
+  user_lang: string;
+  access_level: string;
 }
 
-export interface Table {
-  name: string;
-  columns: Column[];
-  comment?: string | null;
-  constraints: any[];
+// ── Query ──
+
+export interface QueryResult {
+  [key: string]: unknown;
 }
+
+export interface QueryOptions {
+  orgId?: string;
+  kbId?: string;
+}
+
+// ── Files ──
+
+export interface File {
+  id: number;
+  name: string;
+  content_type: string;
+  content_length: number;
+  created_at: string;
+  expires_at?: string | null;
+  url: string;
+}
+
+export interface FileOptions {
+  orgId?: string;
+}
+
+// ── Workforce ──
+
+export interface WorkforceContext {
+  orgId?: string;
+  projectId?: string;
+  projectEnvId?: string;
+}
+
+export interface WorkforceItem {
+  id: string;
+}
+
+export interface PlatformConfig {
+  host: string;
+  auth: {
+    type: string;
+    token: string;
+  };
+}
+
+// ── Messages ──
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
@@ -59,7 +110,7 @@ export interface ToolUseContent extends BaseContent {
   type: 'tool_use';
   id: string;
   name: string;
-  input: Record<string, any>;
+  input: Record<string, unknown>;
 }
 
 export interface ToolResultContent extends BaseContent {
@@ -70,7 +121,7 @@ export interface ToolResultContent extends BaseContent {
 
 export interface FileContent extends BaseContent {
   type: 'file';
-  file: string; // Will always be a url or data url
+  file: string;
 }
 
 export type MessageContent =
@@ -83,25 +134,4 @@ export type MessageContent =
 export interface Message {
   role: MessageRole;
   content: MessageContent[];
-}
-
-export interface File {
-  id: number;
-  name: string;
-  content_type: string;
-  content_length: number;
-  created_at: string;
-  expires_at?: string | null;
-  url: string;
-}
-
-export interface AppRunRequest {
-  version_id?: string;
-  input: Record<string, any>;
-  group_id?: string;
-  parent_id?: string;
-}
-
-export interface AppRunResponse {
-  [key: string]: any;
 }

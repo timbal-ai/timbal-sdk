@@ -1,13 +1,13 @@
 import type { TimbalConfig, ApiResponse, ApiError } from '../../types';
 import { DEFAULT_CONFIG, ERROR_CODES } from '../../constants';
-import { sleep, buildQueryString, deepMerge } from '../utils';
+import { sleep, buildQueryString } from '../utils';
 
 export class TimbalApiError extends Error {
   public statusCode: number;
   public code?: string;
-  public details?: Record<string, any>;
+  public details?: Record<string, unknown>;
 
-  constructor(message: string, statusCode: number, code?: string, details?: Record<string, any>) {
+  constructor(message: string, statusCode: number, code?: string, details?: Record<string, unknown>) {
     super(message);
     this.name = 'TimbalApiError';
     this.statusCode = statusCode;
@@ -20,12 +20,14 @@ export class ApiClient {
   private config: Required<TimbalConfig>;
 
   constructor(config: TimbalConfig) {
-    this.config = deepMerge(DEFAULT_CONFIG, config) as Required<TimbalConfig>;
-    
-    // Validate that at least one auth method is provided
-    if (!this.config.apiKey && !this.config.authToken) {
-      throw new Error('Authentication required: provide apiKey or authToken');
-    }
+    this.config = {
+      baseUrl: config.baseUrl ?? DEFAULT_CONFIG.baseUrl,
+      timeout: config.timeout ?? DEFAULT_CONFIG.timeout,
+      retryAttempts: config.retryAttempts ?? DEFAULT_CONFIG.retryAttempts,
+      retryDelay: config.retryDelay ?? DEFAULT_CONFIG.retryDelay,
+      apiKey: config.apiKey ?? '',
+      authToken: config.authToken ?? '',
+    };
   }
 
   private async makeRequest<T>(
@@ -33,6 +35,15 @@ export class ApiClient {
     options: RequestInit = {},
     retryCount = 0
   ): Promise<ApiResponse<T>> {
+    // Validate auth at request time (allows factory pattern)
+    if (!this.config.apiKey && !this.config.authToken) {
+      throw new TimbalApiError(
+        'Authentication required: provide apiKey or authToken',
+        0,
+        ERROR_CODES.AUTH_ERROR
+      );
+    }
+
     // Ensure proper URL construction with single slash
     const baseUrl = this.config.baseUrl.endsWith('/')
       ? this.config.baseUrl.slice(0, -1)
@@ -42,13 +53,13 @@ export class ApiClient {
 
     // Build headers - don't set Content-Type by default, let the browser/runtime handle it for FormData
     const headers = new Headers();
-    
+
     // Set authorization header based on available auth method (priority: apiKey > authToken)
     if (this.config.apiKey) {
       headers.set('Authorization', `Bearer ${this.config.apiKey}`);
     } else if (this.config.authToken) {
       headers.set('x-auth-token', this.config.authToken);
-    } 
+    }
 
     // Add custom headers from options
     if (options.headers) {
@@ -134,7 +145,8 @@ export class ApiClient {
 
   private async parseErrorResponse(response: Response): Promise<ApiError> {
     try {
-      const errorData = (await response.json()) as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const errorData = (await response.json()) as Record<string, any>;
       return {
         message: errorData.message || errorData.error || 'Unknown error',
         statusCode: response.status,
@@ -149,35 +161,35 @@ export class ApiClient {
     }
   }
 
-  public async get<T>(endpoint: string, params?: Record<string, any>): Promise<ApiResponse<T>> {
+  public async get<T>(endpoint: string, params?: Record<string, unknown>): Promise<ApiResponse<T>> {
     const queryString = params ? buildQueryString(params) : '';
     return this.makeRequest<T>(`${endpoint}${queryString}`, {
       method: 'GET',
     });
   }
 
-  public async post<T>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  public async post<T>(endpoint: string, data?: unknown): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'POST',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  public async put<T>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  public async put<T>(endpoint: string, data?: unknown): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'PUT',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  public async patch<T>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  public async patch<T>(endpoint: string, data?: unknown): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'PATCH',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
 
-  public async delete<T>(endpoint: string, data?: any): Promise<ApiResponse<T>> {
+  public async delete<T>(endpoint: string, data?: unknown): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'DELETE',
       headers: data
@@ -189,13 +201,10 @@ export class ApiClient {
     });
   }
 
-  // More flexible request methods
-
   public async postFormData<T>(endpoint: string, formData: FormData): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'POST',
       body: formData,
-      // Don't set Content-Type - let browser set it with boundary for multipart/form-data
     });
   }
 
@@ -232,10 +241,6 @@ export class ApiClient {
 
   public async request<T>(endpoint: string, options: RequestInit): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, options);
-  }
-
-  public updateConfig(newConfig: Partial<TimbalConfig>): void {
-    this.config = deepMerge(this.config, newConfig) as Required<TimbalConfig>;
   }
 
   public getConfig(): Required<TimbalConfig> {

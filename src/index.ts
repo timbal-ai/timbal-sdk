@@ -13,14 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-// Main SDK exports
 export * from './lib';
 export * from './types';
 export * from './constants';
 
-// Version
-export const version = '0.1.3';
-
-// Default export
 export { Timbal as default } from './lib/timbal';
