@@ -8,8 +8,7 @@ export interface ClientConfig {
 }
 
 export interface TimbalConfig extends ClientConfig {
-  apiKey?: string;
-  authToken?: string;
+  token?: string;
 }
 
 // ── API ──
@@ -86,6 +85,43 @@ export interface PlatformConfig {
     type: string;
     token: string;
   };
+}
+
+// ── Project ──
+
+export interface WorkforcePreview {
+  id: string;
+  name: string;
+  type: 'agent' | 'workflow';
+  description: string | null;
+  uid: string | null;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  has_ui: boolean;
+  role: string;
+  default_role: string | null;
+  is_public_template: boolean;
+  template_uses: number;
+  publishable_api_key: string;
+  use_platform_iam: boolean;
+  repository_url: string | null;
+  screenshot_url: string | null;
+  created_at: number;
+  updated_at: number;
+  workforce: WorkforcePreview[];
+}
+
+// ── Auth ──
+
+export type OAuthProvider = 'github' | 'google' | 'microsoft';
+
+export interface TokenPair {
+  access_token: string;
+  refresh_token: string;
 }
 
 // ── Messages ──

@@ -46,7 +46,7 @@ function buildPlatformConfig(client: ApiClient): PlatformConfig {
     host: baseUrl,
     auth: {
       type: 'bearer',
-      token: config.apiKey || config.authToken,
+      token: config.token,
     },
   };
 }

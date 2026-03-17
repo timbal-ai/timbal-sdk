@@ -11,7 +11,7 @@ import type { Session } from '../../types';
  * @returns The session object containing user profile and access level.
  *
  * @example
- * const client = timbal.as({ authToken: requestToken })
+ * const client = timbal.as(requestToken)
  * const session = await getSession(client)
  * console.log(session.user_email) // "user@example.com"
  * console.log(session.access_level) // "admin"

@@ -18,7 +18,7 @@ describe('Timbal', () => {
     global.fetch = mockFetch as unknown as typeof global.fetch;
 
     timbal = new Timbal({
-      apiKey: 'test-key',
+      token: 'test-key',
       baseUrl: 'https://api.test.com',
     });
     mockFetch.mockClear();
@@ -32,7 +32,7 @@ describe('Timbal', () => {
     test('should initialize with config', () => {
       const apiClient = timbal.getApiClient();
       const config = apiClient.getConfig();
-      expect(config.apiKey).toBe('test-key');
+      expect(config.token).toBe('test-key');
       expect(config.baseUrl).toBe('https://api.test.com');
     });
 
@@ -46,6 +46,10 @@ describe('Timbal', () => {
       expect(typeof timbal.uploadFile).toBe('function');
       expect(typeof timbal.uploadFileFromBuffer).toBe('function');
       expect(typeof timbal.getSession).toBe('function');
+      expect(typeof timbal.getProject).toBe('function');
+      expect(typeof timbal.getOAuthUrl).toBe('function');
+      expect(typeof timbal.sendMagicLink).toBe('function');
+      expect(typeof timbal.refreshToken).toBe('function');
       expect(typeof timbal.listWorkforces).toBe('function');
       expect(typeof timbal.callWorkforce).toBe('function');
       expect(typeof timbal.streamWorkforce).toBe('function');
@@ -55,42 +59,42 @@ describe('Timbal', () => {
   });
 
   describe('as', () => {
-    test('should create scoped client with auth token', () => {
+    test('should create scoped client with token string', () => {
       const factory = new Timbal({ baseUrl: 'https://api.test.com', timeout: 5000 });
-      const scoped = factory.as({ authToken: 'user-token-123' });
+      const scoped = factory.as('user-token-123');
 
       const config = scoped.getApiClient().getConfig();
-      expect(config.authToken).toBe('user-token-123');
+      expect(config.token).toBe('user-token-123');
       expect(config.baseUrl).toBe('https://api.test.com');
       expect(config.timeout).toBe(5000);
     });
 
-    test('should create scoped client with API key', () => {
+    test('should create scoped client with config object', () => {
       const factory = new Timbal({ baseUrl: 'https://api.test.com' });
-      const scoped = factory.as({ apiKey: 'sk-test-key' });
+      const scoped = factory.as({ token: 'sk-test-key' });
 
       const config = scoped.getApiClient().getConfig();
-      expect(config.apiKey).toBe('sk-test-key');
+      expect(config.token).toBe('sk-test-key');
       expect(config.baseUrl).toBe('https://api.test.com');
     });
 
     test('should not share auth with parent', () => {
       const factory = new Timbal({ baseUrl: 'https://api.test.com' });
-      const scoped = factory.as({ authToken: 'user-token-123' });
+      const scoped = factory.as('user-token-123');
 
       const parentConfig = factory.getApiClient().getConfig();
       const scopedConfig = scoped.getApiClient().getConfig();
-      expect(parentConfig.authToken).toBe('');
-      expect(scopedConfig.authToken).toBe('user-token-123');
+      expect(parentConfig.token).toBe('');
+      expect(scopedConfig.token).toBe('user-token-123');
     });
 
     test('should allow overriding any config', () => {
       const factory = new Timbal({ baseUrl: 'https://api.test.com', timeout: 30000 });
-      const scoped = factory.as({ authToken: 'tok', timeout: 5000 });
+      const scoped = factory.as({ token: 'tok', timeout: 5000 });
 
       const config = scoped.getApiClient().getConfig();
       expect(config.timeout).toBe(5000);
-      expect(config.authToken).toBe('tok');
+      expect(config.token).toBe('tok');
     });
   });
 

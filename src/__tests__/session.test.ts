@@ -97,7 +97,7 @@ describe('Timbal.getSession', () => {
   });
 
   test('should get session through Timbal class', async () => {
-    const timbal = new Timbal({ apiKey: 'test-key', baseUrl: 'https://api.test.com' });
+    const timbal = new Timbal({ token: 'test-key', baseUrl: 'https://api.test.com' });
     const session = await timbal.getSession();
 
     expect(session.user_email).toBe('dberges@timbal.ai');
@@ -106,12 +106,12 @@ describe('Timbal.getSession', () => {
 
   test('should work with scoped client via .as()', async () => {
     const timbal = new Timbal({ baseUrl: 'https://api.test.com' });
-    const client = timbal.as({ authToken: 'user-token' });
+    const client = timbal.as('user-token');
     const session = await client.getSession();
 
     expect(session.user_id).toBe('1');
     const headers = mockFetch.mock.calls[0][1].headers as Headers;
-    expect(headers.get('x-auth-token')).toBe('user-token');
+    expect(headers.get('Authorization')).toBe('Bearer user-token');
   });
 
   test('should throw when no auth provided', async () => {
