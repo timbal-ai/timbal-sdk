@@ -29,6 +29,13 @@ const mockProjectData = {
 describe('getProject', () => {
   const mockApiClient = {
     get: mock(() => Promise.resolve({ data: mockProjectData })),
+    getConfig: () => ({
+      orgId: process.env.TIMBAL_ORG_ID ?? '',
+      projectId: process.env.TIMBAL_PROJECT_ID ?? '',
+      kbId: '',
+      projectEnvId: '',
+      token: '',
+    }),
   } as any;
 
   const originalEnv = { ...process.env };
@@ -45,7 +52,7 @@ describe('getProject', () => {
   });
 
   test('should call correct endpoint with explicit ids', async () => {
-    const project = await getProject(mockApiClient, 'org-1', 'proj-1');
+    const project = await getProject(mockApiClient, { orgId: 'org-1', projectId: 'proj-1' });
 
     expect(mockApiClient.get).toHaveBeenCalledWith('orgs/org-1/projects/proj-1');
     expect(project.id).toBe('proj-1');
@@ -62,15 +69,15 @@ describe('getProject', () => {
   });
 
   test('should throw when orgId is missing', async () => {
-    await expect(getProject(mockApiClient, undefined, 'proj-1')).rejects.toThrow('orgId is required');
+    await expect(getProject(mockApiClient, { projectId: 'proj-1' })).rejects.toThrow('orgId is required');
   });
 
   test('should throw when projectId is missing', async () => {
-    await expect(getProject(mockApiClient, 'org-1')).rejects.toThrow('projectId is required');
+    await expect(getProject(mockApiClient, { orgId: 'org-1' })).rejects.toThrow('projectId is required');
   });
 
   test('should return workforce from workforce field', async () => {
-    const project = await getProject(mockApiClient, 'org-1', 'proj-1');
+    const project = await getProject(mockApiClient, { orgId: 'org-1', projectId: 'proj-1' });
 
     expect(project.workforce).toEqual(mockWorkforce);
     expect(project.workforce).toHaveLength(2);
@@ -84,7 +91,7 @@ describe('getProject', () => {
       data: { ...withoutWorkforce, apps: mockWorkforce },
     });
 
-    const project = await getProject(mockApiClient, 'org-1', 'proj-1');
+    const project = await getProject(mockApiClient, { orgId: 'org-1', projectId: 'proj-1' });
 
     expect(project.workforce).toEqual(mockWorkforce);
   });
@@ -95,7 +102,7 @@ describe('getProject', () => {
       data: { ...mockProjectData, apps: appsData },
     });
 
-    const project = await getProject(mockApiClient, 'org-1', 'proj-1');
+    const project = await getProject(mockApiClient, { orgId: 'org-1', projectId: 'proj-1' });
 
     expect(project.workforce).toEqual(mockWorkforce);
   });
@@ -106,7 +113,7 @@ describe('getProject', () => {
       data: withoutWorkforce,
     });
 
-    const project = await getProject(mockApiClient, 'org-1', 'proj-1');
+    const project = await getProject(mockApiClient, { orgId: 'org-1', projectId: 'proj-1' });
 
     expect(project.workforce).toEqual([]);
   });
@@ -116,7 +123,7 @@ describe('getProject', () => {
       new TimbalApiError('Not Found', 404, 'NOT_FOUND')
     );
 
-    await expect(getProject(mockApiClient, 'org-1', 'proj-1')).rejects.toThrow('Not Found');
+    await expect(getProject(mockApiClient, { orgId: 'org-1', projectId: 'proj-1' })).rejects.toThrow('Not Found');
   });
 });
 
@@ -142,7 +149,7 @@ describe('Timbal.getProject', () => {
 
   test('should get project through Timbal class', async () => {
     const timbal = new Timbal({ token: 'test-key', baseUrl: 'https://api.test.com' });
-    const project = await timbal.getProject('org-1', 'proj-1');
+    const project = await timbal.getProject({ orgId: 'org-1', projectId: 'proj-1' });
 
     expect(project.name).toBe('Test Project');
     expect(mockFetch.mock.calls[0][0]).toBe('https://api.test.com/orgs/org-1/projects/proj-1');

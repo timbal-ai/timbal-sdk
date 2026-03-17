@@ -1,7 +1,7 @@
 import { readdir, readFile } from 'fs/promises';
 import { resolve, join } from 'path';
 import type { ApiClient } from '../api';
-import type { WorkforceContext, WorkforceItem, PlatformConfig } from '../../types';
+import type { PlatformSubject, WorkforceItem, PlatformConfig } from '../../types';
 
 // ── Internal types ──
 
@@ -13,15 +13,19 @@ interface Deployment {
 
 // ── Context resolution ──
 
-function resolveContext(ctx?: WorkforceContext): { orgId: string; projectId: string; projectEnvId?: string } {
-  const orgId = ctx?.orgId ?? process.env.TIMBAL_ORG_ID;
-  const projectId = ctx?.projectId ?? process.env.TIMBAL_PROJECT_ID;
-  const projectEnvId = ctx?.projectEnvId ?? (process.env.TIMBAL_PROJECT_ENV_ID || undefined);
-
-  if (!orgId) throw new Error('orgId is required. Provide it in context or set TIMBAL_ORG_ID env var.');
-  if (!projectId) throw new Error('projectId is required. Provide it in context or set TIMBAL_PROJECT_ID env var.');
+function resolveContext(client: ApiClient, ctx?: PlatformSubject): { orgId?: string; projectId?: string; projectEnvId?: string } {
+  const config = client.getConfig();
+  const orgId = ctx?.orgId || config.orgId || undefined;
+  const projectId = ctx?.projectId || config.projectId || undefined;
+  const projectEnvId = ctx?.projectEnvId || config.projectEnvId || undefined;
 
   return { orgId, projectId, projectEnvId };
+}
+
+function requireRemoteContext(resolved: { orgId?: string; projectId?: string }): { orgId: string; projectId: string } {
+  if (!resolved.orgId) throw new Error('orgId is required. Provide it in context or set TIMBAL_ORG_ID env var.');
+  if (!resolved.projectId) throw new Error('projectId is required. Provide it in context or set TIMBAL_PROJECT_ID env var.');
+  return { orgId: resolved.orgId, projectId: resolved.projectId };
 }
 
 // ── Deployment resolution (internal) ──
@@ -90,18 +94,17 @@ function resolveLocalDeployment(manifestId: string): string | null {
 
 async function resolveEndpoint(
   client: ApiClient,
-  orgId: string,
-  projectId: string,
-  projectEnvId: string | undefined,
+  resolved: { orgId?: string; projectId?: string; projectEnvId?: string },
   manifestId: string,
   path: string
 ): Promise<string | null> {
-  if (!projectEnvId) {
+  if (!resolved.projectEnvId) {
     const base = resolveLocalDeployment(manifestId);
     return base ? `${base}${path}` : null;
   }
 
-  const deployment = await resolveRemoteDeployment(client, orgId, projectId, projectEnvId, manifestId);
+  const { orgId, projectId } = requireRemoteContext(resolved);
+  const deployment = await resolveRemoteDeployment(client, orgId, projectId, resolved.projectEnvId, manifestId);
   return deployment ? `https://${deployment.domain}${path}` : null;
 }
 
@@ -172,21 +175,23 @@ async function listWorkforcesFromManifests(workforceDir?: string): Promise<Workf
  */
 export async function listWorkforces(
   client: ApiClient,
-  ctx?: WorkforceContext,
+  ctx?: PlatformSubject,
   workforceDir?: string
 ): Promise<WorkforceItem[]> {
-  const { orgId, projectId, projectEnvId } = resolveContext(ctx);
+  const resolved = resolveContext(client, ctx);
 
-  if (!projectEnvId) {
+  if (!resolved.projectEnvId) {
     return listWorkforcesFromManifests(workforceDir);
   }
+
+  const { orgId, projectId } = requireRemoteContext(resolved);
 
   try {
     const response = await client.get<{ deployments: Deployment[] }>(
       `orgs/${orgId}/projects/${projectId}/deployments`,
       {
         status: 'running',
-        project_env_id: projectEnvId,
+        project_env_id: resolved.projectEnvId,
       }
     );
 
@@ -236,16 +241,16 @@ export async function callWorkforce(
   client: ApiClient,
   manifestId: string,
   input: Record<string, unknown> = {},
-  ctx?: WorkforceContext,
+  ctx?: PlatformSubject,
   platformConfig?: PlatformConfig
 ): Promise<Response> {
-  const { orgId, projectId, projectEnvId } = resolveContext(ctx);
-  const url = await resolveEndpoint(client, orgId, projectId, projectEnvId, manifestId, '/run');
+  const resolved = resolveContext(client, ctx);
+  const url = await resolveEndpoint(client, resolved, manifestId, '/run');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for manifest: ${manifestId}`);
   }
 
-  const payload = injectPlatformConfig(input, client, projectEnvId, platformConfig);
+  const payload = injectPlatformConfig(input, client, resolved.projectEnvId, platformConfig);
 
   return fetch(url, {
     method: 'POST',
@@ -280,16 +285,16 @@ export async function streamWorkforce(
   client: ApiClient,
   manifestId: string,
   input: Record<string, unknown> = {},
-  ctx?: WorkforceContext,
+  ctx?: PlatformSubject,
   platformConfig?: PlatformConfig
 ): Promise<Response> {
-  const { orgId, projectId, projectEnvId } = resolveContext(ctx);
-  const url = await resolveEndpoint(client, orgId, projectId, projectEnvId, manifestId, '/stream');
+  const resolved = resolveContext(client, ctx);
+  const url = await resolveEndpoint(client, resolved, manifestId, '/stream');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for manifest: ${manifestId}`);
   }
 
-  const payload = injectPlatformConfig(input, client, projectEnvId, platformConfig);
+  const payload = injectPlatformConfig(input, client, resolved.projectEnvId, platformConfig);
 
   return fetch(url, {
     method: 'POST',

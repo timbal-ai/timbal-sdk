@@ -26,6 +26,10 @@ export class ApiClient {
       retryAttempts: config.retryAttempts ?? DEFAULT_CONFIG.retryAttempts,
       retryDelay: config.retryDelay ?? DEFAULT_CONFIG.retryDelay,
       token: config.token ?? '',
+      orgId: config.orgId ?? process.env.TIMBAL_ORG_ID ?? '',
+      projectId: config.projectId ?? process.env.TIMBAL_PROJECT_ID ?? '',
+      projectEnvId: config.projectEnvId ?? process.env.TIMBAL_PROJECT_ENV_ID ?? '',
+      kbId: config.kbId ?? process.env.TIMBAL_KB_ID ?? '',
     };
   }
 

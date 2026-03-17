@@ -9,6 +9,10 @@ export interface ClientConfig {
 
 export interface TimbalConfig extends ClientConfig {
   token?: string;
+  orgId?: string;
+  projectId?: string;
+  projectEnvId?: string;
+  kbId?: string;
 }
 
 // ── API ──
@@ -40,15 +44,19 @@ export interface Session {
   access_level: string;
 }
 
+// ── Context ──
+
+export interface PlatformSubject {
+  orgId?: string;
+  projectId?: string;
+  projectEnvId?: string;
+  kbId?: string;
+}
+
 // ── Query ──
 
 export interface QueryResult {
   [key: string]: unknown;
-}
-
-export interface QueryOptions {
-  orgId?: string;
-  kbId?: string;
 }
 
 // ── Files ──
@@ -63,17 +71,7 @@ export interface File {
   url: string;
 }
 
-export interface FileOptions {
-  orgId?: string;
-}
-
 // ── Workforce ──
-
-export interface WorkforceContext {
-  orgId?: string;
-  projectId?: string;
-  projectEnvId?: string;
-}
 
 export interface WorkforceItem {
   id: string;

@@ -29,6 +29,7 @@ describe('listWorkforces', () => {
         },
       })
     ),
+    getConfig: () => ({ orgId: '', projectId: '', projectEnvId: '', kbId: '', token: '' }),
   } as any;
 
   beforeEach(() => {
