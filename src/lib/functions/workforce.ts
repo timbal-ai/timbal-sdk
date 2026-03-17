@@ -1,5 +1,3 @@
-import { readdir, readFile } from 'fs/promises';
-import { resolve, join } from 'path';
 import type { ApiClient } from '../api';
 import type { PlatformSubject, WorkforceItem, PlatformConfig } from '../../types';
 
@@ -127,27 +125,9 @@ function injectPlatformConfig(
   };
 }
 
-async function listWorkforcesFromManifests(workforceDir?: string): Promise<WorkforceItem[]> {
-  const dir = workforceDir ?? join(process.cwd(), 'workforce');
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const results: WorkforceItem[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      try {
-        const yaml = await readFile(resolve(dir, entry.name, 'timbal.yaml'), 'utf-8');
-        const match = yaml.match(/_id:\s*"([^"]+)"/);
-        if (match?.[1]) results.push({ id: match[1] });
-      } catch {
-        // no timbal.yaml — skip
-      }
-    }
-
-    return results;
-  } catch {
-    return [];
-  }
+function listLocalWorkforces(): WorkforceItem[] {
+  const workforceMap = parseWorkforceEnv();
+  return Array.from(workforceMap.keys()).map(id => ({ id }));
 }
 
 // ── Public functions ──
@@ -176,12 +156,11 @@ async function listWorkforcesFromManifests(workforceDir?: string): Promise<Workf
 export async function listWorkforces(
   client: ApiClient,
   ctx?: PlatformSubject,
-  workforceDir?: string
 ): Promise<WorkforceItem[]> {
   const resolved = resolveContext(client, ctx);
 
   if (!resolved.projectEnvId) {
-    return listWorkforcesFromManifests(workforceDir);
+    return listLocalWorkforces();
   }
 
   const { orgId, projectId } = requireRemoteContext(resolved);
