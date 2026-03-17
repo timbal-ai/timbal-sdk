@@ -36,33 +36,12 @@ describe('ApiClient', () => {
       }
     });
 
-    test('should set Authorization header with apiKey', async () => {
-      const client = new ApiClient({ apiKey: 'my-key', baseUrl: 'https://api.test.com' });
+    test('should set Authorization Bearer header with token', async () => {
+      const client = new ApiClient({ token: 'my-key', baseUrl: 'https://api.test.com' });
       await client.get('/test');
 
       const headers = mockFetch.mock.calls[0][1].headers as Headers;
       expect(headers.get('Authorization')).toBe('Bearer my-key');
-    });
-
-    test('should set x-auth-token header with authToken', async () => {
-      const client = new ApiClient({ authToken: 'my-token', baseUrl: 'https://api.test.com' });
-      await client.get('/test');
-
-      const headers = mockFetch.mock.calls[0][1].headers as Headers;
-      expect(headers.get('x-auth-token')).toBe('my-token');
-    });
-
-    test('should prefer apiKey over authToken when both provided', async () => {
-      const client = new ApiClient({
-        apiKey: 'my-key',
-        authToken: 'my-token',
-        baseUrl: 'https://api.test.com',
-      });
-      await client.get('/test');
-
-      const headers = mockFetch.mock.calls[0][1].headers as Headers;
-      expect(headers.get('Authorization')).toBe('Bearer my-key');
-      expect(headers.get('x-auth-token')).toBeNull();
     });
   });
 
@@ -70,21 +49,21 @@ describe('ApiClient', () => {
 
   describe('URL construction', () => {
     test('should handle baseUrl with trailing slash', async () => {
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com/' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com/' });
       await client.get('/test');
 
       expect(mockFetch.mock.calls[0][0]).toBe('https://api.test.com/test');
     });
 
     test('should handle endpoint without leading slash', async () => {
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
       await client.get('test/path');
 
       expect(mockFetch.mock.calls[0][0]).toBe('https://api.test.com/test/path');
     });
 
     test('should append query string for GET params', async () => {
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
       await client.get('/test', { status: 'running', limit: 10 });
 
       const url = mockFetch.mock.calls[0][0] as string;
@@ -97,7 +76,7 @@ describe('ApiClient', () => {
 
   describe('content type', () => {
     test('should set application/json for string body by default', async () => {
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
       await client.post('/test', { data: 'value' });
 
       const headers = mockFetch.mock.calls[0][1].headers as Headers;
@@ -105,7 +84,7 @@ describe('ApiClient', () => {
     });
 
     test('should not set Content-Type for FormData', async () => {
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
       const formData = new FormData();
       formData.append('file', new Blob(['test']), 'test.txt');
       await client.postFormData('/test', formData);
@@ -115,7 +94,7 @@ describe('ApiClient', () => {
     });
 
     test('should use custom content type for postText', async () => {
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
       await client.postText('/test', 'csv,data', 'text/csv');
 
       const headers = mockFetch.mock.calls[0][1].headers as Headers;
@@ -126,7 +105,7 @@ describe('ApiClient', () => {
   // ── HTTP methods ──
 
   describe('HTTP methods', () => {
-    const client = () => new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+    const client = () => new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
 
     test('GET should use GET method', async () => {
       await client().get('/test');
@@ -172,7 +151,7 @@ describe('ApiClient', () => {
         json: () => Promise.resolve({ message: 'Resource not found', code: 'NOT_FOUND' }),
       });
 
-      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
 
       try {
         await client.get('/missing');
@@ -195,7 +174,7 @@ describe('ApiClient', () => {
       });
 
       const client = new ApiClient({
-        apiKey: 'k',
+        token: 'k',
         baseUrl: 'https://api.test.com',
         retryAttempts: 0,
       });
@@ -227,7 +206,7 @@ describe('ApiClient', () => {
         });
 
       const client = new ApiClient({
-        apiKey: 'k',
+        token: 'k',
         baseUrl: 'https://api.test.com',
         retryAttempts: 3,
         retryDelay: 1,
@@ -246,7 +225,7 @@ describe('ApiClient', () => {
       });
 
       const client = new ApiClient({
-        apiKey: 'k',
+        token: 'k',
         baseUrl: 'https://api.test.com',
         retryAttempts: 3,
         retryDelay: 1,
@@ -265,7 +244,7 @@ describe('ApiClient', () => {
       mockFetch.mockRejectedValue(new TypeError('fetch failed'));
 
       const client = new ApiClient({
-        apiKey: 'k',
+        token: 'k',
         baseUrl: 'https://api.test.com',
         retryAttempts: 2,
         retryDelay: 1,
@@ -289,7 +268,7 @@ describe('ApiClient', () => {
       mockFetch.mockRejectedValue(abortError);
 
       const client = new ApiClient({
-        apiKey: 'k',
+        token: 'k',
         baseUrl: 'https://api.test.com',
         retryAttempts: 1,
         retryDelay: 1,
@@ -312,7 +291,7 @@ describe('ApiClient', () => {
 
   describe('getConfig', () => {
     test('should return config with defaults applied', () => {
-      const client = new ApiClient({ apiKey: 'k' });
+      const client = new ApiClient({ token: 'k' });
       const config = client.getConfig();
 
       expect(config.baseUrl).toBe('https://api.timbal.ai');
@@ -322,7 +301,7 @@ describe('ApiClient', () => {
     });
 
     test('should return a copy (not a reference)', () => {
-      const client = new ApiClient({ apiKey: 'k' });
+      const client = new ApiClient({ token: 'k' });
       const config1 = client.getConfig();
       const config2 = client.getConfig();
 

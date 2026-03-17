@@ -8,6 +8,9 @@ import type {
   WorkforceContext,
   WorkforceItem,
   PlatformConfig,
+  OAuthProvider,
+  TokenPair,
+  Project,
 } from '../types';
 import { ApiClient } from './api';
 import {
@@ -15,6 +18,10 @@ import {
   uploadFile as uploadFileFn,
   uploadFileFromBuffer as uploadFileFromBufferFn,
   getSession as getSessionFn,
+  getProject as getProjectFn,
+  getOAuthUrl as getOAuthUrlFn,
+  sendMagicLink as sendMagicLinkFn,
+  refreshToken as refreshTokenFn,
   listWorkforces as listWorkforcesFn,
   callWorkforce as callWorkforceFn,
   streamWorkforce as streamWorkforceFn,
@@ -24,15 +31,18 @@ import {
 export class Timbal {
   private apiClient: ApiClient;
 
-  constructor(config: TimbalConfig) {
+  constructor(config: TimbalConfig = {}) {
     this.apiClient = new ApiClient(config);
   }
 
   /**
-   * Create a scoped client with overridden config. Cheap to call per-request.
+   * Create a scoped client. Accepts a token string or a config object.
    */
-  as(config: Partial<TimbalConfig>): Timbal {
-    return new Timbal({ ...this.apiClient.getConfig(), ...config });
+  as(tokenOrConfig: string | Partial<TimbalConfig>): Timbal {
+    const override = typeof tokenOrConfig === 'string'
+      ? { token: tokenOrConfig }
+      : tokenOrConfig;
+    return new Timbal({ ...this.apiClient.getConfig(), ...override });
   }
 
   /**
@@ -40,6 +50,26 @@ export class Timbal {
    */
   getApiClient(): ApiClient {
     return this.apiClient;
+  }
+
+  // ── Project ──
+
+  async getProject(orgId?: string, projectId?: string): Promise<Project> {
+    return getProjectFn(this.apiClient, orgId, projectId);
+  }
+
+  // ── Auth ──
+
+  getOAuthUrl(provider: OAuthProvider, redirectUri: string): string {
+    return getOAuthUrlFn(this.apiClient, provider, redirectUri);
+  }
+
+  async sendMagicLink(email: string, redirectUri: string): Promise<void> {
+    return sendMagicLinkFn(this.apiClient, email, redirectUri);
+  }
+
+  async refreshToken(refreshToken: string): Promise<TokenPair> {
+    return refreshTokenFn(this.apiClient, refreshToken);
   }
 
   // ── Session ──

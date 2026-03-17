@@ -25,8 +25,7 @@ export class ApiClient {
       timeout: config.timeout ?? DEFAULT_CONFIG.timeout,
       retryAttempts: config.retryAttempts ?? DEFAULT_CONFIG.retryAttempts,
       retryDelay: config.retryDelay ?? DEFAULT_CONFIG.retryDelay,
-      apiKey: config.apiKey ?? '',
-      authToken: config.authToken ?? '',
+      token: config.token ?? '',
     };
   }
 
@@ -36,9 +35,9 @@ export class ApiClient {
     retryCount = 0
   ): Promise<ApiResponse<T>> {
     // Validate auth at request time (allows factory pattern)
-    if (!this.config.apiKey && !this.config.authToken) {
+    if (!this.config.token) {
       throw new TimbalApiError(
-        'Authentication required: provide apiKey or authToken',
+        'Authentication required: provide a token',
         0,
         ERROR_CODES.AUTH_ERROR
       );
@@ -54,12 +53,7 @@ export class ApiClient {
     // Build headers - don't set Content-Type by default, let the browser/runtime handle it for FormData
     const headers = new Headers();
 
-    // Set authorization header based on available auth method (priority: apiKey > authToken)
-    if (this.config.apiKey) {
-      headers.set('Authorization', `Bearer ${this.config.apiKey}`);
-    } else if (this.config.authToken) {
-      headers.set('x-auth-token', this.config.authToken);
-    }
+    headers.set('Authorization', `Bearer ${this.config.token}`);
 
     // Add custom headers from options
     if (options.headers) {
@@ -87,6 +81,16 @@ export class ApiClient {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
 
+      if (process.env.TIMBAL_DEBUG) {
+        const redactedHeaders: Record<string, string> = {};
+        headers.forEach((v, k) => {
+          redactedHeaders[k] = k.toLowerCase() === 'authorization' || k.toLowerCase() === 'x-auth-token'
+            ? `${v.slice(0, 12)}...`
+            : v;
+        });
+        console.debug(`[timbal-sdk] ${options.method ?? 'GET'} ${url}`, JSON.stringify(redactedHeaders));
+      }
+
       const response = await fetch(url, {
         ...requestOptions,
         signal: controller.signal,
@@ -96,6 +100,9 @@ export class ApiClient {
 
       if (!response.ok) {
         const errorData = await this.parseErrorResponse(response);
+        if (process.env.TIMBAL_DEBUG) {
+          console.debug(`[timbal-sdk] ${response.status} ${url}`, JSON.stringify(errorData));
+        }
         throw new TimbalApiError(
           errorData.message || 'Request failed',
           response.status,

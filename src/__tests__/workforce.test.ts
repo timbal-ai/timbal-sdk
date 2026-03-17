@@ -97,8 +97,7 @@ describe('callWorkforce', () => {
     ),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
-      apiKey: 'test-key',
-      authToken: '',
+      token: 'test-key',
       timeout: 30000,
       retryAttempts: 3,
       retryDelay: 1000,
@@ -223,8 +222,7 @@ describe('deployment caching', () => {
     ),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
-      apiKey: 'test-key',
-      authToken: '',
+      token: 'test-key',
       timeout: 30000,
       retryAttempts: 3,
       retryDelay: 1000,
@@ -278,8 +276,7 @@ describe('streamWorkforce', () => {
     ),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
-      apiKey: 'test-key',
-      authToken: '',
+      token: 'test-key',
       timeout: 30000,
       retryAttempts: 3,
       retryDelay: 1000,
@@ -355,7 +352,7 @@ describe('Timbal workforce wrappers', () => {
     });
     global.fetch = mockFetch as unknown as typeof global.fetch;
 
-    timbal = new Timbal({ apiKey: 'test-key', baseUrl: 'https://api.timbal.ai' });
+    timbal = new Timbal({ token: 'test-key', baseUrl: 'https://api.timbal.ai' });
     clearDeploymentCache();
   });
 
