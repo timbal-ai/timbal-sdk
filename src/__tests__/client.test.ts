@@ -25,6 +25,8 @@ describe('ApiClient', () => {
 
   describe('authentication', () => {
     test('should throw AUTH_ERROR when no credentials provided', async () => {
+      const orig = process.env.TIMBAL_API_KEY;
+      delete process.env.TIMBAL_API_KEY;
       const client = new ApiClient({ baseUrl: 'https://api.test.com' });
 
       try {
@@ -33,6 +35,8 @@ describe('ApiClient', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(TimbalApiError);
         expect((error as TimbalApiError).code).toBe('AUTH_ERROR');
+      } finally {
+        if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
       }
     });
 

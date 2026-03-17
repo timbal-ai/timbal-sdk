@@ -115,8 +115,13 @@ describe('Timbal.getSession', () => {
   });
 
   test('should throw when no auth provided', async () => {
-    const timbal = new Timbal({ baseUrl: 'https://api.test.com' });
-
-    await expect(timbal.getSession()).rejects.toThrow('Authentication required');
+    const orig = process.env.TIMBAL_API_KEY;
+    delete process.env.TIMBAL_API_KEY;
+    try {
+      const timbal = new Timbal({ baseUrl: 'https://api.test.com' });
+      await expect(timbal.getSession()).rejects.toThrow('Authentication required');
+    } finally {
+      if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+    }
   });
 });
