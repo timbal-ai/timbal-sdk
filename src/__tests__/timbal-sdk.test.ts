@@ -1,15 +1,12 @@
 import { test, expect, describe, beforeEach, mock, afterEach } from 'bun:test';
 import { Timbal } from '../lib/timbal';
-import type { TimbalConfig } from '../types';
 
 describe('Timbal', () => {
   let timbal: Timbal;
-  let config: TimbalConfig;
-  let originalFetch: any;
-  let mockFetch: any;
+  let originalFetch: typeof global.fetch;
+  let mockFetch: ReturnType<typeof mock>;
 
   beforeEach(() => {
-    // Store original fetch and create mock
     originalFetch = global.fetch;
     mockFetch = mock(() =>
       Promise.resolve({
@@ -18,61 +15,116 @@ describe('Timbal', () => {
         json: () => Promise.resolve({ status: 'ok' }),
       })
     );
-    global.fetch = mockFetch as any;
+    global.fetch = mockFetch as unknown as typeof global.fetch;
 
-    config = {
+    timbal = new Timbal({
       apiKey: 'test-key',
       baseUrl: 'https://api.test.com',
-    };
-    timbal = new Timbal(config);
+    });
     mockFetch.mockClear();
   });
 
   afterEach(() => {
-    // Restore original fetch
     global.fetch = originalFetch;
   });
 
   describe('initialization', () => {
     test('should initialize with config', () => {
-      const timbalConfig = timbal.getConfig();
-      expect(timbalConfig.apiKey).toBe('test-key');
-      expect(timbalConfig.baseUrl).toBe('https://api.test.com');
+      const apiClient = timbal.getApiClient();
+      const config = apiClient.getConfig();
+      expect(config.apiKey).toBe('test-key');
+      expect(config.baseUrl).toBe('https://api.test.com');
     });
 
-    test('should initialize query methods', () => {
+    test('should initialize without auth (factory mode)', () => {
+      const factory = new Timbal({ baseUrl: 'https://api.test.com' });
+      expect(factory.getApiClient()).toBeDefined();
+    });
+
+    test('should have all expected methods', () => {
       expect(typeof timbal.query).toBe('function');
-      expect(typeof timbal.queryByParams).toBe('function');
+      expect(typeof timbal.uploadFile).toBe('function');
+      expect(typeof timbal.uploadFileFromBuffer).toBe('function');
+      expect(typeof timbal.getSession).toBe('function');
+      expect(typeof timbal.listWorkforces).toBe('function');
+      expect(typeof timbal.callWorkforce).toBe('function');
+      expect(typeof timbal.streamWorkforce).toBe('function');
+      expect(typeof timbal.as).toBe('function');
+      expect(typeof timbal.getApiClient).toBe('function');
     });
   });
 
-  describe('testConnection', () => {
-    test('should return true for successful connection', async () => {
+  describe('as', () => {
+    test('should create scoped client with auth token', () => {
+      const factory = new Timbal({ baseUrl: 'https://api.test.com', timeout: 5000 });
+      const scoped = factory.as({ authToken: 'user-token-123' });
+
+      const config = scoped.getApiClient().getConfig();
+      expect(config.authToken).toBe('user-token-123');
+      expect(config.baseUrl).toBe('https://api.test.com');
+      expect(config.timeout).toBe(5000);
+    });
+
+    test('should create scoped client with API key', () => {
+      const factory = new Timbal({ baseUrl: 'https://api.test.com' });
+      const scoped = factory.as({ apiKey: 'sk-test-key' });
+
+      const config = scoped.getApiClient().getConfig();
+      expect(config.apiKey).toBe('sk-test-key');
+      expect(config.baseUrl).toBe('https://api.test.com');
+    });
+
+    test('should not share auth with parent', () => {
+      const factory = new Timbal({ baseUrl: 'https://api.test.com' });
+      const scoped = factory.as({ authToken: 'user-token-123' });
+
+      const parentConfig = factory.getApiClient().getConfig();
+      const scopedConfig = scoped.getApiClient().getConfig();
+      expect(parentConfig.authToken).toBe('');
+      expect(scopedConfig.authToken).toBe('user-token-123');
+    });
+
+    test('should allow overriding any config', () => {
+      const factory = new Timbal({ baseUrl: 'https://api.test.com', timeout: 30000 });
+      const scoped = factory.as({ authToken: 'tok', timeout: 5000 });
+
+      const config = scoped.getApiClient().getConfig();
+      expect(config.timeout).toBe(5000);
+      expect(config.authToken).toBe('tok');
+    });
+  });
+
+  describe('convenience wrappers', () => {
+    test('query should delegate to query function', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ status: 'healthy' }),
+        json: () => Promise.resolve([{ id: 1 }]),
       });
 
-      const result = await timbal.testConnection();
-      expect(result).toBe(true);
+      const result = await timbal.query('SELECT 1', [], { orgId: 'org1', kbId: 'kb1' });
+      expect(result).toEqual([{ id: 1 }]);
+
+      const url = mockFetch.mock.calls[0][0] as string;
+      expect(url).toBe('https://api.test.com/orgs/org1/kbs/kb1/query');
     });
 
-    test('should return false for failed connection', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('Network error'));
+    test('uploadFile should delegate to uploadFile function', async () => {
+      const tempPath = '/tmp/timbal-test-delegate.txt';
+      await Bun.write(tempPath, 'test');
 
-      const result = await timbal.testConnection();
-      expect(result).toBe(false);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ id: 1, name: 'test.txt', url: 'https://x.com/f' }),
+      });
+
+      const result = await timbal.uploadFile(tempPath, { orgId: 'org1' });
+      expect(result.id).toBe(1);
     });
   });
 
-  describe('configuration', () => {
-    test('should update configuration', () => {
-      timbal.updateConfig({ timeout: 15000 });
-      const config = timbal.getConfig();
-      expect(config.timeout).toBe(15000);
-    });
-
+  describe('getApiClient', () => {
     test('should provide access to API client', () => {
       const apiClient = timbal.getApiClient();
       expect(apiClient).toBeDefined();

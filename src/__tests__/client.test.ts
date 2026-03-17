@@ -1,0 +1,333 @@
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { ApiClient, TimbalApiError } from '../lib/api';
+
+describe('ApiClient', () => {
+  let originalFetch: typeof global.fetch;
+  let mockFetch: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    originalFetch = global.fetch;
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ result: 'ok' }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  // ── Auth ──
+
+  describe('authentication', () => {
+    test('should throw AUTH_ERROR when no credentials provided', async () => {
+      const client = new ApiClient({ baseUrl: 'https://api.test.com' });
+
+      try {
+        await client.get('/test');
+        expect(false).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TimbalApiError);
+        expect((error as TimbalApiError).code).toBe('AUTH_ERROR');
+      }
+    });
+
+    test('should set Authorization header with apiKey', async () => {
+      const client = new ApiClient({ apiKey: 'my-key', baseUrl: 'https://api.test.com' });
+      await client.get('/test');
+
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('Authorization')).toBe('Bearer my-key');
+    });
+
+    test('should set x-auth-token header with authToken', async () => {
+      const client = new ApiClient({ authToken: 'my-token', baseUrl: 'https://api.test.com' });
+      await client.get('/test');
+
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('x-auth-token')).toBe('my-token');
+    });
+
+    test('should prefer apiKey over authToken when both provided', async () => {
+      const client = new ApiClient({
+        apiKey: 'my-key',
+        authToken: 'my-token',
+        baseUrl: 'https://api.test.com',
+      });
+      await client.get('/test');
+
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('Authorization')).toBe('Bearer my-key');
+      expect(headers.get('x-auth-token')).toBeNull();
+    });
+  });
+
+  // ── URL construction ──
+
+  describe('URL construction', () => {
+    test('should handle baseUrl with trailing slash', async () => {
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com/' });
+      await client.get('/test');
+
+      expect(mockFetch.mock.calls[0][0]).toBe('https://api.test.com/test');
+    });
+
+    test('should handle endpoint without leading slash', async () => {
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      await client.get('test/path');
+
+      expect(mockFetch.mock.calls[0][0]).toBe('https://api.test.com/test/path');
+    });
+
+    test('should append query string for GET params', async () => {
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      await client.get('/test', { status: 'running', limit: 10 });
+
+      const url = mockFetch.mock.calls[0][0] as string;
+      expect(url).toContain('status=running');
+      expect(url).toContain('limit=10');
+    });
+  });
+
+  // ── Content-Type ──
+
+  describe('content type', () => {
+    test('should set application/json for string body by default', async () => {
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      await client.post('/test', { data: 'value' });
+
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('Content-Type')).toBe('application/json');
+    });
+
+    test('should not set Content-Type for FormData', async () => {
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      const formData = new FormData();
+      formData.append('file', new Blob(['test']), 'test.txt');
+      await client.postFormData('/test', formData);
+
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('Content-Type')).toBeNull();
+    });
+
+    test('should use custom content type for postText', async () => {
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+      await client.postText('/test', 'csv,data', 'text/csv');
+
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('Content-Type')).toBe('text/csv');
+    });
+  });
+
+  // ── HTTP methods ──
+
+  describe('HTTP methods', () => {
+    const client = () => new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+
+    test('GET should use GET method', async () => {
+      await client().get('/test');
+      expect(mockFetch.mock.calls[0][1].method).toBe('GET');
+    });
+
+    test('POST should use POST method with JSON body', async () => {
+      await client().post('/test', { key: 'value' });
+      expect(mockFetch.mock.calls[0][1].method).toBe('POST');
+      expect(mockFetch.mock.calls[0][1].body).toBe('{"key":"value"}');
+    });
+
+    test('PUT should use PUT method', async () => {
+      await client().put('/test', { key: 'value' });
+      expect(mockFetch.mock.calls[0][1].method).toBe('PUT');
+    });
+
+    test('PATCH should use PATCH method', async () => {
+      await client().patch('/test', { key: 'value' });
+      expect(mockFetch.mock.calls[0][1].method).toBe('PATCH');
+    });
+
+    test('DELETE should use DELETE method', async () => {
+      await client().delete('/test', { cascade: true });
+      expect(mockFetch.mock.calls[0][1].method).toBe('DELETE');
+      expect(mockFetch.mock.calls[0][1].body).toBe('{"cascade":true}');
+    });
+
+    test('POST without body should not include body', async () => {
+      await client().post('/test');
+      expect(mockFetch.mock.calls[0][1].body).toBeUndefined();
+    });
+  });
+
+  // ── Error handling ──
+
+  describe('error handling', () => {
+    test('should throw TimbalApiError on 4xx', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        json: () => Promise.resolve({ message: 'Resource not found', code: 'NOT_FOUND' }),
+      });
+
+      const client = new ApiClient({ apiKey: 'k', baseUrl: 'https://api.test.com' });
+
+      try {
+        await client.get('/missing');
+        expect(false).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TimbalApiError);
+        const err = error as TimbalApiError;
+        expect(err.statusCode).toBe(404);
+        expect(err.message).toBe('Resource not found');
+        expect(err.code).toBe('NOT_FOUND');
+      }
+    });
+
+    test('should handle non-JSON error responses', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 502,
+        statusText: 'Bad Gateway',
+        json: () => Promise.reject(new Error('not json')),
+      });
+
+      const client = new ApiClient({
+        apiKey: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 0,
+      });
+
+      try {
+        await client.get('/test');
+        expect(false).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TimbalApiError);
+        expect((error as TimbalApiError).message).toBe('Bad Gateway');
+      }
+    });
+  });
+
+  // ── Retries ──
+
+  describe('retries', () => {
+    test('should retry on 5xx and eventually succeed', async () => {
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ message: 'Internal Server Error' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ result: 'ok' }),
+        });
+
+      const client = new ApiClient({
+        apiKey: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 3,
+        retryDelay: 1,
+      });
+
+      const result = await client.get('/test');
+      expect(result.data).toEqual({ result: 'ok' });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('should not retry on 4xx', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({ message: 'Bad Request' }),
+      });
+
+      const client = new ApiClient({
+        apiKey: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 3,
+        retryDelay: 1,
+      });
+
+      try {
+        await client.get('/test');
+      } catch {
+        // expected
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('should retry on network error and throw after exhausting retries', async () => {
+      mockFetch.mockRejectedValue(new TypeError('fetch failed'));
+
+      const client = new ApiClient({
+        apiKey: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 2,
+        retryDelay: 1,
+      });
+
+      try {
+        await client.get('/test');
+        expect(false).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TimbalApiError);
+        expect((error as TimbalApiError).code).toBe('NETWORK_ERROR');
+      }
+
+      // 1 initial + 2 retries
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    test('should retry on timeout and throw after exhausting retries', async () => {
+      const abortError = new Error('The operation was aborted');
+      abortError.name = 'AbortError';
+      mockFetch.mockRejectedValue(abortError);
+
+      const client = new ApiClient({
+        apiKey: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 1,
+        retryDelay: 1,
+      });
+
+      try {
+        await client.get('/test');
+        expect(false).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TimbalApiError);
+        expect((error as TimbalApiError).code).toBe('TIMEOUT_ERROR');
+      }
+
+      // 1 initial + 1 retry
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── Config ──
+
+  describe('getConfig', () => {
+    test('should return config with defaults applied', () => {
+      const client = new ApiClient({ apiKey: 'k' });
+      const config = client.getConfig();
+
+      expect(config.baseUrl).toBe('https://api.timbal.ai');
+      expect(config.timeout).toBe(30000);
+      expect(config.retryAttempts).toBe(3);
+      expect(config.retryDelay).toBe(1000);
+    });
+
+    test('should return a copy (not a reference)', () => {
+      const client = new ApiClient({ apiKey: 'k' });
+      const config1 = client.getConfig();
+      const config2 = client.getConfig();
+
+      expect(config1).toEqual(config2);
+      expect(config1).not.toBe(config2);
+    });
+  });
+});
