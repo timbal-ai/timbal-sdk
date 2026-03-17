@@ -15,6 +15,13 @@ const mockFile: File = {
 
 const mockApiClient: ApiClient = {
   postFormData: async () => ({ data: mockFile, success: true, statusCode: 200 }),
+  getConfig: () => ({
+    orgId: process.env.TIMBAL_ORG_ID ?? '',
+    kbId: '',
+    projectId: '',
+    projectEnvId: '',
+    token: '',
+  }),
 } as any;
 
 describe('uploadFile', () => {

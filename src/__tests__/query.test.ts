@@ -3,6 +3,13 @@ import { query } from '../lib/functions/query';
 
 const mockApiClient = {
   post: mock(() => Promise.resolve({ data: [{ count: 5 }] })),
+  getConfig: () => ({
+    orgId: process.env.TIMBAL_ORG_ID ?? '',
+    kbId: process.env.TIMBAL_KB_ID ?? '',
+    projectId: '',
+    projectEnvId: '',
+    token: '',
+  }),
 } as any;
 
 describe('query', () => {

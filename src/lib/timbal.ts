@@ -3,9 +3,7 @@ import type {
   File,
   Session,
   QueryResult,
-  QueryOptions,
-  FileOptions,
-  WorkforceContext,
+  PlatformSubject,
   WorkforceItem,
   PlatformConfig,
   OAuthProvider,
@@ -54,8 +52,8 @@ export class Timbal {
 
   // ── Project ──
 
-  async getProject(orgId?: string, projectId?: string): Promise<Project> {
-    return getProjectFn(this.apiClient, orgId, projectId);
+  async getProject(ctx?: PlatformSubject): Promise<Project> {
+    return getProjectFn(this.apiClient, ctx);
   }
 
   // ── Auth ──
@@ -80,35 +78,35 @@ export class Timbal {
 
   // ── Query ──
 
-  async query(sql: string, params?: unknown[], options?: QueryOptions): Promise<QueryResult[]> {
-    return queryFn(this.apiClient, sql, params, options);
+  async query(sql: string, params?: unknown[], ctx?: PlatformSubject): Promise<QueryResult[]> {
+    return queryFn(this.apiClient, sql, params, ctx);
   }
 
   // ── Files ──
 
-  async uploadFile(filePath: string, options?: FileOptions): Promise<File> {
-    return uploadFileFn(this.apiClient, filePath, options);
+  async uploadFile(filePath: string, ctx?: PlatformSubject): Promise<File> {
+    return uploadFileFn(this.apiClient, filePath, ctx);
   }
 
   async uploadFileFromBuffer(
     data: ArrayBuffer | Uint8Array,
     filename: string,
     contentType?: string,
-    options?: FileOptions
+    ctx?: PlatformSubject
   ): Promise<File> {
-    return uploadFileFromBufferFn(this.apiClient, data, filename, contentType, options);
+    return uploadFileFromBufferFn(this.apiClient, data, filename, contentType, ctx);
   }
 
   // ── Workforce ──
 
-  async listWorkforces(ctx?: WorkforceContext, workforceDir?: string): Promise<WorkforceItem[]> {
+  async listWorkforces(ctx?: PlatformSubject, workforceDir?: string): Promise<WorkforceItem[]> {
     return listWorkforcesFn(this.apiClient, ctx, workforceDir);
   }
 
   async callWorkforce(
     manifestId: string,
     input?: Record<string, unknown>,
-    ctx?: WorkforceContext,
+    ctx?: PlatformSubject,
     platformConfig?: PlatformConfig
   ): Promise<Response> {
     return callWorkforceFn(this.apiClient, manifestId, input, ctx, platformConfig);
@@ -117,7 +115,7 @@ export class Timbal {
   async streamWorkforce(
     manifestId: string,
     input?: Record<string, unknown>,
-    ctx?: WorkforceContext,
+    ctx?: PlatformSubject,
     platformConfig?: PlatformConfig
   ): Promise<Response> {
     return streamWorkforceFn(this.apiClient, manifestId, input, ctx, platformConfig);

@@ -1,5 +1,5 @@
 import type { ApiClient } from '../api';
-import type { Project, WorkforcePreview } from '../../types';
+import type { Project, PlatformSubject, WorkforcePreview } from '../../types';
 
 interface RawProject extends Omit<Project, 'workforce'> {
   workforce?: WorkforcePreview[];
@@ -10,25 +10,23 @@ interface RawProject extends Omit<Project, 'workforce'> {
  * Get project details.
  *
  * @param client - The API client instance.
- * @param orgId - Organization ID. Falls back to TIMBAL_ORG_ID env var.
- * @param projectId - Project ID. Falls back to TIMBAL_PROJECT_ID env var.
+ * @param options - Optional overrides for orgId and projectId. Falls back to client config / env vars.
  * @returns The project object.
  *
  * @example
  * const project = await getProject(client)
- * console.log(project.name)
- * console.log(project.workforce)
+ * const project = await getProject(client, { orgId: "10", projectId: "230" })
  */
 export async function getProject(
   client: ApiClient,
-  orgId?: string,
-  projectId?: string,
+  options?: PlatformSubject,
 ): Promise<Project> {
-  const org = orgId ?? process.env.TIMBAL_ORG_ID;
-  const project = projectId ?? process.env.TIMBAL_PROJECT_ID;
+  const config = client.getConfig();
+  const org = options?.orgId || config.orgId;
+  const project = options?.projectId || config.projectId;
 
-  if (!org) throw new Error('orgId is required. Provide it as an argument or set TIMBAL_ORG_ID env var.');
-  if (!project) throw new Error('projectId is required. Provide it as an argument or set TIMBAL_PROJECT_ID env var.');
+  if (!org) throw new Error('orgId is required. Provide it in options, client config, or set TIMBAL_ORG_ID env var.');
+  if (!project) throw new Error('projectId is required. Provide it in options, client config, or set TIMBAL_PROJECT_ID env var.');
 
   const response = await client.get<RawProject>(`orgs/${org}/projects/${project}`);
   const data = response.data;
