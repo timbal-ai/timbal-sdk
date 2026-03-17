@@ -99,8 +99,8 @@ export class Timbal {
 
   // ── Workforce ──
 
-  async listWorkforces(ctx?: PlatformSubject, workforceDir?: string): Promise<WorkforceItem[]> {
-    return listWorkforcesFn(this.apiClient, ctx, workforceDir);
+  async listWorkforces(ctx?: PlatformSubject): Promise<WorkforceItem[]> {
+    return listWorkforcesFn(this.apiClient, ctx);
   }
 
   async callWorkforce(
