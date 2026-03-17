@@ -79,13 +79,47 @@ describe('Timbal', () => {
     });
 
     test('should not share auth with parent', () => {
-      const factory = new Timbal({ baseUrl: 'https://api.test.com' });
-      const scoped = factory.as('user-token-123');
+      const orig = process.env.TIMBAL_API_KEY;
+      delete process.env.TIMBAL_API_KEY;
+      try {
+        const factory = new Timbal({ baseUrl: 'https://api.test.com' });
+        const scoped = factory.as('user-token-123');
 
-      const parentConfig = factory.getApiClient().getConfig();
-      const scopedConfig = scoped.getApiClient().getConfig();
-      expect(parentConfig.token).toBe('');
-      expect(scopedConfig.token).toBe('user-token-123');
+        const parentConfig = factory.getApiClient().getConfig();
+        const scopedConfig = scoped.getApiClient().getConfig();
+        expect(parentConfig.token).toBe('');
+        expect(scopedConfig.token).toBe('user-token-123');
+      } finally {
+        if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+      }
+    });
+
+    test('should override TIMBAL_API_KEY env var with .as() string', () => {
+      const orig = process.env.TIMBAL_API_KEY;
+      process.env.TIMBAL_API_KEY = 'env-api-key';
+      try {
+        const factory = new Timbal({ baseUrl: 'https://api.test.com' });
+        expect(factory.getApiClient().getConfig().token).toBe('env-api-key');
+
+        const scoped = factory.as('request-token');
+        expect(scoped.getApiClient().getConfig().token).toBe('request-token');
+      } finally {
+        if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        else delete process.env.TIMBAL_API_KEY;
+      }
+    });
+
+    test('should override TIMBAL_API_KEY env var with .as() config object', () => {
+      const orig = process.env.TIMBAL_API_KEY;
+      process.env.TIMBAL_API_KEY = 'env-api-key';
+      try {
+        const factory = new Timbal({ baseUrl: 'https://api.test.com' });
+        const scoped = factory.as({ token: 'override-token' });
+        expect(scoped.getApiClient().getConfig().token).toBe('override-token');
+      } finally {
+        if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        else delete process.env.TIMBAL_API_KEY;
+      }
     });
 
     test('should allow overriding any config', () => {
