@@ -7,7 +7,12 @@ export class TimbalApiError extends Error {
   public code?: string;
   public details?: Record<string, unknown>;
 
-  constructor(message: string, statusCode: number, code?: string, details?: Record<string, unknown>) {
+  constructor(
+    message: string,
+    statusCode: number,
+    code?: string,
+    details?: Record<string, unknown>
+  ) {
     super(message);
     this.name = 'TimbalApiError';
     this.statusCode = statusCode;
@@ -21,7 +26,11 @@ export class ApiClient {
 
   constructor(config: TimbalConfig) {
     this.config = {
-      baseUrl: config.baseUrl ?? DEFAULT_CONFIG.baseUrl,
+      baseUrl:
+        config.baseUrl ??
+        process.env.TIMBAL_BASE_URL ??
+        (process.env.TIMBAL_API_HOST ? `https://${process.env.TIMBAL_API_HOST}` : undefined) ??
+        DEFAULT_CONFIG.baseUrl,
       timeout: config.timeout ?? DEFAULT_CONFIG.timeout,
       retryAttempts: config.retryAttempts ?? DEFAULT_CONFIG.retryAttempts,
       retryDelay: config.retryDelay ?? DEFAULT_CONFIG.retryDelay,
@@ -88,11 +97,15 @@ export class ApiClient {
       if (process.env.TIMBAL_DEBUG) {
         const redactedHeaders: Record<string, string> = {};
         headers.forEach((v, k) => {
-          redactedHeaders[k] = k.toLowerCase() === 'authorization' || k.toLowerCase() === 'x-auth-token'
-            ? `${v.slice(0, 12)}...`
-            : v;
+          redactedHeaders[k] =
+            k.toLowerCase() === 'authorization' || k.toLowerCase() === 'x-auth-token'
+              ? `${v.slice(0, 12)}...`
+              : v;
         });
-        console.debug(`[timbal-sdk] ${options.method ?? 'GET'} ${url}`, JSON.stringify(redactedHeaders));
+        console.debug(
+          `[timbal-sdk] ${options.method ?? 'GET'} ${url}`,
+          JSON.stringify(redactedHeaders)
+        );
       }
 
       const response = await fetch(url, {
