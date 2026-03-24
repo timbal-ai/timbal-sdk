@@ -162,6 +162,57 @@ function listLocalWorkforces(): WorkforceItem[] {
   return Array.from(workforceMap.keys()).map(uid => ({ uid }));
 }
 
+// ── Workforce resolution ──
+
+const workforceCache = new Map<string, WorkforceItem[]>();
+
+async function fetchWorkforceItems(
+  client: ApiClient,
+  resolved: { orgId?: string; projectId?: string }
+): Promise<WorkforceItem[]> {
+  const { orgId, projectId } = requireRemoteContext(resolved);
+  const cacheKey = `${orgId}:${projectId}`;
+  const cached = workforceCache.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const response = await client.get<{ workforce: WorkforceItem[] }>(
+      `orgs/${orgId}/projects/${projectId}`
+    );
+    const items = (response.data.workforce ?? []).map(item => ({
+      id: item.id,
+      uid: item.uid,
+      type: item.type,
+      name: item.name,
+      description: item.description,
+    }));
+    workforceCache.set(cacheKey, items);
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+function findWorkforceItem(items: WorkforceItem[], identifier: string): WorkforceItem | undefined {
+  return items.find(w => w.uid === identifier || w.id === identifier || w.name === identifier);
+}
+
+async function resolveWorkforceIdentifier(
+  client: ApiClient,
+  resolved: { orgId?: string; projectId?: string },
+  identifier: string,
+  field: 'uid' | 'name'
+): Promise<string> {
+  if (isLocalEnvironment()) return identifier;
+
+  const items = await fetchWorkforceItems(client, resolved);
+  const item = findWorkforceItem(items, identifier);
+  if (!item) {
+    throw new Error(`Could not resolve workforce for identifier: ${identifier}`);
+  }
+  return item[field] ?? identifier;
+}
+
 // ── Public functions ──
 
 /**
@@ -194,23 +245,7 @@ export async function listWorkforces(
   }
 
   const resolved = resolveContext(client, ctx);
-  const { orgId, projectId } = requireRemoteContext(resolved);
-
-  try {
-    const response = await client.get<{ workforce: WorkforceItem[] }>(
-      `orgs/${orgId}/projects/${projectId}`
-    );
-
-    return (response.data.workforce ?? []).map(item => ({
-      id: item.id,
-      uid: item.uid,
-      type: item.type,
-      name: item.name,
-      description: item.description,
-    }));
-  } catch {
-    return [];
-  }
+  return fetchWorkforceItems(client, resolved);
 }
 
 /**
@@ -239,7 +274,7 @@ export async function listWorkforces(
  */
 export async function callWorkforce(
   client: ApiClient,
-  manifestId: string,
+  identifier: string,
   input: Record<string, unknown> = {},
   ctx?: PlatformSubject,
   platformConfig?: PlatformConfig
@@ -247,9 +282,10 @@ export async function callWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
+    const name = await resolveWorkforceIdentifier(client, resolved, identifier, 'name');
     const url = buildStudioUrl(client, resolved);
     const context = platformConfig ?? buildPlatformConfig(client);
-    const payload = buildStudioPayload(manifestId, input, { context });
+    const payload = buildStudioPayload(name, input, { context });
     return fetch(url, {
       method: 'POST',
       headers: {
@@ -260,9 +296,10 @@ export async function callWorkforce(
     });
   }
 
-  const url = await resolveEndpoint(client, resolved, manifestId, '/run');
+  const uid = await resolveWorkforceIdentifier(client, resolved, identifier, 'uid');
+  const url = await resolveEndpoint(client, resolved, uid, '/run');
   if (!url) {
-    throw new Error(`Could not resolve workforce deployment for manifest: ${manifestId}`);
+    throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
   }
 
   const payload = injectPlatformConfig(input, client, platformConfig);
@@ -298,7 +335,7 @@ export async function callWorkforce(
  */
 export async function streamWorkforce(
   client: ApiClient,
-  manifestId: string,
+  identifier: string,
   input: Record<string, unknown> = {},
   ctx?: PlatformSubject,
   platformConfig?: PlatformConfig
@@ -306,9 +343,10 @@ export async function streamWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
+    const name = await resolveWorkforceIdentifier(client, resolved, identifier, 'name');
     const url = buildStudioUrl(client, resolved);
     const context = platformConfig ?? buildPlatformConfig(client);
-    const payload = buildStudioPayload(manifestId, input, { stream: true, context });
+    const payload = buildStudioPayload(name, input, { stream: true, context });
     return fetch(url, {
       method: 'POST',
       headers: {
@@ -319,9 +357,10 @@ export async function streamWorkforce(
     });
   }
 
-  const url = await resolveEndpoint(client, resolved, manifestId, '/stream');
+  const uid = await resolveWorkforceIdentifier(client, resolved, identifier, 'uid');
+  const url = await resolveEndpoint(client, resolved, uid, '/stream');
   if (!url) {
-    throw new Error(`Could not resolve workforce deployment for manifest: ${manifestId}`);
+    throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
   }
 
   const payload = injectPlatformConfig(input, client, platformConfig);
@@ -340,4 +379,5 @@ export async function streamWorkforce(
  */
 export function clearDeploymentCache(): void {
   deploymentCache.clear();
+  workforceCache.clear();
 }

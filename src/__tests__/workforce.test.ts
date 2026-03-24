@@ -30,6 +30,7 @@ describe('listWorkforces', () => {
   let originalWorkforceEnv: string | undefined;
 
   beforeEach(() => {
+    clearDeploymentCache();
     mockApiClient.get.mockClear();
     originalStartEnv = process.env.TIMBAL_START_WORKFORCE;
     originalWorkforceEnv = process.env.TIMBAL_WORKFORCE;
@@ -87,18 +88,29 @@ describe('listWorkforces', () => {
 
 // ── callWorkforce ──
 
+const workforceItems = [
+  { id: '361', uid: 'manifest-1', type: 'workflow', name: 'clever-jaguar', description: null },
+  { id: '360', uid: 'manifest-2', type: 'agent', name: 'eager-pelican', description: null },
+];
+
+function mockGetHandler(endpoint: string) {
+  if (endpoint === 'orgs/org1/projects/proj1') {
+    return Promise.resolve({ data: { workforce: workforceItems } });
+  }
+  if (endpoint.includes('/deployments')) {
+    return Promise.resolve({
+      data: { deployments: [{ domain: 'worker.timbal.ai', target: { manifest_id: 'manifest-1' } }] },
+    });
+  }
+  return Promise.resolve({ data: {} });
+}
+
 describe('callWorkforce', () => {
   let originalFetch: typeof global.fetch;
   let mockFetch: ReturnType<typeof mock>;
 
   const mockApiClient = {
-    get: mock(() =>
-      Promise.resolve({
-        data: {
-          deployments: [{ domain: 'worker.timbal.ai', target: { manifest_id: 'manifest-1' } }],
-        },
-      })
-    ),
+    get: mock((endpoint: string) => mockGetHandler(endpoint)),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
       token: 'test-key',
@@ -115,15 +127,29 @@ describe('callWorkforce', () => {
       Promise.resolve(new Response(JSON.stringify({ output: 'hello' }), { status: 200 }))
     );
     global.fetch = mockFetch as unknown as typeof global.fetch;
-    mockApiClient.get.mockClear();
+    mockApiClient.get.mockImplementation((endpoint: string) => mockGetHandler(endpoint));
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
   });
 
-  test('should resolve deployment and call /run', async () => {
+  test('should resolve by uid and call /run', async () => {
     const response = await callWorkforce(mockApiClient, 'manifest-1', { message: 'hi' }, remoteCtx);
+
+    expect(response.status).toBe(200);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://worker.timbal.ai/run');
+  });
+
+  test('should resolve by name and call /run', async () => {
+    const response = await callWorkforce(mockApiClient, 'clever-jaguar', { message: 'hi' }, remoteCtx);
+
+    expect(response.status).toBe(200);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://worker.timbal.ai/run');
+  });
+
+  test('should resolve by id and call /run', async () => {
+    const response = await callWorkforce(mockApiClient, '361', { message: 'hi' }, remoteCtx);
 
     expect(response.status).toBe(200);
     expect(mockFetch.mock.calls[0][0]).toBe('https://worker.timbal.ai/run');
@@ -148,12 +174,10 @@ describe('callWorkforce', () => {
     expect(callBody.context.platform_config).toBeDefined();
   });
 
-  test('should throw when deployment not found', async () => {
-    mockApiClient.get.mockResolvedValueOnce({ data: { deployments: [] } });
-
+  test('should throw when identifier not found', async () => {
     await expect(
       callWorkforce(mockApiClient, 'nonexistent', {}, remoteCtx)
-    ).rejects.toThrow('Could not resolve workforce deployment');
+    ).rejects.toThrow('Could not resolve workforce for identifier: nonexistent');
   });
 
   test('should allow custom platform config', async () => {
@@ -212,20 +236,14 @@ describe('callWorkforce', () => {
   });
 });
 
-// ── Deployment caching ──
+// ── Caching ──
 
-describe('deployment caching', () => {
+describe('caching', () => {
   let originalFetch: typeof global.fetch;
   let mockFetch: ReturnType<typeof mock>;
 
   const mockApiClient = {
-    get: mock(() =>
-      Promise.resolve({
-        data: {
-          deployments: [{ domain: 'worker.timbal.ai', target: { manifest_id: 'manifest-1' } }],
-        },
-      })
-    ),
+    get: mock((endpoint: string) => mockGetHandler(endpoint)),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
       token: 'test-key',
@@ -243,26 +261,33 @@ describe('deployment caching', () => {
     );
     global.fetch = mockFetch as unknown as typeof global.fetch;
     mockApiClient.get.mockClear();
+    mockApiClient.get.mockImplementation((endpoint: string) => mockGetHandler(endpoint));
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
   });
 
-  test('should cache deployment and not call API again', async () => {
+  test('should cache workforce items and deployments across calls', async () => {
     await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
+    const firstCallCount = mockApiClient.get.mock.calls.length;
+
     await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
 
-    expect(mockApiClient.get).toHaveBeenCalledTimes(1);
+    // No additional API calls on second invocation (both caches hit)
+    expect(mockApiClient.get).toHaveBeenCalledTimes(firstCallCount);
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  test('clearDeploymentCache should force re-resolution', async () => {
+  test('clearDeploymentCache should force re-resolution of both caches', async () => {
     await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
+    const firstCallCount = mockApiClient.get.mock.calls.length;
+
     clearDeploymentCache();
     await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
 
-    expect(mockApiClient.get).toHaveBeenCalledTimes(2);
+    // Same number of API calls again after cache clear
+    expect(mockApiClient.get).toHaveBeenCalledTimes(firstCallCount * 2);
   });
 });
 
@@ -273,13 +298,7 @@ describe('streamWorkforce', () => {
   let mockFetch: ReturnType<typeof mock>;
 
   const mockApiClient = {
-    get: mock(() =>
-      Promise.resolve({
-        data: {
-          deployments: [{ domain: 'worker.timbal.ai', target: { manifest_id: 'manifest-1' } }],
-        },
-      })
-    ),
+    get: mock((endpoint: string) => mockGetHandler(endpoint)),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
       token: 'test-key',
@@ -301,26 +320,31 @@ describe('streamWorkforce', () => {
       )
     );
     global.fetch = mockFetch as unknown as typeof global.fetch;
-    mockApiClient.get.mockClear();
+    mockApiClient.get.mockImplementation((endpoint: string) => mockGetHandler(endpoint));
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
   });
 
-  test('should resolve deployment and call /stream', async () => {
+  test('should resolve by uid and call /stream', async () => {
     const response = await streamWorkforce(mockApiClient, 'manifest-1', { message: 'hi' }, remoteCtx);
 
     expect(response.status).toBe(200);
     expect(mockFetch.mock.calls[0][0]).toBe('https://worker.timbal.ai/stream');
   });
 
-  test('should throw when deployment not found', async () => {
-    mockApiClient.get.mockResolvedValueOnce({ data: { deployments: [] } });
+  test('should resolve by name and call /stream', async () => {
+    const response = await streamWorkforce(mockApiClient, 'clever-jaguar', { message: 'hi' }, remoteCtx);
 
+    expect(response.status).toBe(200);
+    expect(mockFetch.mock.calls[0][0]).toBe('https://worker.timbal.ai/stream');
+  });
+
+  test('should throw when identifier not found', async () => {
     await expect(
       streamWorkforce(mockApiClient, 'nonexistent', {}, remoteCtx)
-    ).rejects.toThrow('Could not resolve workforce deployment');
+    ).rejects.toThrow('Could not resolve workforce for identifier: nonexistent');
   });
 
   test('should inject platform config for stream calls', async () => {
@@ -340,7 +364,7 @@ describe('studio mode', () => {
   let originalRev: string | undefined;
 
   const mockApiClient = {
-    get: mock(() => Promise.resolve({ data: {} })),
+    get: mock((endpoint: string) => mockGetHandler(endpoint)),
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
       token: 'test-key',
@@ -357,6 +381,7 @@ describe('studio mode', () => {
       Promise.resolve(new Response(JSON.stringify({ output: 'hello' }), { status: 200 }))
     );
     global.fetch = mockFetch as unknown as typeof global.fetch;
+    mockApiClient.get.mockImplementation((endpoint: string) => mockGetHandler(endpoint));
     originalStudio = process.env.TIMBAL_STUDIO;
     originalRev = process.env.TIMBAL_REV;
     process.env.TIMBAL_STUDIO = '1';
@@ -371,48 +396,63 @@ describe('studio mode', () => {
     else delete process.env.TIMBAL_REV;
   });
 
-  test('callWorkforce should POST codegen test command', async () => {
-    await callWorkforce(mockApiClient, 'my-agent', { prompt: 'hello' }, remoteCtx);
+  test('callWorkforce should resolve name by uid and POST codegen test command', async () => {
+    await callWorkforce(mockApiClient, 'manifest-2', { prompt: 'hello' }, remoteCtx);
 
     expect(mockFetch.mock.calls[0][0]).toBe('https://api.timbal.ai/orgs/org1/projects/proj1/git/codegen');
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.rev).toBe('main');
-    expect(body.workforce).toBe('my-agent');
+    expect(body.workforce).toBe('eager-pelican');
     expect(body.command).toBe('test');
     expect(body.args.input).toEqual({ prompt: 'hello' });
     expect(body.args.stream).toBeUndefined();
     expect(body.args.context).toBeDefined();
   });
 
+  test('callWorkforce should resolve name by id', async () => {
+    await callWorkforce(mockApiClient, '360', { prompt: 'hello' }, remoteCtx);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.workforce).toBe('eager-pelican');
+  });
+
+  test('callWorkforce should pass name through directly', async () => {
+    await callWorkforce(mockApiClient, 'eager-pelican', { prompt: 'hello' }, remoteCtx);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.workforce).toBe('eager-pelican');
+  });
+
   test('streamWorkforce should POST codegen test command with stream flag', async () => {
-    await streamWorkforce(mockApiClient, 'my-agent', { prompt: 'hello' }, remoteCtx);
+    await streamWorkforce(mockApiClient, 'manifest-1', { prompt: 'hello' }, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.command).toBe('test');
     expect(body.args.stream).toBe(true);
     expect(body.args.input).toEqual({ prompt: 'hello' });
+    expect(body.workforce).toBe('clever-jaguar');
   });
 
   test('should use TIMBAL_REV env var for rev', async () => {
     process.env.TIMBAL_REV = 'feature-branch';
 
-    await callWorkforce(mockApiClient, 'my-agent', {}, remoteCtx);
+    await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.rev).toBe('feature-branch');
   });
 
   test('should include Authorization header', async () => {
-    await callWorkforce(mockApiClient, 'my-agent', {}, remoteCtx);
+    await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
 
     const headers = mockFetch.mock.calls[0][1].headers;
     expect(headers.Authorization).toBe('Bearer test-key');
   });
 
-  test('should not call resolveEndpoint in studio mode', async () => {
-    await callWorkforce(mockApiClient, 'my-agent', {}, remoteCtx);
-
-    expect(mockApiClient.get).not.toHaveBeenCalled();
+  test('should throw when identifier not found', async () => {
+    await expect(
+      callWorkforce(mockApiClient, 'nonexistent', {}, remoteCtx)
+    ).rejects.toThrow('Could not resolve workforce for identifier: nonexistent');
   });
 });
 
@@ -426,10 +466,17 @@ describe('Timbal workforce wrappers', () => {
   beforeEach(() => {
     originalFetch = global.fetch;
 
-    let callCount = 0;
-    mockFetch = mock(() => {
-      callCount++;
-      if (callCount === 1) {
+    mockFetch = mock((url: string, opts?: RequestInit) => {
+      // Workforce items fetch (from ApiClient.get -> makeRequest)
+      if (url.endsWith('/orgs//projects/proj1') || url.endsWith('/projects/proj1')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ workforce: workforceItems }),
+        });
+      }
+      // Deployment fetch
+      if (url.includes('/deployments')) {
         return Promise.resolve({
           ok: true,
           status: 200,
@@ -439,6 +486,7 @@ describe('Timbal workforce wrappers', () => {
             }),
         });
       }
+      // Actual workforce call
       return Promise.resolve(new Response(JSON.stringify({ output: 'ok' }), { status: 200 }));
     });
     global.fetch = mockFetch as unknown as typeof global.fetch;
