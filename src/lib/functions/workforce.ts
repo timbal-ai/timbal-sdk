@@ -142,7 +142,7 @@ function buildStudioUrl(client: ApiClient, resolved: { orgId?: string; projectId
 function buildStudioPayload(
   workforceName: string,
   input: Record<string, unknown>,
-  options?: { stream?: boolean; context?: Record<string, unknown> }
+  options?: { stream?: boolean; context?: PlatformConfig | Record<string, unknown> }
 ): Record<string, unknown> {
   const args: Record<string, unknown> = { input };
   if (options?.stream) args.stream = true;
