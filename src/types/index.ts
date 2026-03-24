@@ -74,7 +74,11 @@ export interface File {
 // ── Workforce ──
 
 export interface WorkforceItem {
-  id: string;
+  id?: string;
+  uid: string;
+  type?: string;
+  name?: string;
+  description?: string | null;
 }
 
 export interface PlatformConfig {

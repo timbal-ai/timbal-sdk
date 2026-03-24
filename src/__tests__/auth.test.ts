@@ -210,10 +210,20 @@ describe('Timbal auth methods', () => {
   });
 
   test('getOAuthUrl should use default baseUrl', () => {
-    const timbal = new Timbal({});
-    const url = timbal.getOAuthUrl('google', 'https://myapp.com/cb');
-
-    expect(url).toStartWith('https://api.timbal.ai/oauth/authorize');
+    const savedBaseUrl = process.env.TIMBAL_BASE_URL;
+    const savedApiHost = process.env.TIMBAL_API_HOST;
+    delete process.env.TIMBAL_BASE_URL;
+    delete process.env.TIMBAL_API_HOST;
+    try {
+      const timbal = new Timbal({});
+      const url = timbal.getOAuthUrl('google', 'https://myapp.com/cb');
+      expect(url).toStartWith('https://api.timbal.ai/oauth/authorize');
+    } finally {
+      if (savedBaseUrl !== undefined) process.env.TIMBAL_BASE_URL = savedBaseUrl;
+      else delete process.env.TIMBAL_BASE_URL;
+      if (savedApiHost !== undefined) process.env.TIMBAL_API_HOST = savedApiHost;
+      else delete process.env.TIMBAL_API_HOST;
+    }
   });
 
   test('sendMagicLink should work through Timbal class', async () => {

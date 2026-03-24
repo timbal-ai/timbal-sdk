@@ -295,13 +295,23 @@ describe('ApiClient', () => {
 
   describe('getConfig', () => {
     test('should return config with defaults applied', () => {
-      const client = new ApiClient({ token: 'k' });
-      const config = client.getConfig();
-
-      expect(config.baseUrl).toBe('https://api.timbal.ai');
-      expect(config.timeout).toBe(30000);
-      expect(config.retryAttempts).toBe(3);
-      expect(config.retryDelay).toBe(1000);
+      const savedBaseUrl = process.env.TIMBAL_BASE_URL;
+      const savedApiHost = process.env.TIMBAL_API_HOST;
+      delete process.env.TIMBAL_BASE_URL;
+      delete process.env.TIMBAL_API_HOST;
+      try {
+        const client = new ApiClient({ token: 'k' });
+        const config = client.getConfig();
+        expect(config.baseUrl).toBe('https://api.timbal.ai');
+        expect(config.timeout).toBe(30000);
+        expect(config.retryAttempts).toBe(3);
+        expect(config.retryDelay).toBe(1000);
+      } finally {
+        if (savedBaseUrl !== undefined) process.env.TIMBAL_BASE_URL = savedBaseUrl;
+        else delete process.env.TIMBAL_BASE_URL;
+        if (savedApiHost !== undefined) process.env.TIMBAL_API_HOST = savedApiHost;
+        else delete process.env.TIMBAL_API_HOST;
+      }
     });
 
     test('should return a copy (not a reference)', () => {

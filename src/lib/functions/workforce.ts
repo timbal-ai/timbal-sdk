@@ -96,7 +96,7 @@ async function resolveEndpoint(
   manifestId: string,
   path: string
 ): Promise<string | null> {
-  if (!resolved.projectEnvId) {
+  if (isLocalEnvironment()) {
     const base = resolveLocalDeployment(manifestId);
     return base ? `${base}${path}` : null;
   }
@@ -109,10 +109,9 @@ async function resolveEndpoint(
 function injectPlatformConfig(
   payload: Record<string, unknown>,
   client: ApiClient,
-  projectEnvId: string | undefined,
   platformConfig?: PlatformConfig
 ): Record<string, unknown> {
-  if (!projectEnvId) return payload;
+  if (isLocalEnvironment()) return payload;
 
   const config = platformConfig ?? buildPlatformConfig(client);
   const existingContext = (payload.context && typeof payload.context === 'object') ? payload.context : {};
@@ -125,9 +124,42 @@ function injectPlatformConfig(
   };
 }
 
+function isLocalEnvironment(): boolean {
+  return !!(process.env.TIMBAL_START_WORKFORCE ?? process.env.TIMBAL_WORKFORCE);
+}
+
+function isStudioEnvironment(): boolean {
+  return !!process.env.TIMBAL_STUDIO;
+}
+
+function buildStudioUrl(client: ApiClient, resolved: { orgId?: string; projectId?: string }): string {
+  const { orgId, projectId } = requireRemoteContext(resolved);
+  const config = client.getConfig();
+  const baseUrl = config.baseUrl.endsWith('/') ? config.baseUrl.slice(0, -1) : config.baseUrl;
+  return `${baseUrl}/orgs/${orgId}/projects/${projectId}/git/codegen`;
+}
+
+function buildStudioPayload(
+  workforceName: string,
+  input: Record<string, unknown>,
+  options?: { stream?: boolean; context?: Record<string, unknown> }
+): Record<string, unknown> {
+  const args: Record<string, unknown> = { input };
+  if (options?.stream) args.stream = true;
+  if (options?.context) args.context = options.context;
+  return {
+    rev: process.env.TIMBAL_REV || 'main',
+    workforce: workforceName,
+    command: 'test',
+    args,
+  };
+}
+
+
+
 function listLocalWorkforces(): WorkforceItem[] {
   const workforceMap = parseWorkforceEnv();
-  return Array.from(workforceMap.keys()).map(id => ({ id }));
+  return Array.from(workforceMap.keys()).map(uid => ({ uid }));
 }
 
 // ── Public functions ──
@@ -157,36 +189,25 @@ export async function listWorkforces(
   client: ApiClient,
   ctx?: PlatformSubject,
 ): Promise<WorkforceItem[]> {
-  const resolved = resolveContext(client, ctx);
-
-  if (!resolved.projectEnvId) {
+  if (isLocalEnvironment()) {
     return listLocalWorkforces();
   }
 
+  const resolved = resolveContext(client, ctx);
   const { orgId, projectId } = requireRemoteContext(resolved);
 
   try {
-    const response = await client.get<{ deployments: Deployment[] }>(
-      `orgs/${orgId}/projects/${projectId}/deployments`,
-      {
-        status: 'running',
-        project_env_id: resolved.projectEnvId,
-      }
+    const response = await client.get<{ workforce: WorkforceItem[] }>(
+      `orgs/${orgId}/projects/${projectId}`
     );
 
-    const deployments = response.data.deployments ?? [];
-    const seen = new Set<string>();
-    const results: WorkforceItem[] = [];
-
-    for (const d of deployments) {
-      const id = d.target?.manifest_id;
-      if (id && !seen.has(id)) {
-        seen.add(id);
-        results.push({ id });
-      }
-    }
-
-    return results;
+    return (response.data.workforce ?? []).map(item => ({
+      id: item.id,
+      uid: item.uid,
+      type: item.type,
+      name: item.name,
+      description: item.description,
+    }));
   } catch {
     return [];
   }
@@ -224,12 +245,27 @@ export async function callWorkforce(
   platformConfig?: PlatformConfig
 ): Promise<Response> {
   const resolved = resolveContext(client, ctx);
+
+  if (isStudioEnvironment()) {
+    const url = buildStudioUrl(client, resolved);
+    const context = platformConfig ?? buildPlatformConfig(client);
+    const payload = buildStudioPayload(manifestId, input, { context });
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${client.getConfig().token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
   const url = await resolveEndpoint(client, resolved, manifestId, '/run');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for manifest: ${manifestId}`);
   }
 
-  const payload = injectPlatformConfig(input, client, resolved.projectEnvId, platformConfig);
+  const payload = injectPlatformConfig(input, client, platformConfig);
 
   return fetch(url, {
     method: 'POST',
@@ -268,12 +304,27 @@ export async function streamWorkforce(
   platformConfig?: PlatformConfig
 ): Promise<Response> {
   const resolved = resolveContext(client, ctx);
+
+  if (isStudioEnvironment()) {
+    const url = buildStudioUrl(client, resolved);
+    const context = platformConfig ?? buildPlatformConfig(client);
+    const payload = buildStudioPayload(manifestId, input, { stream: true, context });
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${client.getConfig().token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
   const url = await resolveEndpoint(client, resolved, manifestId, '/stream');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for manifest: ${manifestId}`);
   }
 
-  const payload = injectPlatformConfig(input, client, resolved.projectEnvId, platformConfig);
+  const payload = injectPlatformConfig(input, client, platformConfig);
 
   return fetch(url, {
     method: 'POST',
