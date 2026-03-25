@@ -139,14 +139,31 @@ function buildStudioUrl(client: ApiClient, resolved: { orgId?: string; projectId
   return `${baseUrl}/orgs/${orgId}/projects/${projectId}/git/codegen`;
 }
 
+interface StudioPayloadOptions {
+  stream?: boolean;
+  platformConfig?: PlatformConfig | Record<string, unknown>;
+  subject?: { org_id: string; app_id: string };
+}
+
 function buildStudioPayload(
   workforceName: string,
   input: Record<string, unknown>,
-  options?: { stream?: boolean; context?: PlatformConfig | Record<string, unknown> }
+  options?: StudioPayloadOptions
 ): Record<string, unknown> {
   const args: Record<string, unknown> = { input };
   if (options?.stream) args.stream = true;
-  if (options?.context) args.context = options.context;
+
+  const context: Record<string, unknown> = {};
+  if (options?.platformConfig) {
+    Object.assign(context, options.platformConfig);
+  }
+  if (options?.subject) {
+    context.subject = options.subject;
+  }
+  if (Object.keys(context).length > 0) {
+    args.context = context;
+  }
+
   return {
     rev: process.env.TIMBAL_REV || 'main',
     workforce: workforceName,
@@ -197,6 +214,19 @@ function findWorkforceItem(items: WorkforceItem[], identifier: string): Workforc
   return items.find(w => w.uid === identifier || w.id === identifier || w.name === identifier);
 }
 
+async function resolveWorkforceItem(
+  client: ApiClient,
+  resolved: { orgId?: string; projectId?: string },
+  identifier: string,
+): Promise<WorkforceItem> {
+  const items = await fetchWorkforceItems(client, resolved);
+  const item = findWorkforceItem(items, identifier);
+  if (!item) {
+    throw new Error(`Could not resolve workforce for identifier: ${identifier}`);
+  }
+  return item;
+}
+
 async function resolveWorkforceIdentifier(
   client: ApiClient,
   resolved: { orgId?: string; projectId?: string },
@@ -205,11 +235,7 @@ async function resolveWorkforceIdentifier(
 ): Promise<string> {
   if (isLocalEnvironment()) return identifier;
 
-  const items = await fetchWorkforceItems(client, resolved);
-  const item = findWorkforceItem(items, identifier);
-  if (!item) {
-    throw new Error(`Could not resolve workforce for identifier: ${identifier}`);
-  }
+  const item = await resolveWorkforceItem(client, resolved, identifier);
   return item[field] ?? identifier;
 }
 
@@ -282,10 +308,13 @@ export async function callWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
-    const name = await resolveWorkforceIdentifier(client, resolved, identifier, 'name');
+    const item = await resolveWorkforceItem(client, resolved, identifier);
+    const { orgId } = requireRemoteContext(resolved);
     const url = buildStudioUrl(client, resolved);
-    const context = platformConfig ?? buildPlatformConfig(client);
-    const payload = buildStudioPayload(name, input, { context });
+    const payload = buildStudioPayload(item.name!, input, {
+      platformConfig: platformConfig ?? buildPlatformConfig(client),
+      subject: { org_id: orgId, app_id: item.id! },
+    });
     return fetch(url, {
       method: 'POST',
       headers: {
@@ -343,10 +372,14 @@ export async function streamWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
-    const name = await resolveWorkforceIdentifier(client, resolved, identifier, 'name');
+    const item = await resolveWorkforceItem(client, resolved, identifier);
+    const { orgId } = requireRemoteContext(resolved);
     const url = buildStudioUrl(client, resolved);
-    const context = platformConfig ?? buildPlatformConfig(client);
-    const payload = buildStudioPayload(name, input, { stream: true, context });
+    const payload = buildStudioPayload(item.name!, input, {
+      stream: true,
+      platformConfig: platformConfig ?? buildPlatformConfig(client),
+      subject: { org_id: orgId, app_id: item.id! },
+    });
     return fetch(url, {
       method: 'POST',
       headers: {
