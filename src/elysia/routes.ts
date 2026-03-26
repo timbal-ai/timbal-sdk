@@ -5,6 +5,7 @@ import type { TimbalAuthOptions } from '../auth/types';
 import { getCallbackUrl, getPrefix } from '../auth/helpers';
 import { renderLoginPage } from '../auth/templates/login';
 import { renderCallbackPage } from '../auth/templates/callback';
+import { setAuthCookie, clearAuthCookie } from './middleware';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createAuthRoutes(
@@ -72,9 +73,11 @@ export function createAuthRoutes(
     )
     .post(
       '/set-token',
-      async ({ body }) => {
+      async ({ body, cookie }) => {
         try {
           const session = await timbal.as(body.access_token).getSession();
+          // Set cookie for browser navigations (docs, api-spec)
+          setAuthCookie(cookie, body.access_token);
           return { success: true, user: session };
         } catch {
           return new Response(JSON.stringify({ error: 'Invalid token' }), {
@@ -113,15 +116,17 @@ export function createAuthRoutes(
     )
     .post(
       '/refresh',
-      async ({ body }) => {
+      async ({ body, cookie }) => {
         try {
           const tokens = await timbal.refreshToken(body.refresh_token);
+          setAuthCookie(cookie, tokens.access_token);
           return {
             success: true,
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token || body.refresh_token,
           };
         } catch {
+          clearAuthCookie(cookie);
           return new Response(JSON.stringify({ error: 'Refresh failed' }), {
             status: 401,
             headers: { 'Content-Type': 'application/json' },
@@ -135,7 +140,8 @@ export function createAuthRoutes(
     )
     .post(
       '/logout',
-      () => {
+      ({ cookie }) => {
+        clearAuthCookie(cookie);
         return { success: true };
       },
       { detail: { hide: true } },
