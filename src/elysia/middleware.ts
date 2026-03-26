@@ -30,7 +30,15 @@ export function clearAuthCookie(
   options: TimbalAuthOptions = {},
 ) {
   const opts = buildCookieOptions(options);
-  cookie[opts.name]?.remove();
+  // Must set the same attributes (path, secure, sameSite) for the browser to match and clear
+  cookie[opts.name]?.set({
+    value: '',
+    httpOnly: opts.httpOnly,
+    secure: opts.secure,
+    sameSite: opts.sameSite,
+    path: opts.path,
+    maxAge: 0,
+  });
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
