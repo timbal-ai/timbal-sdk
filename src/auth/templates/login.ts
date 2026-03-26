@@ -747,14 +747,15 @@ export function renderLoginPage(prefix: string): string {
                 urlParams.get("redirect_uri") || window.location.href;
             const baseUrl = window.location.origin + "${prefix}";
 
-            // Persist return_to so the callback redirects to the right place.
-            // Always sync: set when present, clear when absent so stale
-            // values from a previous flow don't leak into this one.
+            // Persist return_to as a short-lived cookie so it survives
+            // the OAuth redirect chain (login → provider → callback).
+            // Cookies are more reliable than sessionStorage here because
+            // they persist across navigations regardless of origin/tab.
             const returnTo = urlParams.get("return_to");
             if (returnTo) {
-                sessionStorage.setItem("timbal_return_to", returnTo);
+                document.cookie = "timbal_return_to=" + encodeURIComponent(returnTo) + "; path=/; max-age=600; SameSite=Lax";
             } else {
-                sessionStorage.removeItem("timbal_return_to");
+                document.cookie = "timbal_return_to=; path=/; max-age=0";
             }
 
 
