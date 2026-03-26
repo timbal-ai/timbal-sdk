@@ -747,16 +747,10 @@ export function renderLoginPage(prefix: string): string {
                 urlParams.get("redirect_uri") || window.location.href;
             const baseUrl = window.location.origin + "${prefix}";
 
-            // Remember where the user came from so the callback can redirect back
-            // Uses referrer (set by the 302 redirect from the auth middleware)
-            if (document.referrer) {
-                try {
-                    const ref = new URL(document.referrer);
-                    if (ref.origin === window.location.origin && ref.pathname !== window.location.pathname) {
-                        sessionStorage.setItem("timbal_return_to", ref.pathname);
-                    }
-                } catch {}
-            }
+            // Persist return_to so the callback redirects to the right place
+            const returnTo = urlParams.get("return_to");
+            if (returnTo) sessionStorage.setItem("timbal_return_to", returnTo);
+
 
             const githubBtn = document.getElementById("github-btn");
             const googleBtn = document.getElementById("google-btn");
