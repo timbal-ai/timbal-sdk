@@ -193,10 +193,11 @@ async function fetchWorkforceItems(
   if (cached) return cached;
 
   try {
-    const response = await client.get<{ workforce: WorkforceItem[] }>(
+    const response = await client.get<{ workforce?: WorkforceItem[]; apps?: WorkforceItem[] }>(
       `orgs/${orgId}/projects/${projectId}`
     );
-    const items = (response.data.workforce ?? []).map(item => ({
+    const rawItems = response.data.workforce ?? response.data.apps ?? [];
+    const items = rawItems.map(item => ({
       id: item.id,
       uid: item.uid,
       type: item.type,

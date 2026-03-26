@@ -102,7 +102,7 @@ List running workforce components:
 
 ```typescript
 const workforces = await timbal.listWorkforces();
-// [{ id: "my-agent" }, { id: "my-workflow" }]
+// [{ id, uid, type: "agent", name: "my-agent", description }, ...]
 ```
 
 Call a workforce component:
@@ -156,6 +156,63 @@ Refresh an access token:
 const tokens = await timbal.refreshToken("refresh-token");
 // { access_token, refresh_token }
 ```
+
+## Elysia Auth Plugin
+
+Drop-in authentication for [Elysia](https://elysiajs.com) applications. Adds login pages, OAuth, magic link, token refresh, cookie management, and route guarding with a single line:
+
+```typescript
+import { Elysia } from "elysia";
+import { timbalAuth } from "@timbal-ai/timbal-sdk/elysia";
+
+const app = new Elysia()
+  .use(timbalAuth())
+  .get("/", () => "Hello!")
+  .listen(3000);
+```
+
+This registers:
+- `GET /auth/login` — built-in login page with OAuth + magic link
+- `GET /auth/:provider` — OAuth redirect (github, google, microsoft)
+- `GET /auth/callback` — OAuth callback handler
+- `POST /auth/set-token` — validate token and set httpOnly cookie
+- `POST /auth/magic-link` — send passwordless login email
+- `POST /auth/refresh` — refresh access token
+- `POST /auth/logout` — clear cookie and redirect
+
+All other routes are protected automatically. The middleware injects `token` and `timbal` (a user-scoped SDK instance) into every route handler:
+
+```typescript
+app.get("/me", ({ timbal }) => timbal.getSession());
+```
+
+### Options
+
+```typescript
+app.use(timbalAuth({
+  afterLoginRedirect: "/",           // where to go after login (default: "/")
+  afterLogoutRedirect: "/auth/login", // where to go after logout
+  publicPaths: ["/webhook"],          // extra paths that skip auth
+  cookieName: "timbal_access_token",  // cookie name
+  cookieMaxAge: 3600,                 // cookie TTL in seconds (1 hour)
+}));
+```
+
+### Custom Login Page
+
+```typescript
+// Use your own HTML file (supports {{PREFIX}} placeholder)
+app.use(timbalAuth({ loginPage: "./my-login.html" }));
+
+// Or disable built-in pages entirely and handle yourself
+app.use(timbalAuth({ loginPage: false }));
+```
+
+### Local Development
+
+When `TIMBAL_PROJECT_ID` is not set, auth is bypassed entirely — all routes are accessible without login.
+
+Requires `elysia` as a peer dependency.
 
 ## Error Handling
 
