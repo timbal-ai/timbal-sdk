@@ -62,6 +62,7 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
             function showError(code) {
                 localStorage.removeItem("timbal_project_access_token");
                 localStorage.removeItem("timbal_project_refresh_token");
+                sessionStorage.removeItem("timbal_return_to");
                 window.location.replace(
                     "${prefix}/auth/login?error=" + (code || "auth_failed"),
                 );
