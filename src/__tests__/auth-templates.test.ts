@@ -64,9 +64,9 @@ describe('renderCallbackPage', () => {
     expect(html).toContain('/dashboard');
   });
 
-  test('default redirect to /', () => {
+  test('default redirect to / when no return_to saved', () => {
     const html = renderCallbackPage('', '/');
-    expect(html).toContain('returnTo || "/"');
+    expect(html).toContain('savedReturn || "/"');
   });
 
   test('does not contain unresolved template placeholders', () => {

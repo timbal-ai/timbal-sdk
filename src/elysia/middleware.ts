@@ -61,7 +61,7 @@ export function createAuthMiddleware(
           clearAuthCookie(cookie, options);
           const prefix = getPrefix(path);
           set.status = 302;
-          set.headers = { Location: `${prefix}/auth/login` };
+          set.headers = { Location: `${prefix}/auth/login?return_to=${encodeURIComponent(path)}` };
           return;
         }
 

@@ -90,10 +90,10 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
                     })
                         .then(async (res) => {
                             if (res.ok) {
-                                // Check if there's a saved return_to from the login page
-                                const returnTo = sessionStorage.getItem("timbal_return_to");
+                                // Redirect: check sessionStorage first, then fall back to /
+                                const savedReturn = sessionStorage.getItem("timbal_return_to");
                                 sessionStorage.removeItem("timbal_return_to");
-                                window.location.replace(returnTo || "${afterLoginRedirect}");
+                                window.location.replace(savedReturn || "${afterLoginRedirect}");
                             } else if (res.status === 401) {
                                 showError("invalid_token");
                             } else {
