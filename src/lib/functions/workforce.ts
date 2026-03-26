@@ -5,7 +5,7 @@ import type { PlatformSubject, WorkforceItem, PlatformConfig } from '../../types
 
 interface Deployment {
   domain: string;
-  target?: { manifest_id?: string };
+  target?: { id?: number; manifest_id?: string | null; uid?: string | null; name?: string | null };
   [key: string]: unknown;
 }
 
@@ -29,6 +29,7 @@ function requireRemoteContext(resolved: { orgId?: string; projectId?: string }):
 // ── Deployment resolution (internal) ──
 
 const deploymentCache = new Map<string, Deployment>();
+const deploymentsListCache = new Map<string, Deployment[]>();
 
 function parseWorkforceEnv(): Map<string, number> {
   const raw = process.env.TIMBAL_START_WORKFORCE ?? process.env.TIMBAL_WORKFORCE;
@@ -58,30 +59,41 @@ async function resolveRemoteDeployment(
   orgId: string,
   projectId: string,
   projectEnvId: string | undefined,
-  manifestId: string
+  item: WorkforceItem
 ): Promise<Deployment | null> {
-  const cacheKey = `${orgId}:${projectId}:${manifestId}`;
-  const cached = deploymentCache.get(cacheKey);
+  const itemCacheKey = `${orgId}:${projectId}:${item.id ?? item.uid}`;
+  const cached = deploymentCache.get(itemCacheKey);
   if (cached) return cached;
 
-  try {
-    const response = await client.get<{ deployments: Deployment[] }>(
-      `orgs/${orgId}/projects/${projectId}/deployments`,
-      {
-        status: 'running',
-        project_env_id: projectEnvId,
-        manifest_id: manifestId,
-      }
-    );
+  const listCacheKey = `${orgId}:${projectId}:${projectEnvId}`;
+  let deployments = deploymentsListCache.get(listCacheKey);
 
-    const deployment = (response.data.deployments ?? [])[0];
-    if (!deployment?.domain) return null;
-
-    deploymentCache.set(cacheKey, deployment);
-    return deployment;
-  } catch {
-    return null;
+  if (!deployments) {
+    try {
+      const response = await client.get<{ deployments: Deployment[] }>(
+        `orgs/${orgId}/projects/${projectId}/deployments`,
+        { status: 'running', project_env_id: projectEnvId }
+      );
+      deployments = response.data.deployments ?? [];
+      deploymentsListCache.set(listCacheKey, deployments);
+    } catch {
+      return null;
+    }
   }
+
+  const deployment = deployments.find(d => {
+    if (!d.target) return false;
+    const targetUid = d.target.uid ?? d.target.manifest_id;
+    if (item.id && d.target.id != null && String(d.target.id) === String(item.id)) return true;
+    if (item.uid && targetUid != null && String(targetUid) === String(item.uid)) return true;
+    if (item.name && d.target.name != null && String(d.target.name) === String(item.name)) return true;
+    return false;
+  });
+
+  if (!deployment?.domain) return null;
+
+  deploymentCache.set(itemCacheKey, deployment);
+  return deployment;
 }
 
 function resolveLocalDeployment(manifestId: string): string | null {
@@ -93,16 +105,17 @@ function resolveLocalDeployment(manifestId: string): string | null {
 async function resolveEndpoint(
   client: ApiClient,
   resolved: { orgId?: string; projectId?: string; projectEnvId?: string },
-  manifestId: string,
+  item: WorkforceItem,
   path: string
 ): Promise<string | null> {
   if (isLocalEnvironment()) {
-    const base = resolveLocalDeployment(manifestId);
+    const key = item.uid ?? item.name ?? item.id;
+    const base = key ? resolveLocalDeployment(key) : null;
     return base ? `${base}${path}` : null;
   }
 
   const { orgId, projectId } = requireRemoteContext(resolved);
-  const deployment = await resolveRemoteDeployment(client, orgId, projectId, resolved.projectEnvId, manifestId);
+  const deployment = await resolveRemoteDeployment(client, orgId, projectId, resolved.projectEnvId, item);
   return deployment ? `https://${deployment.domain}${path}` : null;
 }
 
@@ -228,16 +241,6 @@ async function resolveWorkforceItem(
   return item;
 }
 
-async function resolveWorkforceIdentifier(
-  client: ApiClient,
-  resolved: { orgId?: string; projectId?: string },
-  identifier: string,
-): Promise<string> {
-  if (isLocalEnvironment()) return identifier;
-
-  const item = await resolveWorkforceItem(client, resolved, identifier);
-  return item.id ?? item.uid ?? item.name ?? identifier;
-}
 
 // ── Public functions ──
 
@@ -325,8 +328,10 @@ export async function callWorkforce(
     });
   }
 
-  const uid = await resolveWorkforceIdentifier(client, resolved, identifier);
-  const url = await resolveEndpoint(client, resolved, uid, '/run');
+  const item = isLocalEnvironment()
+    ? { uid: identifier, name: identifier, id: identifier }
+    : await resolveWorkforceItem(client, resolved, identifier);
+  const url = await resolveEndpoint(client, resolved, item, '/run');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
   }
@@ -390,8 +395,8 @@ export async function streamWorkforce(
     });
   }
 
-  const uid = await resolveWorkforceIdentifier(client, resolved, identifier);
-  const url = await resolveEndpoint(client, resolved, uid, '/stream');
+  const item = await resolveWorkforceItem(client, resolved, identifier);
+  const url = await resolveEndpoint(client, resolved, item, '/stream');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
   }
@@ -412,5 +417,6 @@ export async function streamWorkforce(
  */
 export function clearDeploymentCache(): void {
   deploymentCache.clear();
+  deploymentsListCache.clear();
   workforceCache.clear();
 }
