@@ -85,7 +85,7 @@ describe('isPublicPath', () => {
 describe('buildCookieOptions', () => {
   test('returns sensible defaults', () => {
     const opts = buildCookieOptions();
-    expect(opts.name).toBe('timbal_access_token');
+    expect(opts.name).toBe('timbal_project_access_token');
     expect(opts.httpOnly).toBe(true);
     expect(opts.sameSite).toBe('lax');
     expect(opts.maxAge).toBe(3600);

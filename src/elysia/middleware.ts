@@ -30,7 +30,6 @@ export function clearAuthCookie(
   options: TimbalAuthOptions = {},
 ) {
   const opts = buildCookieOptions(options);
-  // Must set the same attributes (path, secure, sameSite) for the browser to match and clear
   cookie[opts.name]?.set({
     value: '',
     httpOnly: opts.httpOnly,
