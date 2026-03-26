@@ -139,14 +139,9 @@ export function createAuthRoutes(
     )
     .post(
       '/logout',
-      ({ cookie, path }) => {
+      ({ cookie }) => {
         clearAuthCookie(cookie, options);
-        const prefix = getPrefix(path);
-        const redirect = `${prefix}${afterLogoutRedirect}`;
-        return new Response(null, {
-          status: 302,
-          headers: { Location: redirect },
-        });
+        return { success: true };
       },
       { detail: { hide: true } },
     );
