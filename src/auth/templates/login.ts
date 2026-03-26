@@ -1063,8 +1063,10 @@ export function renderLoginPage(prefix: string): string {
                 }
 
                 window.addEventListener("resize", buildGrid);
-                buildGrid();
-                animationId = requestAnimationFrame(draw);
+                window.addEventListener("load", function () {
+                    buildGrid();
+                    animationId = requestAnimationFrame(draw);
+                });
             })();
         </script>
     </body>
