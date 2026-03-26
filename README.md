@@ -102,10 +102,10 @@ List running workforce components:
 
 ```typescript
 const workforces = await timbal.listWorkforces();
-// [{ id, uid, type: "agent", name: "my-agent", description }, ...]
+// [{ id, uid?, type: "agent", name: "my-agent", description }, ...]
 ```
 
-Call a workforce component:
+Call a workforce component — accepts `id`, `uid`, or `name` as identifier:
 
 ```typescript
 const response = await timbal.callWorkforce("my-agent", { message: "Hello!" });
