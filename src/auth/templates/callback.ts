@@ -60,7 +60,7 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
 
         <script>
             function showError(code) {
-                localStorage.removeItem("refresh_token");
+                localStorage.removeItem("timbal_project_refresh_token");
                 window.location.replace(
                     "${prefix}/auth/login?error=" + (code || "auth_failed"),
                 );
@@ -79,7 +79,7 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
                     showError("no_tokens");
                 } else {
                     // Store refresh token in localStorage (never in cookies)
-                    localStorage.setItem("refresh_token", refresh_token);
+                    localStorage.setItem("timbal_project_refresh_token", refresh_token);
 
                     // Send only access token to server for cookie
                     fetch("${prefix}/auth/set-token", {

@@ -84,7 +84,7 @@ export async function resolveTokenFromRequest(
  */
 export function buildCookieOptions(options: TimbalAuthOptions = {}) {
   return {
-    name: options.cookieName ?? 'timbal_access_token',
+    name: options.cookieName ?? 'timbal_project_access_token',
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax' as const,
