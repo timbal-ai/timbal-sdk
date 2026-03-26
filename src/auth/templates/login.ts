@@ -749,9 +749,18 @@ export function renderLoginPage(prefix: string): string {
 
             // Persist return_to as a short-lived cookie so it survives
             // the OAuth redirect chain (login → provider → callback).
-            // Cookies are more reliable than sessionStorage here because
-            // they persist across navigations regardless of origin/tab.
-            const returnTo = urlParams.get("return_to");
+            // Fall back to document.referrer (same-origin only) so that
+            // even if a caller forgets to pass return_to, the user still
+            // lands back where they came from.
+            let returnTo = urlParams.get("return_to");
+            if (!returnTo && document.referrer) {
+                try {
+                    const ref = new URL(document.referrer);
+                    if (ref.origin === window.location.origin) {
+                        returnTo = ref.pathname + ref.search;
+                    }
+                } catch (e) {}
+            }
             if (returnTo) {
                 document.cookie = "timbal_return_to=" + encodeURIComponent(returnTo) + "; path=/; max-age=600; SameSite=Lax";
             } else {
