@@ -75,7 +75,7 @@ export interface File {
 
 export interface WorkforceItem {
   id?: string;
-  uid: string;
+  uid?: string;
   type?: string;
   name?: string;
   description?: string | null;
