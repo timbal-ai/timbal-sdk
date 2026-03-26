@@ -66,7 +66,7 @@ describe('renderCallbackPage', () => {
 
   test('default redirect to /', () => {
     const html = renderCallbackPage('', '/');
-    expect(html).toContain('window.location.replace("/")');
+    expect(html).toContain('returnTo || "/"');
   });
 
   test('does not contain unresolved template placeholders', () => {
