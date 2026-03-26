@@ -60,6 +60,7 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
 
         <script>
             function showError(code) {
+                localStorage.removeItem("timbal_project_access_token");
                 localStorage.removeItem("timbal_project_refresh_token");
                 window.location.replace(
                     "${prefix}/auth/login?error=" + (code || "auth_failed"),
@@ -78,19 +79,21 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
                 if (!access_token || !refresh_token) {
                     showError("no_tokens");
                 } else {
-                    // Store refresh token in localStorage (never in cookies)
+                    // Store tokens in localStorage
+                    localStorage.setItem("timbal_project_access_token", access_token);
                     localStorage.setItem("timbal_project_refresh_token", refresh_token);
 
-                    // Send only access token to server for cookie
+                    // Validate token with the server
                     fetch("${prefix}/auth/set-token", {
                         method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        credentials: "same-origin",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": "Bearer " + access_token,
+                        },
                         body: JSON.stringify({ access_token }),
                     })
                         .then(async (res) => {
                             if (res.ok) {
-                                // Redirect: check sessionStorage first, then fall back to /
                                 const savedReturn = sessionStorage.getItem("timbal_return_to");
                                 sessionStorage.removeItem("timbal_return_to");
                                 window.location.replace(savedReturn || "${afterLoginRedirect}");

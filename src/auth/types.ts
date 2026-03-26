@@ -14,15 +14,6 @@ export interface TimbalAuthOptions {
   /** Where to redirect after successful login. Default: "/" */
   afterLoginRedirect?: string;
 
-  /** Where to redirect after logout. Default: "/auth/login" */
-  afterLogoutRedirect?: string;
-
   /** Additional paths that skip authentication (merged with defaults). */
   publicPaths?: string[];
-
-  /** Cookie name for the access token. Default: "timbal_access_token" */
-  cookieName?: string;
-
-  /** Cookie max age in seconds. Default: 3600 (1 hour) */
-  cookieMaxAge?: number;
 }

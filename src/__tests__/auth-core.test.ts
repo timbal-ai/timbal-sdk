@@ -2,7 +2,6 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import {
   isLocalDev,
   isPublicPath,
-  buildCookieOptions,
   resolveTokenFromRequest,
 } from '../auth/core';
 
@@ -80,45 +79,6 @@ describe('isPublicPath', () => {
   });
 });
 
-// ── buildCookieOptions ──
-
-describe('buildCookieOptions', () => {
-  test('returns sensible defaults', () => {
-    const opts = buildCookieOptions();
-    expect(opts.name).toBe('timbal_project_access_token');
-    expect(opts.httpOnly).toBe(true);
-    expect(opts.sameSite).toBe('lax');
-    expect(opts.maxAge).toBe(3600);
-    expect(opts.path).toBe('/');
-  });
-
-  test('respects custom cookie name', () => {
-    const opts = buildCookieOptions({ cookieName: 'my_token' });
-    expect(opts.name).toBe('my_token');
-  });
-
-  test('respects custom max age', () => {
-    const opts = buildCookieOptions({ cookieMaxAge: 7200 });
-    expect(opts.maxAge).toBe(7200);
-  });
-
-  test('secure is false in non-production', () => {
-    const original = process.env.NODE_ENV;
-    process.env.NODE_ENV = 'development';
-    const opts = buildCookieOptions();
-    expect(opts.secure).toBe(false);
-    process.env.NODE_ENV = original;
-  });
-
-  test('secure is true in production', () => {
-    const original = process.env.NODE_ENV;
-    process.env.NODE_ENV = 'production';
-    const opts = buildCookieOptions();
-    expect(opts.secure).toBe(true);
-    process.env.NODE_ENV = original;
-  });
-});
-
 // ── resolveTokenFromRequest ──
 
 describe('resolveTokenFromRequest', () => {
@@ -166,39 +126,10 @@ describe('resolveTokenFromRequest', () => {
     expect(result).toBeNull();
   });
 
-  test('falls back to cookie when no Bearer header', async () => {
-    const mockTimbal = {
-      as: () => ({ getProject: async () => ({}) }),
-    } as any;
-    const request = new Request('http://localhost:3000/me');
-    const result = await resolveTokenFromRequest(mockTimbal, request, 'cookie-token');
-    expect(result).toBe('cookie-token');
-  });
-
-  test('returns null when cookie token is invalid', async () => {
-    const mockTimbal = {
-      as: () => ({ getProject: async () => { throw new Error('invalid'); } }),
-    } as any;
-    const request = new Request('http://localhost:3000/me');
-    const result = await resolveTokenFromRequest(mockTimbal, request, 'bad-cookie');
-    expect(result).toBeNull();
-  });
-
-  test('returns null when no token source is available', async () => {
+  test('returns null when no token is available', async () => {
     const mockTimbal = {} as any;
     const request = new Request('http://localhost:3000/me');
     const result = await resolveTokenFromRequest(mockTimbal, request);
     expect(result).toBeNull();
-  });
-
-  test('Bearer header takes priority over cookie', async () => {
-    const mockTimbal = {
-      as: () => ({ getProject: async () => ({}) }),
-    } as any;
-    const request = new Request('http://localhost:3000/me', {
-      headers: { Authorization: 'Bearer header-token' },
-    });
-    const result = await resolveTokenFromRequest(mockTimbal, request, 'cookie-token');
-    expect(result).toBe('header-token');
   });
 });

@@ -31,21 +31,18 @@ export function isPublicPath(
 }
 
 /**
- * Resolve an access token from a request.
- * Checks Bearer header first, falls back to cookie value.
+ * Resolve an access token from a request's Bearer header.
  * Validates the token by calling timbal.as(token).getProject().
  */
 export async function resolveTokenFromRequest(
   timbal: Timbal,
   request: Request,
-  cookieValue?: string | null,
 ): Promise<string | null> {
   if (isLocalDev()) return null;
 
   const { method } = request;
   const path = new URL(request.url).pathname;
 
-  // Bearer header takes priority
   const authHeader = request.headers.get('authorization');
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
@@ -54,21 +51,7 @@ export async function resolveTokenFromRequest(
       return token;
     } catch (err) {
       console.warn(
-        `[auth] ${method} ${path} — bearer token rejected:`,
-        err instanceof Error ? err.message : err,
-      );
-      return null;
-    }
-  }
-
-  // Fall back to cookie
-  if (cookieValue) {
-    try {
-      await timbal.as(cookieValue).getProject();
-      return cookieValue;
-    } catch (err) {
-      console.warn(
-        `[auth] ${method} ${path} — cookie token rejected:`,
+        `[auth] ${method} ${path} — token rejected:`,
         err instanceof Error ? err.message : err,
       );
       return null;
@@ -77,18 +60,4 @@ export async function resolveTokenFromRequest(
 
   console.warn(`[auth] ${method} ${path} — no token found`);
   return null;
-}
-
-/**
- * Build cookie options from plugin config.
- */
-export function buildCookieOptions(options: TimbalAuthOptions = {}) {
-  return {
-    name: options.cookieName ?? 'timbal_project_access_token',
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax' as const,
-    maxAge: options.cookieMaxAge ?? 60 * 60,
-    path: '/',
-  };
 }
