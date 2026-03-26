@@ -596,6 +596,7 @@ describe('streamWorkforce', () => {
       )
     );
     global.fetch = mockFetch as unknown as typeof global.fetch;
+    mockApiClient.get.mockClear();
     mockApiClient.get.mockImplementation((endpoint: string) => mockGetHandler(endpoint));
   });
 
@@ -635,6 +636,37 @@ describe('streamWorkforce', () => {
 
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(callBody.context.platform_config.host).toBe('api.timbal.ai');
+  });
+
+  test('should skip platform config injection in local mode', async () => {
+    const originalEnv = process.env.TIMBAL_START_WORKFORCE;
+    process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
+
+    try {
+      await streamWorkforce(mockApiClient, 'manifest-1', { msg: 'hi' }, remoteCtx);
+
+      const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(callBody.context).toBeUndefined();
+      expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:4000/stream');
+      expect(mockApiClient.get).not.toHaveBeenCalled();
+    } finally {
+      if (originalEnv === undefined) delete process.env.TIMBAL_START_WORKFORCE;
+      else process.env.TIMBAL_START_WORKFORCE = originalEnv;
+    }
+  });
+
+  test('should throw when local deployment not found', async () => {
+    const originalEnv = process.env.TIMBAL_START_WORKFORCE;
+    process.env.TIMBAL_START_WORKFORCE = 'other-manifest:5000';
+
+    try {
+      await expect(
+        streamWorkforce(mockApiClient, 'nonexistent', {}, remoteCtx)
+      ).rejects.toThrow('Could not resolve workforce deployment');
+    } finally {
+      if (originalEnv === undefined) delete process.env.TIMBAL_START_WORKFORCE;
+      else process.env.TIMBAL_START_WORKFORCE = originalEnv;
+    }
   });
 });
 

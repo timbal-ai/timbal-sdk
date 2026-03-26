@@ -395,7 +395,9 @@ export async function streamWorkforce(
     });
   }
 
-  const item = await resolveWorkforceItem(client, resolved, identifier);
+  const item = isLocalEnvironment()
+    ? { uid: identifier, name: identifier, id: identifier }
+    : await resolveWorkforceItem(client, resolved, identifier);
   const url = await resolveEndpoint(client, resolved, item, '/stream');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
