@@ -232,12 +232,11 @@ async function resolveWorkforceIdentifier(
   client: ApiClient,
   resolved: { orgId?: string; projectId?: string },
   identifier: string,
-  field: 'uid' | 'name'
 ): Promise<string> {
   if (isLocalEnvironment()) return identifier;
 
   const item = await resolveWorkforceItem(client, resolved, identifier);
-  return item[field] ?? identifier;
+  return item.id ?? item.uid ?? item.name ?? identifier;
 }
 
 // ── Public functions ──
@@ -326,7 +325,7 @@ export async function callWorkforce(
     });
   }
 
-  const uid = await resolveWorkforceIdentifier(client, resolved, identifier, 'uid');
+  const uid = await resolveWorkforceIdentifier(client, resolved, identifier);
   const url = await resolveEndpoint(client, resolved, uid, '/run');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
@@ -391,7 +390,7 @@ export async function streamWorkforce(
     });
   }
 
-  const uid = await resolveWorkforceIdentifier(client, resolved, identifier, 'uid');
+  const uid = await resolveWorkforceIdentifier(client, resolved, identifier);
   const url = await resolveEndpoint(client, resolved, uid, '/stream');
   if (!url) {
     throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
