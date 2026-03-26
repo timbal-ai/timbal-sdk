@@ -17,11 +17,24 @@
       "import": "./dist/index.esm.js",
       "require": "./dist/index.cjs",
       "types": "./dist/index.d.ts"
+    },
+    "./elysia": {
+      "import": "./dist/elysia/index.esm.js",
+      "require": "./dist/elysia/index.cjs",
+      "types": "./dist/elysia/index.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "elysia": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "elysia": {
+      "optional": true
     }
   },
   "scripts": {
     "build": "bun run clean && bun run build:js && bun run build:types",
-    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs",
+    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs && mkdir -p dist/elysia && bun build src/elysia/index.ts --outdir dist/elysia --target node --format esm --external elysia && mv dist/elysia/index.js dist/elysia/index.esm.js && bun build src/elysia/index.ts --outdir dist/elysia --target node --format cjs --external elysia && mv dist/elysia/index.js dist/elysia/index.cjs",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "clean": "rm -rf dist",
     "test": "SKIP_INTEGRATION_TESTS=true bun test src/__tests__",
@@ -43,6 +56,7 @@
     "@types/bun": "latest",
     "@typescript-eslint/eslint-plugin": "^8.39.0",
     "@typescript-eslint/parser": "^8.39.0",
+    "elysia": "latest",
     "eslint": "^9.32.0",
     "prettier": "^3.0.0",
     "typescript": "^5"
