@@ -85,22 +85,14 @@ describe('timbalAuth Elysia plugin', () => {
       expect(res.status).toBe(401);
     });
 
-    test('POST /auth/logout clears cookie and redirects', async () => {
+    test('POST /auth/logout clears cookie and returns success', async () => {
       const app = new Elysia().use(timbalAuth());
       const res = await app.handle(
         new Request('http://localhost/auth/logout', { method: 'POST' }),
       );
-      expect(res.status).toBe(302);
-      expect(res.headers.get('Location')).toBe('/auth/login');
-    });
-
-    test('POST /auth/logout respects custom afterLogoutRedirect', async () => {
-      const app = new Elysia().use(timbalAuth({ afterLogoutRedirect: '/goodbye' }));
-      const res = await app.handle(
-        new Request('http://localhost/auth/logout', { method: 'POST' }),
-      );
-      expect(res.status).toBe(302);
-      expect(res.headers.get('Location')).toBe('/goodbye');
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
     });
   });
 
@@ -133,7 +125,7 @@ describe('timbalAuth Elysia plugin', () => {
       const logoutRes = await app.handle(
         new Request('http://localhost/auth/logout', { method: 'POST' }),
       );
-      expect(logoutRes.status).toBe(302);
+      expect(logoutRes.status).toBe(200);
     });
   });
 
