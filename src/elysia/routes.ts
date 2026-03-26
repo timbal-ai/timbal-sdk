@@ -5,7 +5,6 @@ import type { TimbalAuthOptions } from '../auth/types';
 import { getCallbackUrl, getPrefix } from '../auth/helpers';
 import { renderLoginPage } from '../auth/templates/login';
 import { renderCallbackPage } from '../auth/templates/callback';
-import { setAuthCookie, clearAuthCookie } from './middleware';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createAuthRoutes(
@@ -13,7 +12,6 @@ export function createAuthRoutes(
   options: TimbalAuthOptions = {},
 ): any {
   const afterLoginRedirect = options.afterLoginRedirect ?? '/';
-  const afterLogoutRedirect = options.afterLogoutRedirect ?? '/auth/login';
 
   const routes = new Elysia({ prefix: '/auth' });
 
@@ -74,10 +72,9 @@ export function createAuthRoutes(
     )
     .post(
       '/set-token',
-      async ({ body, cookie }) => {
+      async ({ body }) => {
         try {
           const session = await timbal.as(body.access_token).getSession();
-          setAuthCookie(cookie, body.access_token, options);
           return { success: true, user: session };
         } catch {
           return new Response(JSON.stringify({ error: 'Invalid token' }), {
@@ -116,16 +113,15 @@ export function createAuthRoutes(
     )
     .post(
       '/refresh',
-      async ({ body, cookie }) => {
+      async ({ body }) => {
         try {
           const tokens = await timbal.refreshToken(body.refresh_token);
-          setAuthCookie(cookie, tokens.access_token, options);
           return {
             success: true,
+            access_token: tokens.access_token,
             refresh_token: tokens.refresh_token || body.refresh_token,
           };
         } catch {
-          clearAuthCookie(cookie, options);
           return new Response(JSON.stringify({ error: 'Refresh failed' }), {
             status: 401,
             headers: { 'Content-Type': 'application/json' },
@@ -139,8 +135,7 @@ export function createAuthRoutes(
     )
     .post(
       '/logout',
-      ({ cookie }) => {
-        clearAuthCookie(cookie, options);
+      () => {
         return { success: true };
       },
       { detail: { hide: true } },
