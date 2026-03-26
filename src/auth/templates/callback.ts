@@ -59,10 +59,18 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
         </div>
 
         <script>
+            function getCookie(name) {
+                const match = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+                return match ? decodeURIComponent(match[1]) : null;
+            }
+            function clearReturnCookie() {
+                document.cookie = "timbal_return_to=; path=/; max-age=0";
+            }
+
             function showError(code) {
                 localStorage.removeItem("timbal_project_access_token");
                 localStorage.removeItem("timbal_project_refresh_token");
-                sessionStorage.removeItem("timbal_return_to");
+                clearReturnCookie();
                 window.location.replace(
                     "${prefix}/auth/login?error=" + (code || "auth_failed"),
                 );
@@ -95,8 +103,8 @@ export function renderCallbackPage(prefix: string, afterLoginRedirect: string): 
                     })
                         .then(async (res) => {
                             if (res.ok) {
-                                const savedReturn = sessionStorage.getItem("timbal_return_to");
-                                sessionStorage.removeItem("timbal_return_to");
+                                const savedReturn = getCookie("timbal_return_to");
+                                clearReturnCookie();
                                 window.location.replace(savedReturn || "${afterLoginRedirect}");
                             } else if (res.status === 401) {
                                 showError("invalid_token");
