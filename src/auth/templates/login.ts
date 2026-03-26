@@ -747,9 +747,15 @@ export function renderLoginPage(prefix: string): string {
                 urlParams.get("redirect_uri") || window.location.href;
             const baseUrl = window.location.origin + "${prefix}";
 
-            // Persist return_to so the callback redirects to the right place
+            // Persist return_to so the callback redirects to the right place.
+            // Always sync: set when present, clear when absent so stale
+            // values from a previous flow don't leak into this one.
             const returnTo = urlParams.get("return_to");
-            if (returnTo) sessionStorage.setItem("timbal_return_to", returnTo);
+            if (returnTo) {
+                sessionStorage.setItem("timbal_return_to", returnTo);
+            } else {
+                sessionStorage.removeItem("timbal_return_to");
+            }
 
 
             const githubBtn = document.getElementById("github-btn");
@@ -928,7 +934,7 @@ export function renderLoginPage(prefix: string): string {
 
                 function hexToRgb(hex) {
                     const result =
-                        /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+                        /^#?([a-f\\d]{2})([a-f\\d]{2})([a-f\\d]{2})$/i.exec(hex);
                     return result
                         ? {
                               r: parseInt(result[1], 16),
