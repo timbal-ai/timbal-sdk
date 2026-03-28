@@ -187,7 +187,7 @@ function buildStudioPayload(
 
 
 
-async function scanTimbalYamls(rootDir: string): Promise<Map<string, { name: string; type?: string }>> {
+export async function scanTimbalYamls(rootDir: string): Promise<Map<string, { name: string; type?: string }>> {
   const result = new Map<string, { name: string; type?: string }>();
   try {
     const glob = new Bun.Glob('**/timbal.yaml');
@@ -207,9 +207,9 @@ async function scanTimbalYamls(rootDir: string): Promise<Map<string, { name: str
   return result;
 }
 
-async function listLocalWorkforces(): Promise<WorkforceItem[]> {
+export async function listLocalWorkforces(rootDir = process.cwd()): Promise<WorkforceItem[]> {
   const workforceMap = parseWorkforceEnv();
-  const yamlMap = await scanTimbalYamls(process.cwd());
+  const yamlMap = await scanTimbalYamls(rootDir);
   return Array.from(workforceMap.keys()).map(uid => {
     const info = yamlMap.get(uid);
     return { uid, ...(info?.name && { name: info.name }), ...(info?.type && { type: info.type }) };

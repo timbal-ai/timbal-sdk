@@ -1,7 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { listWorkforces, callWorkforce, streamWorkforce, clearDeploymentCache } from '../lib/functions/workforce';
+import { listWorkforces, callWorkforce, streamWorkforce, clearDeploymentCache, scanTimbalYamls, listLocalWorkforces } from '../lib/functions/workforce';
 import { Timbal } from '../lib/timbal';
 import type { WorkforceContext } from '../types';
+import { mkdtemp, rm, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const remoteCtx: WorkforceContext = {
   orgId: 'org1',
@@ -819,5 +822,169 @@ describe('Timbal workforce wrappers', () => {
   test('should stream workforce through Timbal class', async () => {
     const response = await timbal.streamWorkforce('manifest-1', { msg: 'hi' }, remoteCtx);
     expect(response.status).toBe(200);
+  });
+});
+
+// ── scanTimbalYamls ──
+
+describe('scanTimbalYamls', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'timbal-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeYaml(relPath: string, content: string) {
+    const fullPath = join(tmpDir, relPath);
+    await mkdir(join(fullPath, '..'), { recursive: true });
+    await Bun.write(fullPath, content);
+  }
+
+  test('should return empty map when no yaml files exist', async () => {
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.size).toBe(0);
+  });
+
+  test('should extract _id, name from directory, and _type from content', async () => {
+    await writeYaml('workforce/my-agent/timbal.yaml', `_id: manifest-1\n_type: agent\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.size).toBe(1);
+    expect(result.get('manifest-1')).toEqual({ name: 'my-agent', type: 'agent' });
+  });
+
+  test('should handle multiple yamls at different paths', async () => {
+    await writeYaml('workforce/clever-jaguar/timbal.yaml', `_id: manifest-1\n_type: workflow\n`);
+    await writeYaml('workforce/eager-pelican/timbal.yaml', `_id: manifest-2\n_type: agent\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.size).toBe(2);
+    expect(result.get('manifest-1')).toEqual({ name: 'clever-jaguar', type: 'workflow' });
+    expect(result.get('manifest-2')).toEqual({ name: 'eager-pelican', type: 'agent' });
+  });
+
+  test('should work without _type field', async () => {
+    await writeYaml('workforce/my-agent/timbal.yaml', `_id: manifest-1\nsome_other_field: value\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.get('manifest-1')).toEqual({ name: 'my-agent', type: undefined });
+  });
+
+  test('should skip yamls without _id field', async () => {
+    await writeYaml('workforce/no-id/timbal.yaml', `_type: agent\nname: some-agent\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.size).toBe(0);
+  });
+
+  test('should skip yamls inside node_modules', async () => {
+    await writeYaml('node_modules/some-pkg/timbal.yaml', `_id: should-be-skipped\n_type: agent\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.size).toBe(0);
+  });
+
+  test('should skip yaml at root level (no parent directory name)', async () => {
+    await writeYaml('timbal.yaml', `_id: root-id\n_type: agent\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    // file is 'timbal.yaml', parts = ['timbal.yaml'], parts[length-2] = undefined → skipped
+    expect(result.size).toBe(0);
+  });
+
+  test('should handle quoted _id values', async () => {
+    await writeYaml('workforce/my-agent/timbal.yaml', `_id: "manifest-quoted"\n_type: 'workflow'\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.get('manifest-quoted')).toEqual({ name: 'my-agent', type: 'workflow' });
+  });
+
+  test('should handle _id with hyphens and dots', async () => {
+    await writeYaml('workforce/my-agent/timbal.yaml', `_id: org.project.agent-v2\n_type: agent\n`);
+
+    const result = await scanTimbalYamls(tmpDir);
+    expect(result.get('org.project.agent-v2')).toEqual({ name: 'my-agent', type: 'agent' });
+  });
+});
+
+// ── listLocalWorkforces ──
+
+describe('listLocalWorkforces', () => {
+  let tmpDir: string;
+  let originalStartEnv: string | undefined;
+  let originalWorkforceEnv: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'timbal-test-'));
+    originalStartEnv = process.env.TIMBAL_START_WORKFORCE;
+    originalWorkforceEnv = process.env.TIMBAL_WORKFORCE;
+    delete process.env.TIMBAL_START_WORKFORCE;
+    delete process.env.TIMBAL_WORKFORCE;
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    if (originalStartEnv !== undefined) process.env.TIMBAL_START_WORKFORCE = originalStartEnv;
+    else delete process.env.TIMBAL_START_WORKFORCE;
+    if (originalWorkforceEnv !== undefined) process.env.TIMBAL_WORKFORCE = originalWorkforceEnv;
+    else delete process.env.TIMBAL_WORKFORCE;
+  });
+
+  async function writeYaml(relPath: string, content: string) {
+    const fullPath = join(tmpDir, relPath);
+    await mkdir(join(fullPath, '..'), { recursive: true });
+    await Bun.write(fullPath, content);
+  }
+
+  test('should return items with name and type resolved from timbal.yaml', async () => {
+    await writeYaml('workforce/clever-jaguar/timbal.yaml', `_id: manifest-1\n_type: workflow\n`);
+    process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
+
+    const result = await listLocalWorkforces(tmpDir);
+    expect(result).toEqual([{ uid: 'manifest-1', name: 'clever-jaguar', type: 'workflow' }]);
+  });
+
+  test('should resolve multiple workforces with name and type', async () => {
+    await writeYaml('workforce/clever-jaguar/timbal.yaml', `_id: manifest-1\n_type: workflow\n`);
+    await writeYaml('workforce/eager-pelican/timbal.yaml', `_id: manifest-2\n_type: agent\n`);
+    process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000,manifest-2:4001';
+
+    const result = await listLocalWorkforces(tmpDir);
+    expect(result).toEqual([
+      { uid: 'manifest-1', name: 'clever-jaguar', type: 'workflow' },
+      { uid: 'manifest-2', name: 'eager-pelican', type: 'agent' },
+    ]);
+  });
+
+  test('should return uid only when no matching yaml is found', async () => {
+    process.env.TIMBAL_WORKFORCE = 'unknown-uid:4000';
+
+    const result = await listLocalWorkforces(tmpDir);
+    expect(result).toEqual([{ uid: 'unknown-uid' }]);
+  });
+
+  test('should return uid and name but no type when _type is absent from yaml', async () => {
+    await writeYaml('workforce/my-agent/timbal.yaml', `_id: manifest-1\n`);
+    process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
+
+    const result = await listLocalWorkforces(tmpDir);
+    expect(result).toEqual([{ uid: 'manifest-1', name: 'my-agent' }]);
+  });
+
+  test('should work with TIMBAL_WORKFORCE env var', async () => {
+    await writeYaml('workforce/my-agent/timbal.yaml', `_id: manifest-1\n_type: agent\n`);
+    process.env.TIMBAL_WORKFORCE = 'manifest-1:4000';
+
+    const result = await listLocalWorkforces(tmpDir);
+    expect(result).toEqual([{ uid: 'manifest-1', name: 'my-agent', type: 'agent' }]);
+  });
+
+  test('should return empty array when no env var is set', async () => {
+    const result = await listLocalWorkforces(tmpDir);
+    expect(result).toEqual([]);
   });
 });
