@@ -187,9 +187,33 @@ function buildStudioPayload(
 
 
 
-function listLocalWorkforces(): WorkforceItem[] {
+async function scanTimbalYamls(rootDir: string): Promise<Map<string, { name: string; type?: string }>> {
+  const result = new Map<string, { name: string; type?: string }>();
+  try {
+    const glob = new Bun.Glob('**/timbal.yaml');
+    for await (const file of glob.scan({ cwd: rootDir, onlyFiles: true })) {
+      if (file.includes('node_modules/') || file.startsWith('.') || file.includes('/.')) continue;
+      try {
+        const content = await Bun.file(`${rootDir}/${file}`).text();
+        const idMatch = content.match(/^_id:\s*["']?([^"'\n]+?)["']?\s*$/m);
+        const typeMatch = content.match(/^_type:\s*["']?([^"'\n]+?)["']?\s*$/m);
+        if (!idMatch) continue;
+        const parts = file.split('/');
+        const name = parts[parts.length - 2];
+        if (name) result.set(idMatch[1], { name, type: typeMatch?.[1] });
+      } catch { /* skip unreadable */ }
+    }
+  } catch { /* glob unavailable or root unreadable */ }
+  return result;
+}
+
+async function listLocalWorkforces(): Promise<WorkforceItem[]> {
   const workforceMap = parseWorkforceEnv();
-  return Array.from(workforceMap.keys()).map(uid => ({ uid }));
+  const yamlMap = await scanTimbalYamls(process.cwd());
+  return Array.from(workforceMap.keys()).map(uid => {
+    const info = yamlMap.get(uid);
+    return { uid, ...(info?.name && { name: info.name }), ...(info?.type && { type: info.type }) };
+  });
 }
 
 // ── Workforce resolution ──
@@ -270,7 +294,7 @@ export async function listWorkforces(
   ctx?: PlatformSubject,
 ): Promise<WorkforceItem[]> {
   if (isLocalEnvironment()) {
-    return listLocalWorkforces();
+    return await listLocalWorkforces();
   }
 
   const resolved = resolveContext(client, ctx);
