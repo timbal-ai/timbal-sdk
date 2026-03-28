@@ -1,3 +1,5 @@
+import { dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 import type { ApiClient } from '../api';
 import type { PlatformSubject, WorkforceItem, PlatformConfig } from '../../types';
 
@@ -207,9 +209,25 @@ export async function scanTimbalYamls(rootDir: string): Promise<Map<string, { na
   return result;
 }
 
-export async function listLocalWorkforces(rootDir = process.cwd()): Promise<WorkforceItem[]> {
+function findTimbalRoot(startDir: string): string {
+  // Walk up looking for a directory that contains a 'workforce/' subdirectory.
+  // This is fast (just existsSync checks) and covers the common case where the
+  // API runs from a project subdirectory (e.g. api/) while timbal.yaml files
+  // live in the sibling workforce/ directory.
+  let dir = startDir;
+  for (let i = 0; i < 5; i++) {
+    if (existsSync(`${dir}/workforce`)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return startDir;
+}
+
+export async function listLocalWorkforces(rootDir?: string): Promise<WorkforceItem[]> {
   const workforceMap = parseWorkforceEnv();
-  const yamlMap = await scanTimbalYamls(rootDir);
+  const effectiveRoot = rootDir ?? findTimbalRoot(process.cwd());
+  const yamlMap = await scanTimbalYamls(effectiveRoot);
   return Array.from(workforceMap.keys()).map(uid => {
     const info = yamlMap.get(uid);
     return { uid, ...(info?.name && { name: info.name }), ...(info?.type && { type: info.type }) };
