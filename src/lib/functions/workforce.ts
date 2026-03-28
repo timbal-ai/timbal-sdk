@@ -197,7 +197,7 @@ async function scanTimbalYamls(rootDir: string): Promise<Map<string, { name: str
         const content = await Bun.file(`${rootDir}/${file}`).text();
         const idMatch = content.match(/^_id:\s*["']?([^"'\n]+?)["']?\s*$/m);
         const typeMatch = content.match(/^_type:\s*["']?([^"'\n]+?)["']?\s*$/m);
-        if (!idMatch) continue;
+        if (!idMatch || !idMatch[1]) continue;
         const parts = file.split('/');
         const name = parts[parts.length - 2];
         if (name) result.set(idMatch[1], { name, type: typeMatch?.[1] });
