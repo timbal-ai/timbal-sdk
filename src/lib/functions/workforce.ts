@@ -104,6 +104,13 @@ function resolveLocalDeployment(manifestId: string): string | null {
   return port ? `http://localhost:${port}` : null;
 }
 
+async function resolveLocalWorkforceItem(identifier: string): Promise<WorkforceItem> {
+  const items = await listLocalWorkforces();
+  const found = items.find(w => w.uid === identifier || w.name === identifier || w.id === identifier);
+  // Fall back to treating identifier as uid directly (backward-compat)
+  return found ?? { uid: identifier, name: identifier, id: identifier };
+}
+
 async function resolveEndpoint(
   client: ApiClient,
   resolved: { orgId?: string; projectId?: string; projectEnvId?: string },
@@ -371,7 +378,7 @@ export async function callWorkforce(
   }
 
   const item = isLocalEnvironment()
-    ? { uid: identifier, name: identifier, id: identifier }
+    ? await resolveLocalWorkforceItem(identifier)
     : await resolveWorkforceItem(client, resolved, identifier);
   const url = await resolveEndpoint(client, resolved, item, '/run');
   if (!url) {
@@ -438,7 +445,7 @@ export async function streamWorkforce(
   }
 
   const item = isLocalEnvironment()
-    ? { uid: identifier, name: identifier, id: identifier }
+    ? await resolveLocalWorkforceItem(identifier)
     : await resolveWorkforceItem(client, resolved, identifier);
   const url = await resolveEndpoint(client, resolved, item, '/stream');
   if (!url) {
