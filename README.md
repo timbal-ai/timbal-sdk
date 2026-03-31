@@ -77,6 +77,16 @@ const rows = await timbal.query("SELECT * FROM documents", [], {
 });
 ```
 
+For legacy knowledge bases, pass `legacy: true`:
+
+```typescript
+const rows = await timbal.query("SELECT * FROM documents", [], {
+  orgId: "10",
+  kbId: "kb-1",
+  legacy: true,
+});
+```
+
 ## Files
 
 Upload a file from disk:

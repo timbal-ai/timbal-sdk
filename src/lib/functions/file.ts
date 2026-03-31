@@ -1,9 +1,9 @@
 import type { ApiClient } from '../api';
-import type { File, PlatformSubject } from '../../types';
+import type { File, PlatformContext } from '../../types';
 
-function resolveOrgId(client: ApiClient, options?: PlatformSubject): string {
-  const orgId = options?.orgId || client.getConfig().orgId;
-  if (!orgId) throw new Error('orgId is required. Provide it in options, client config, or set TIMBAL_ORG_ID env var.');
+function resolveOrgId(client: ApiClient, ctx?: PlatformContext): string {
+  const orgId = ctx?.orgId || client.getConfig().orgId;
+  if (!orgId) throw new Error('orgId is required. Provide it in ctx, client config, or set TIMBAL_ORG_ID env var.');
   return orgId;
 }
 
@@ -12,7 +12,7 @@ function resolveOrgId(client: ApiClient, options?: PlatformSubject): string {
  *
  * @param client - The API client instance.
  * @param filePath - The absolute path to the file on disk.
- * @param options - Optional overrides for orgId. Falls back to client config / env vars.
+ * @param ctx - Optional overrides for orgId. Falls back to client config / env vars.
  * @returns The uploaded File object with metadata (id, name, content_type, url, etc.).
  *
  * @example
@@ -22,9 +22,9 @@ function resolveOrgId(client: ApiClient, options?: PlatformSubject): string {
 export async function uploadFile(
   client: ApiClient,
   filePath: string,
-  options?: PlatformSubject
+  ctx?: PlatformContext
 ): Promise<File> {
-  const orgId = resolveOrgId(client, options);
+  const orgId = resolveOrgId(client, ctx);
   const path = `orgs/${orgId}/files`;
 
   const file = Bun.file(filePath);
@@ -52,7 +52,7 @@ export async function uploadFile(
  * @param data - The file contents as an ArrayBuffer or Uint8Array.
  * @param filename - The filename to use for the upload.
  * @param contentType - The MIME type of the file. Defaults to "application/octet-stream".
- * @param options - Optional overrides for orgId. Falls back to client config / env vars.
+ * @param ctx - Optional overrides for orgId. Falls back to client config / env vars.
  * @returns The uploaded File object with metadata (id, name, content_type, url, etc.).
  *
  * @example
@@ -64,9 +64,9 @@ export async function uploadFileFromBuffer(
   data: ArrayBuffer | Uint8Array,
   filename: string,
   contentType: string = 'application/octet-stream',
-  options?: PlatformSubject
+  ctx?: PlatformContext
 ): Promise<File> {
-  const orgId = resolveOrgId(client, options);
+  const orgId = resolveOrgId(client, ctx);
   const path = `orgs/${orgId}/files`;
 
   const formData = new FormData();

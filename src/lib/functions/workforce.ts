@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { ApiClient } from '../api';
-import type { PlatformSubject, WorkforceItem, PlatformConfig } from '../../types';
+import type { PlatformContext, WorkforceItem, PlatformConfig } from '../../types';
 
 // ── Internal types ──
 
@@ -13,13 +13,13 @@ interface Deployment {
 
 // ── Context resolution ──
 
-function resolveContext(client: ApiClient, ctx?: PlatformSubject): { orgId?: string; projectId?: string; projectEnvId?: string } {
+function resolveContext(client: ApiClient, ctx?: PlatformContext): { orgId?: string; projectId?: string; envId?: string } {
   const config = client.getConfig();
   const orgId = ctx?.orgId || config.orgId || undefined;
   const projectId = ctx?.projectId || config.projectId || undefined;
-  const projectEnvId = ctx?.projectEnvId || config.projectEnvId || undefined;
+  const envId = ctx?.envId || config.envId || undefined;
 
-  return { orgId, projectId, projectEnvId };
+  return { orgId, projectId, envId };
 }
 
 function requireRemoteContext(resolved: { orgId?: string; projectId?: string }): { orgId: string; projectId: string } {
@@ -60,21 +60,21 @@ async function resolveRemoteDeployment(
   client: ApiClient,
   orgId: string,
   projectId: string,
-  projectEnvId: string | undefined,
+  envId: string | undefined,
   item: WorkforceItem
 ): Promise<Deployment | null> {
   const itemCacheKey = `${orgId}:${projectId}:${item.id ?? item.uid}`;
   const cached = deploymentCache.get(itemCacheKey);
   if (cached) return cached;
 
-  const listCacheKey = `${orgId}:${projectId}:${projectEnvId}`;
+  const listCacheKey = `${orgId}:${projectId}:${envId}`;
   let deployments = deploymentsListCache.get(listCacheKey);
 
   if (!deployments) {
     try {
       const response = await client.get<{ deployments: Deployment[] }>(
         `orgs/${orgId}/projects/${projectId}/deployments`,
-        { status: 'running', project_env_id: projectEnvId }
+        { status: 'running', project_env_id: envId }
       );
       deployments = response.data.deployments ?? [];
       deploymentsListCache.set(listCacheKey, deployments);
@@ -113,7 +113,7 @@ async function resolveLocalWorkforceItem(identifier: string): Promise<WorkforceI
 
 async function resolveEndpoint(
   client: ApiClient,
-  resolved: { orgId?: string; projectId?: string; projectEnvId?: string },
+  resolved: { orgId?: string; projectId?: string; envId?: string },
   item: WorkforceItem,
   path: string
 ): Promise<string | null> {
@@ -124,7 +124,7 @@ async function resolveEndpoint(
   }
 
   const { orgId, projectId } = requireRemoteContext(resolved);
-  const deployment = await resolveRemoteDeployment(client, orgId, projectId, resolved.projectEnvId, item);
+  const deployment = await resolveRemoteDeployment(client, orgId, projectId, resolved.envId, item);
   return deployment ? `https://${deployment.domain}${path}` : null;
 }
 
@@ -296,7 +296,7 @@ async function resolveWorkforceItem(
 /**
  * List all running workforce components for a project.
  *
- * In remote mode (when `projectEnvId` is set), queries the Timbal API for running deployments.
+ * In remote mode (when `envId` is set), queries the Timbal API for running deployments.
  * In local mode, reads `timbal.yaml` manifests from the workforce directory on disk.
  * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_ENV_ID.
  *
@@ -311,12 +311,12 @@ async function resolveWorkforceItem(
  *
  * // Explicit context
  * const workforces = await listWorkforces(client, {
- *   orgId: "10", projectId: "5", projectEnvId: "env-1"
+ *   orgId: "10", projectId: "5", envId: "env-1"
  * })
  */
 export async function listWorkforces(
   client: ApiClient,
-  ctx?: PlatformSubject,
+  ctx?: PlatformContext,
 ): Promise<WorkforceItem[]> {
   if (isLocalEnvironment()) {
     return await listLocalWorkforces();
@@ -335,7 +335,7 @@ export async function listWorkforces(
  * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_ENV_ID.
  *
  * @param client - The API client instance.
- * @param manifestId - The manifest ID of the workforce component to call.
+ * @param identifier - The identifier (uid, name, or id) of the workforce component to call.
  * @param input - The request payload to send to the workforce component.
  * @param ctx - Optional workforce context overrides.
  * @param platformConfig - Override the auto-injected platform config.
@@ -347,14 +347,14 @@ export async function listWorkforces(
  *
  * // Explicit context
  * const response = await callWorkforce(client, "my-agent", { message: "Hello!" }, {
- *   orgId: "10", projectId: "5", projectEnvId: "env-1"
+ *   orgId: "10", projectId: "5", envId: "env-1"
  * })
  */
 export async function callWorkforce(
   client: ApiClient,
   identifier: string,
   input: Record<string, unknown> = {},
-  ctx?: PlatformSubject,
+  ctx?: PlatformContext,
   platformConfig?: PlatformConfig
 ): Promise<Response> {
   const resolved = resolveContext(client, ctx);
@@ -401,7 +401,7 @@ export async function callWorkforce(
  * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_ENV_ID.
  *
  * @param client - The API client instance.
- * @param manifestId - The manifest ID of the workforce component to stream from.
+ * @param identifier - The identifier (uid, name, or id) of the workforce component to stream from.
  * @param input - The request payload to send to the workforce component.
  * @param ctx - Optional workforce context overrides.
  * @param platformConfig - Override the auto-injected platform config.
@@ -420,7 +420,7 @@ export async function streamWorkforce(
   client: ApiClient,
   identifier: string,
   input: Record<string, unknown> = {},
-  ctx?: PlatformSubject,
+  ctx?: PlatformContext,
   platformConfig?: PlatformConfig
 ): Promise<Response> {
   const resolved = resolveContext(client, ctx);

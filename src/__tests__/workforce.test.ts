@@ -1,15 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { listWorkforces, callWorkforce, streamWorkforce, clearDeploymentCache, scanTimbalYamls, listLocalWorkforces } from '../lib/functions/workforce';
 import { Timbal } from '../lib/timbal';
-import type { WorkforceContext } from '../types';
+import type { PlatformContext } from '../types';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const remoteCtx: WorkforceContext = {
+const remoteCtx: PlatformContext = {
   orgId: 'org1',
   projectId: 'proj1',
-  projectEnvId: 'env1',
+  envId: 'env1',
 };
 
 // ── Shared fixtures ──
@@ -75,7 +75,7 @@ describe('listWorkforces', () => {
     get: mock(() =>
       Promise.resolve({ data: { workforce: workforceItems } })
     ),
-    getConfig: () => ({ orgId: '', projectId: '', projectEnvId: '', kbId: '', token: '' }),
+    getConfig: () => ({ orgId: '', projectId: '', envId: '', kbId: '', token: '' }),
   } as any;
 
   let originalStartEnv: string | undefined;
