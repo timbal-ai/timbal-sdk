@@ -250,6 +250,54 @@ describe('callWorkforce', () => {
     }
   });
 
+  test('should resolve local workforce by name (not uid) when yaml files are present', async () => {
+    const originalEnv = process.env.TIMBAL_START_WORKFORCE;
+    const originalCwd = process.cwd();
+    const tmpDir = await mkdtemp(join(tmpdir(), 'timbal-local-name-test-'));
+
+    try {
+      await mkdir(join(tmpDir, 'workforce', 'clever-jaguar'), { recursive: true });
+      await Bun.write(join(tmpDir, 'workforce', 'clever-jaguar', 'timbal.yaml'), '_id: manifest-1\n_type: workflow\n');
+
+      process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
+      process.chdir(tmpDir);
+
+      const response = await callWorkforce(mockApiClient, 'clever-jaguar', { msg: 'hi' }, remoteCtx);
+
+      expect(response.status).toBe(200);
+      expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:4000/run');
+    } finally {
+      process.chdir(originalCwd);
+      await rm(tmpDir, { recursive: true, force: true });
+      if (originalEnv === undefined) delete process.env.TIMBAL_START_WORKFORCE;
+      else process.env.TIMBAL_START_WORKFORCE = originalEnv;
+    }
+  });
+
+  test('should resolve local stream by name (not uid) when yaml files are present', async () => {
+    const originalEnv = process.env.TIMBAL_START_WORKFORCE;
+    const originalCwd = process.cwd();
+    const tmpDir = await mkdtemp(join(tmpdir(), 'timbal-local-name-stream-test-'));
+
+    try {
+      await mkdir(join(tmpDir, 'workforce', 'clever-jaguar'), { recursive: true });
+      await Bun.write(join(tmpDir, 'workforce', 'clever-jaguar', 'timbal.yaml'), '_id: manifest-1\n_type: workflow\n');
+
+      process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
+      process.chdir(tmpDir);
+
+      const response = await streamWorkforce(mockApiClient, 'clever-jaguar', { msg: 'hi' }, remoteCtx);
+
+      expect(response.status).toBe(200);
+      expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:4000/stream');
+    } finally {
+      process.chdir(originalCwd);
+      await rm(tmpDir, { recursive: true, force: true });
+      if (originalEnv === undefined) delete process.env.TIMBAL_START_WORKFORCE;
+      else process.env.TIMBAL_START_WORKFORCE = originalEnv;
+    }
+  });
+
   test('should throw when local deployment not found', async () => {
     const originalEnv = process.env.TIMBAL_START_WORKFORCE;
     process.env.TIMBAL_START_WORKFORCE = 'other-manifest:5000';
