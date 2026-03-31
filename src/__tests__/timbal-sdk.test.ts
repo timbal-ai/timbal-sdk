@@ -144,7 +144,7 @@ describe('Timbal', () => {
       expect(result).toEqual([{ id: 1 }]);
 
       const url = mockFetch.mock.calls[0][0] as string;
-      expect(url).toBe('https://api.test.com/orgs/org1/kbs/kb1/query');
+      expect(url).toBe('https://api.test.com/orgs/org1/k2/kb1/query');
     });
 
     test('uploadFile should delegate to uploadFile function', async () => {

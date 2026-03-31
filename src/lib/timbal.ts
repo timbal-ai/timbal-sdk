@@ -3,7 +3,8 @@ import type {
   File,
   Session,
   QueryResult,
-  PlatformSubject,
+  QueryOptions,
+  PlatformContext,
   WorkforceItem,
   PlatformConfig,
   OAuthProvider,
@@ -52,7 +53,7 @@ export class Timbal {
 
   // ── Project ──
 
-  async getProject(ctx?: PlatformSubject): Promise<Project> {
+  async getProject(ctx?: PlatformContext): Promise<Project> {
     return getProjectFn(this.apiClient, ctx);
   }
 
@@ -78,13 +79,13 @@ export class Timbal {
 
   // ── Query ──
 
-  async query(sql: string, params?: unknown[], ctx?: PlatformSubject): Promise<QueryResult[]> {
+  async query(sql: string, params?: unknown[], ctx?: QueryOptions): Promise<QueryResult[]> {
     return queryFn(this.apiClient, sql, params, ctx);
   }
 
   // ── Files ──
 
-  async uploadFile(filePath: string, ctx?: PlatformSubject): Promise<File> {
+  async uploadFile(filePath: string, ctx?: PlatformContext): Promise<File> {
     return uploadFileFn(this.apiClient, filePath, ctx);
   }
 
@@ -92,33 +93,33 @@ export class Timbal {
     data: ArrayBuffer | Uint8Array,
     filename: string,
     contentType?: string,
-    ctx?: PlatformSubject
+    ctx?: PlatformContext
   ): Promise<File> {
     return uploadFileFromBufferFn(this.apiClient, data, filename, contentType, ctx);
   }
 
   // ── Workforce ──
 
-  async listWorkforces(ctx?: PlatformSubject): Promise<WorkforceItem[]> {
+  async listWorkforces(ctx?: PlatformContext): Promise<WorkforceItem[]> {
     return listWorkforcesFn(this.apiClient, ctx);
   }
 
   async callWorkforce(
-    manifestId: string,
+    identifier: string,
     input?: Record<string, unknown>,
-    ctx?: PlatformSubject,
+    ctx?: PlatformContext,
     platformConfig?: PlatformConfig
   ): Promise<Response> {
-    return callWorkforceFn(this.apiClient, manifestId, input, ctx, platformConfig);
+    return callWorkforceFn(this.apiClient, identifier, input, ctx, platformConfig);
   }
 
   async streamWorkforce(
-    manifestId: string,
+    identifier: string,
     input?: Record<string, unknown>,
-    ctx?: PlatformSubject,
+    ctx?: PlatformContext,
     platformConfig?: PlatformConfig
   ): Promise<Response> {
-    return streamWorkforceFn(this.apiClient, manifestId, input, ctx, platformConfig);
+    return streamWorkforceFn(this.apiClient, identifier, input, ctx, platformConfig);
   }
 
   clearDeploymentCache(): void {

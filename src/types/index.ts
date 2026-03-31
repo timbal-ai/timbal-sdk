@@ -11,7 +11,7 @@ export interface TimbalConfig extends ClientConfig {
   token?: string;
   orgId?: string;
   projectId?: string;
-  projectEnvId?: string;
+  envId?: string;
   kbId?: string;
 }
 
@@ -46,14 +46,20 @@ export interface Session {
 
 // ── Context ──
 
-export interface PlatformSubject {
+export interface PlatformContext {
   orgId?: string;
   projectId?: string;
-  projectEnvId?: string;
-  kbId?: string;
+  envId?: string;
 }
 
 // ── Query ──
+
+export interface QueryOptions {
+  orgId?: string;
+  kbId?: string;
+  /** Set to true to query a legacy knowledge base. Defaults to false (K2). */
+  legacy?: boolean;
+}
 
 export interface QueryResult {
   [key: string]: unknown;

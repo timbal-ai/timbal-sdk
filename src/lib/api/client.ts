@@ -37,7 +37,7 @@ export class ApiClient {
       token: config.token ?? process.env.TIMBAL_API_KEY ?? '',
       orgId: config.orgId ?? process.env.TIMBAL_ORG_ID ?? '',
       projectId: config.projectId ?? process.env.TIMBAL_PROJECT_ID ?? '',
-      projectEnvId: config.projectEnvId ?? process.env.TIMBAL_PROJECT_ENV_ID ?? '',
+      envId: config.envId ?? process.env.TIMBAL_PROJECT_ENV_ID ?? '',
       kbId: config.kbId ?? process.env.TIMBAL_KB_ID ?? '',
     };
   }

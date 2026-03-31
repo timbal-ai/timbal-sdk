@@ -7,7 +7,7 @@ const mockApiClient = {
     orgId: process.env.TIMBAL_ORG_ID ?? '',
     kbId: process.env.TIMBAL_KB_ID ?? '',
     projectId: '',
-    projectEnvId: '',
+    envId: '',
     token: '',
   }),
 } as any;
@@ -23,7 +23,7 @@ describe('query', () => {
       kbId: '456',
     });
 
-    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/123/kbs/456/query', {
+    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/123/k2/456/query', {
       sql: 'SELECT COUNT(*) FROM "Documents"',
       params: [],
     });
@@ -33,7 +33,7 @@ describe('query', () => {
   test('should construct correct path from orgId and kbId', async () => {
     await query(mockApiClient, 'SELECT 1', [], { orgId: 'org-abc', kbId: 'kb-xyz' });
 
-    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/org-abc/kbs/kb-xyz/query', {
+    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/org-abc/k2/kb-xyz/query', {
       sql: 'SELECT 1',
       params: [],
     });
@@ -47,7 +47,7 @@ describe('query', () => {
       { orgId: '10', kbId: '48' }
     );
 
-    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/10/kbs/48/query', {
+    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/10/k2/48/query', {
       sql: 'INSERT INTO "Documents" (id, name) VALUES ($1, $2) RETURNING *',
       params: [1, 'example.txt'],
     });
@@ -104,7 +104,7 @@ describe('query', () => {
     try {
       await query(mockApiClient, 'SELECT 1');
 
-      expect(mockApiClient.post).toHaveBeenCalledWith('orgs/env-org/kbs/env-kb/query', {
+      expect(mockApiClient.post).toHaveBeenCalledWith('orgs/env-org/k2/env-kb/query', {
         sql: 'SELECT 1',
         params: [],
       });
@@ -127,6 +127,31 @@ describe('query', () => {
     } finally {
       if (origOrg !== undefined) process.env.TIMBAL_ORG_ID = origOrg;
     }
+  });
+
+  test('should default to k2 path when legacy option is omitted', async () => {
+    await query(mockApiClient, 'SELECT * FROM documents', [], {
+      orgId: '123',
+      kbId: '456',
+    });
+
+    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/123/k2/456/query', {
+      sql: 'SELECT * FROM documents',
+      params: [],
+    });
+  });
+
+  test('should use legacy path when legacy option is true', async () => {
+    await query(mockApiClient, 'SELECT * FROM documents', [], {
+      orgId: '123',
+      kbId: '456',
+      legacy: true,
+    });
+
+    expect(mockApiClient.post).toHaveBeenCalledWith('orgs/123/kbs/456/query', {
+      sql: 'SELECT * FROM documents',
+      params: [],
+    });
   });
 
   test('should throw when kbId missing and no env var', async () => {
