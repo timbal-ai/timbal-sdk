@@ -61,7 +61,12 @@ export interface QueryOptions {
   legacy?: boolean;
 }
 
+export interface QueryRow {
+  [key: string]: unknown;
+}
+
 export interface QueryResult {
+  rows: QueryRow[];
   [key: string]: unknown;
 }
 
