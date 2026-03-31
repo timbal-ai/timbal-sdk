@@ -1,8 +1,9 @@
 import { test, expect, describe, beforeEach, mock } from 'bun:test';
 import { query } from '../lib/functions/query';
 
+// k2 returns { rows: [...], ... } natively
 const mockApiClient = {
-  post: mock(() => Promise.resolve({ data: [{ count: 5 }] })),
+  post: mock(() => Promise.resolve({ data: { rows: [{ count: 5 }] } })),
   getConfig: () => ({
     orgId: process.env.TIMBAL_ORG_ID ?? '',
     kbId: process.env.TIMBAL_KB_ID ?? '',
@@ -17,7 +18,7 @@ describe('query', () => {
     mockApiClient.post.mockClear();
   });
 
-  test('should execute query and return results', async () => {
+  test('should execute query and return result with rows', async () => {
     const result = await query(mockApiClient, 'SELECT COUNT(*) FROM "Documents"', [], {
       orgId: '123',
       kbId: '456',
@@ -27,7 +28,7 @@ describe('query', () => {
       sql: 'SELECT COUNT(*) FROM "Documents"',
       params: [],
     });
-    expect(result).toEqual([{ count: 5 }]);
+    expect(result).toEqual({ rows: [{ count: 5 }] });
   });
 
   test('should construct correct path from orgId and kbId', async () => {
@@ -60,31 +61,28 @@ describe('query', () => {
     expect(payload.params).toEqual([]);
   });
 
-  test('should return empty array when API returns empty', async () => {
-    mockApiClient.post.mockResolvedValueOnce({ data: [] });
+  test('should return empty rows when API returns no rows', async () => {
+    mockApiClient.post.mockResolvedValueOnce({ data: { rows: [] } });
 
     const result = await query(mockApiClient, 'SELECT * FROM empty_table', [], {
       orgId: '1',
       kbId: '2',
     });
-    expect(result).toEqual([]);
+    expect(result.rows).toEqual([]);
   });
 
   test('should return multiple rows', async () => {
     mockApiClient.post.mockResolvedValueOnce({
-      data: [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' },
-      ],
+      data: { rows: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }] },
     });
 
     const result = await query(mockApiClient, 'SELECT * FROM users', [], {
       orgId: '1',
       kbId: '2',
     });
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual({ id: 1, name: 'Alice' });
-    expect(result[1]).toEqual({ id: 2, name: 'Bob' });
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows[0]).toEqual({ id: 1, name: 'Alice' });
+    expect(result.rows[1]).toEqual({ id: 2, name: 'Bob' });
   });
 
   test('should propagate API errors', async () => {
@@ -141,8 +139,11 @@ describe('query', () => {
     });
   });
 
-  test('should use legacy path when legacy option is true', async () => {
-    await query(mockApiClient, 'SELECT * FROM documents', [], {
+  test('should use legacy path and wrap rows when legacy option is true', async () => {
+    // legacy endpoint returns a raw array of rows
+    mockApiClient.post.mockResolvedValueOnce({ data: [{ id: 1 }, { id: 2 }] });
+
+    const result = await query(mockApiClient, 'SELECT * FROM documents', [], {
       orgId: '123',
       kbId: '456',
       legacy: true,
@@ -152,6 +153,7 @@ describe('query', () => {
       sql: 'SELECT * FROM documents',
       params: [],
     });
+    expect(result).toEqual({ rows: [{ id: 1 }, { id: 2 }] });
   });
 
   test('should throw when kbId missing and no env var', async () => {

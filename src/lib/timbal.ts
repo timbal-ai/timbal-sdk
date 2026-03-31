@@ -3,6 +3,7 @@ import type {
   File,
   Session,
   QueryResult,
+  QueryRow,
   QueryOptions,
   PlatformContext,
   WorkforceItem,
@@ -79,7 +80,7 @@ export class Timbal {
 
   // ── Query ──
 
-  async query(sql: string, params?: unknown[], ctx?: QueryOptions): Promise<QueryResult[]> {
+  async query(sql: string, params?: unknown[], ctx?: QueryOptions): Promise<QueryResult> {
     return queryFn(this.apiClient, sql, params, ctx);
   }
 
