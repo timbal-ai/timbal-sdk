@@ -20,16 +20,65 @@ const timbal = new Timbal({
 });
 ```
 
-Configuration can also be provided via environment variables:
+## Configuration
 
-| Variable                | Description          |
-| ----------------------- | -------------------- |
-| `TIMBAL_API_KEY`        | API key or token     |
-| `TIMBAL_BASE_URL`       | API base URL         |
-| `TIMBAL_ORG_ID`         | Organization ID      |
-| `TIMBAL_PROJECT_ID`     | Project ID           |
-| `TIMBAL_PROJECT_ENV_ID` | Project environment  |
-| `TIMBAL_KB_ID`          | Knowledge base ID    |
+The SDK resolves each config field in this order, using the first value found:
+
+1. **Explicit options** passed to `new Timbal({ ... })`
+2. **Environment variables**
+3. **`~/.timbal/` profile files** (shared with the Timbal CLI)
+4. **Defaults**
+
+### Environment variables
+
+| Variable                | Description                              |
+| ----------------------- | ---------------------------------------- |
+| `TIMBAL_API_KEY`        | API key / token                          |
+| `TIMBAL_BASE_URL`       | API base URL                             |
+| `TIMBAL_ORG_ID`         | Organization ID                          |
+| `TIMBAL_PROJECT_ID`     | Project ID                               |
+| `TIMBAL_PROJECT_ENV_ID` | Project environment ID                   |
+| `TIMBAL_KB_ID`          | Knowledge base ID                        |
+| `TIMBAL_PROFILE`        | Profile to load from `~/.timbal/` files  |
+| `TIMBAL_CONFIG_DIR`     | Override the config directory (default: `~/.timbal`) |
+
+### Profile files
+
+If you've run `timbal configure`, the SDK automatically picks up your credentials — no env vars or explicit config needed.
+
+Profiles are stored in two INI files:
+
+**`~/.timbal/config`**
+```ini
+[default]
+base_url = https://api.timbal.ai
+org = your-org-id
+
+[profile staging]
+base_url = https://staging.timbal.ai
+org = staging-org-id
+```
+
+**`~/.timbal/credentials`**
+```ini
+[default]
+api_key = your-api-key
+
+[profile staging]
+api_key = staging-api-key
+```
+
+Select a profile with `TIMBAL_PROFILE`:
+
+```bash
+TIMBAL_PROFILE=staging node my-script.js
+```
+
+Or in code:
+```typescript
+process.env.TIMBAL_PROFILE = "staging";
+const timbal = new Timbal(); // picks up staging credentials automatically
+```
 
 ## Scoped Clients
 

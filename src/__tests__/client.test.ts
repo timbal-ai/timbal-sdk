@@ -1,4 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ApiClient, TimbalApiError } from '../lib/api';
 
 describe('ApiClient', () => {
@@ -324,3 +327,115 @@ describe('ApiClient', () => {
     });
   });
 });
+
+// ── File config (profile loading) ──
+
+describe('ApiClient file config', () => {
+  let tmpDir: string;
+  const savedEnv: Record<string, string | undefined> = {};
+  const MANAGED_VARS = ['TIMBAL_CONFIG_DIR', 'TIMBAL_PROFILE', 'TIMBAL_API_KEY', 'TIMBAL_ORG_ID', 'TIMBAL_BASE_URL', 'TIMBAL_API_HOST'];
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'timbal-config-test-'));
+    for (const key of MANAGED_VARS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.TIMBAL_CONFIG_DIR = tmpDir;
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    for (const key of MANAGED_VARS) {
+      if (savedEnv[key] !== undefined) process.env[key] = savedEnv[key];
+      else delete process.env[key];
+    }
+  });
+
+  async function writeConfig(content: string) {
+    await writeFile(join(tmpDir, 'config'), content, 'utf8');
+  }
+
+  async function writeCredentials(content: string) {
+    await writeFile(join(tmpDir, 'credentials'), content, 'utf8');
+  }
+
+  test('loads token from credentials file default profile', async () => {
+    await writeCredentials('[default]\napi_key = file-token\n');
+    const client = new ApiClient({});
+    expect(client.getConfig().token).toBe('file-token');
+  });
+
+  test('loads orgId from config file default profile', async () => {
+    await writeCredentials('[default]\napi_key = t\n');
+    await writeConfig('[default]\norg = file-org\n');
+    const client = new ApiClient({});
+    expect(client.getConfig().orgId).toBe('file-org');
+  });
+
+  test('loads baseUrl from config file default profile', async () => {
+    await writeCredentials('[default]\napi_key = t\n');
+    await writeConfig('[default]\nbase_url = https://staging.timbal.ai\n');
+    const client = new ApiClient({});
+    expect(client.getConfig().baseUrl).toBe('https://staging.timbal.ai');
+  });
+
+  test('loads named profile when TIMBAL_PROFILE is set', async () => {
+    await writeCredentials('[default]\napi_key = default-token\n\n[profile staging]\napi_key = staging-token\n');
+    process.env.TIMBAL_PROFILE = 'staging';
+    const client = new ApiClient({});
+    expect(client.getConfig().token).toBe('staging-token');
+  });
+
+  test('explicit config takes precedence over file', async () => {
+    await writeCredentials('[default]\napi_key = file-token\n');
+    await writeConfig('[default]\norg = file-org\n');
+    const client = new ApiClient({ token: 'explicit-token', orgId: 'explicit-org' });
+    expect(client.getConfig().token).toBe('explicit-token');
+    expect(client.getConfig().orgId).toBe('explicit-org');
+  });
+
+  test('env var takes precedence over file', async () => {
+    await writeCredentials('[default]\napi_key = file-token\n');
+    process.env.TIMBAL_API_KEY = 'env-token';
+    const client = new ApiClient({});
+    expect(client.getConfig().token).toBe('env-token');
+  });
+
+  test('loads all fields together from file', async () => {
+    await writeCredentials('[default]\napi_key = file-token\n');
+    await writeConfig('[default]\norg = file-org\nbase_url = https://custom.timbal.ai\n');
+    const client = new ApiClient({});
+    expect(client.getConfig().token).toBe('file-token');
+    expect(client.getConfig().orgId).toBe('file-org');
+    expect(client.getConfig().baseUrl).toBe('https://custom.timbal.ai');
+  });
+
+  test('silently ignores missing config files', async () => {
+    const client = new ApiClient({ token: 'direct' });
+    expect(client.getConfig().token).toBe('direct');
+  });
+
+  test('silently ignores malformed config file', async () => {
+    await writeCredentials('not valid ini %%% ===\n');
+    const client = new ApiClient({ token: 'direct' });
+    expect(client.getConfig().token).toBe('direct');
+  });
+
+  test('falls back gracefully when profile section not in file', async () => {
+    await writeCredentials('[default]\napi_key = default-token\n');
+    process.env.TIMBAL_PROFILE = 'nonexistent';
+    const client = new ApiClient({ token: 'explicit' });
+    expect(client.getConfig().token).toBe('explicit');
+  });
+
+  test('named profile in credentials and config are both loaded', async () => {
+    await writeCredentials('[default]\napi_key = default-token\n\n[profile prod]\napi_key = prod-token\n');
+    await writeConfig('[default]\norg = default-org\n\n[profile prod]\norg = prod-org\n');
+    process.env.TIMBAL_PROFILE = 'prod';
+    const client = new ApiClient({});
+    expect(client.getConfig().token).toBe('prod-token');
+    expect(client.getConfig().orgId).toBe('prod-org');
+  });
+});
+
