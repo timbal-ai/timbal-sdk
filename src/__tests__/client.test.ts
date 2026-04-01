@@ -29,7 +29,9 @@ describe('ApiClient', () => {
   describe('authentication', () => {
     test('should throw AUTH_ERROR when no credentials provided', async () => {
       const orig = process.env.TIMBAL_API_KEY;
+      const origConfigDir = process.env.TIMBAL_CONFIG_DIR;
       delete process.env.TIMBAL_API_KEY;
+      process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
       const client = new ApiClient({ baseUrl: 'https://api.test.com' });
 
       try {
@@ -40,6 +42,8 @@ describe('ApiClient', () => {
         expect((error as TimbalApiError).code).toBe('AUTH_ERROR');
       } finally {
         if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        if (origConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = origConfigDir;
+        else delete process.env.TIMBAL_CONFIG_DIR;
       }
     });
 
@@ -300,8 +304,10 @@ describe('ApiClient', () => {
     test('should return config with defaults applied', () => {
       const savedBaseUrl = process.env.TIMBAL_BASE_URL;
       const savedApiHost = process.env.TIMBAL_API_HOST;
+      const savedConfigDir = process.env.TIMBAL_CONFIG_DIR;
       delete process.env.TIMBAL_BASE_URL;
       delete process.env.TIMBAL_API_HOST;
+      process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
       try {
         const client = new ApiClient({ token: 'k' });
         const config = client.getConfig();
@@ -314,6 +320,8 @@ describe('ApiClient', () => {
         else delete process.env.TIMBAL_BASE_URL;
         if (savedApiHost !== undefined) process.env.TIMBAL_API_HOST = savedApiHost;
         else delete process.env.TIMBAL_API_HOST;
+        if (savedConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = savedConfigDir;
+        else delete process.env.TIMBAL_CONFIG_DIR;
       }
     });
 

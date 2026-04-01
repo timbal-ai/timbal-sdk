@@ -212,8 +212,10 @@ describe('Timbal auth methods', () => {
   test('getOAuthUrl should use default baseUrl', () => {
     const savedBaseUrl = process.env.TIMBAL_BASE_URL;
     const savedApiHost = process.env.TIMBAL_API_HOST;
+    const savedConfigDir = process.env.TIMBAL_CONFIG_DIR;
     delete process.env.TIMBAL_BASE_URL;
     delete process.env.TIMBAL_API_HOST;
+    process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
     try {
       const timbal = new Timbal({});
       const url = timbal.getOAuthUrl('google', 'https://myapp.com/cb');
@@ -223,6 +225,8 @@ describe('Timbal auth methods', () => {
       else delete process.env.TIMBAL_BASE_URL;
       if (savedApiHost !== undefined) process.env.TIMBAL_API_HOST = savedApiHost;
       else delete process.env.TIMBAL_API_HOST;
+      if (savedConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = savedConfigDir;
+      else delete process.env.TIMBAL_CONFIG_DIR;
     }
   });
 
