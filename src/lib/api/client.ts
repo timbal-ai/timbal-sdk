@@ -1,9 +1,14 @@
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import type { TimbalConfig, ApiResponse, ApiError } from '../../types';
 import { DEFAULT_CONFIG, ERROR_CODES } from '../../constants';
 import { sleep, buildQueryString } from '../utils';
+
+// ── Node.js helpers (browser-safe) ──
+
+// Uses `require` directly for Node.js/Bun environments.
+// The build step keeps `node:*` as externals (`--target node`).
+// Browser consumers should use the `"browser"` export condition in
+// package.json, which points to a build that tree-shakes these away.
+function nodeRequire(id: string): any { try { return require(id); } catch { return null; } }
 
 // ── Profile config loader ──
 
@@ -14,15 +19,20 @@ interface FileConfig {
 }
 
 function loadFileConfig(): FileConfig {
+  const fs = nodeRequire('node:fs');
+  const os = nodeRequire('node:os');
+  const path = nodeRequire('node:path');
+  if (!fs || !os || !path) return {};
+
   const profile = process.env.TIMBAL_PROFILE ?? 'default';
   const section = profile === 'default' ? 'default' : `profile ${profile}`;
-  const dir = process.env.TIMBAL_CONFIG_DIR ?? join(homedir(), '.timbal');
+  const dir = process.env.TIMBAL_CONFIG_DIR ?? path.join(os.homedir(), '.timbal');
 
   function parseIni(filePath: string): Map<string, Map<string, string>> {
     const sections = new Map<string, Map<string, string>>();
     let current: Map<string, string> | null = null;
     try {
-      const lines = readFileSync(filePath, 'utf8').split('\n');
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n');
       for (const raw of lines) {
         const line = raw.trim();
         if (!line || line.startsWith('#') || line.startsWith(';')) continue;
@@ -39,8 +49,8 @@ function loadFileConfig(): FileConfig {
     return sections;
   }
 
-  const config = parseIni(join(dir, 'config')).get(section);
-  const credentials = parseIni(join(dir, 'credentials')).get(section);
+  const config = parseIni(path.join(dir, 'config')).get(section);
+  const credentials = parseIni(path.join(dir, 'credentials')).get(section);
 
   const baseUrl = config?.get('base_url');
   const orgId = config?.get('org');

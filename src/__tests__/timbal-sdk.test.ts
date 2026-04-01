@@ -80,7 +80,9 @@ describe('Timbal', () => {
 
     test('should not share auth with parent', () => {
       const orig = process.env.TIMBAL_API_KEY;
+      const origConfigDir = process.env.TIMBAL_CONFIG_DIR;
       delete process.env.TIMBAL_API_KEY;
+      process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
       try {
         const factory = new Timbal({ baseUrl: 'https://api.test.com' });
         const scoped = factory.as('user-token-123');
@@ -91,6 +93,8 @@ describe('Timbal', () => {
         expect(scopedConfig.token).toBe('user-token-123');
       } finally {
         if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        if (origConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = origConfigDir;
+        else delete process.env.TIMBAL_CONFIG_DIR;
       }
     });
 
