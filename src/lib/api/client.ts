@@ -1,6 +1,57 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { TimbalConfig, ApiResponse, ApiError } from '../../types';
 import { DEFAULT_CONFIG, ERROR_CODES } from '../../constants';
 import { sleep, buildQueryString } from '../utils';
+
+// ── Profile config loader ──
+
+interface FileConfig {
+  baseUrl?: string;
+  token?: string;
+  orgId?: string;
+}
+
+function loadFileConfig(): FileConfig {
+  const profile = process.env.TIMBAL_PROFILE ?? 'default';
+  const section = profile === 'default' ? 'default' : `profile ${profile}`;
+  const dir = process.env.TIMBAL_CONFIG_DIR ?? join(homedir(), '.timbal');
+
+  function parseIni(filePath: string): Map<string, Map<string, string>> {
+    const sections = new Map<string, Map<string, string>>();
+    let current: Map<string, string> | null = null;
+    try {
+      const lines = readFileSync(filePath, 'utf8').split('\n');
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+        if (line.startsWith('[') && line.endsWith(']')) {
+          const name = line.slice(1, -1).trim();
+          current = new Map();
+          sections.set(name, current);
+        } else if (current) {
+          const eq = line.indexOf('=');
+          if (eq !== -1) current.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim());
+        }
+      }
+    } catch { /* file absent or unreadable — skip */ }
+    return sections;
+  }
+
+  const config = parseIni(join(dir, 'config')).get(section);
+  const credentials = parseIni(join(dir, 'credentials')).get(section);
+
+  const baseUrl = config?.get('base_url');
+  const orgId = config?.get('org');
+  const apiKey = credentials?.get('api_key');
+
+  return {
+    ...(baseUrl && { baseUrl }),
+    ...(apiKey && { token: apiKey }),
+    ...(orgId && { orgId }),
+  };
+}
 
 export class TimbalApiError extends Error {
   public statusCode: number;
@@ -25,17 +76,19 @@ export class ApiClient {
   private config: Required<TimbalConfig>;
 
   constructor(config: TimbalConfig) {
+    const file = loadFileConfig();
     this.config = {
       baseUrl:
         config.baseUrl ??
         process.env.TIMBAL_BASE_URL ??
         (process.env.TIMBAL_API_HOST ? `https://${process.env.TIMBAL_API_HOST}` : undefined) ??
+        (file.baseUrl ? file.baseUrl : undefined) ??
         DEFAULT_CONFIG.baseUrl,
       timeout: config.timeout ?? DEFAULT_CONFIG.timeout,
       retryAttempts: config.retryAttempts ?? DEFAULT_CONFIG.retryAttempts,
       retryDelay: config.retryDelay ?? DEFAULT_CONFIG.retryDelay,
-      token: config.token ?? process.env.TIMBAL_API_KEY ?? '',
-      orgId: config.orgId ?? process.env.TIMBAL_ORG_ID ?? '',
+      token: config.token ?? process.env.TIMBAL_API_KEY ?? file.token ?? '',
+      orgId: config.orgId ?? process.env.TIMBAL_ORG_ID ?? file.orgId ?? '',
       projectId: config.projectId ?? process.env.TIMBAL_PROJECT_ID ?? '',
       envId: config.envId ?? process.env.TIMBAL_PROJECT_ENV_ID ?? '',
       kbId: config.kbId ?? process.env.TIMBAL_KB_ID ?? '',
