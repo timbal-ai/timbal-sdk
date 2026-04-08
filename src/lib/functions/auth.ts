@@ -35,9 +35,13 @@ export async function sendMagicLink(
   redirectUri: string,
 ): Promise<void> {
   const base = getBaseUrl(client);
+  const token = client.getConfig().token;
   const res = await fetch(`${base}/auth/magic-link`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token && { Authorization: `Bearer ${token}` }),
+    },
     body: JSON.stringify({ email, redirect_uri: redirectUri }),
   });
 
@@ -59,9 +63,13 @@ export async function refreshToken(
   refreshToken: string,
 ): Promise<TokenPair> {
   const base = getBaseUrl(client);
+  const token = client.getConfig().token;
   const res = await fetch(`${base}/oauth/token`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      ...(token && { Authorization: `Bearer ${token}` }),
+    },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: refreshToken,
