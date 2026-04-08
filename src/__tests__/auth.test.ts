@@ -53,7 +53,11 @@ describe('sendMagicLink', () => {
   let mockFetch: ReturnType<typeof mock>;
 
   const mockApiClient = {
-    getConfig: () => ({ baseUrl: 'https://api.timbal.ai' }),
+    getConfig: () => ({ baseUrl: 'https://api.timbal.ai', token: 'test-api-key' }),
+  } as any;
+
+  const mockApiClientNoToken = {
+    getConfig: () => ({ baseUrl: 'https://api.timbal.ai', token: '' }),
   } as any;
 
   beforeEach(() => {
@@ -74,11 +78,33 @@ describe('sendMagicLink', () => {
     const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.timbal.ai/auth/magic-link');
     expect(opts.method).toBe('POST');
-    expect(opts.headers).toEqual({ 'Content-Type': 'application/json' });
 
     const body = JSON.parse(opts.body as string);
     expect(body.email).toBe('user@example.com');
     expect(body.redirect_uri).toBe('https://myapp.com/callback');
+  });
+
+  test('should include Authorization header when token is available', async () => {
+    mockFetch = mock(() => Promise.resolve({ ok: true, status: 200 }));
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    await sendMagicLink(mockApiClient, 'user@example.com', 'https://myapp.com/callback');
+
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = opts.headers as Record<string, string>;
+    expect(headers['Authorization']).toBe('Bearer test-api-key');
+    expect(headers['Content-Type']).toBe('application/json');
+  });
+
+  test('should omit Authorization header when no token', async () => {
+    mockFetch = mock(() => Promise.resolve({ ok: true, status: 200 }));
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    await sendMagicLink(mockApiClientNoToken, 'user@example.com', 'https://myapp.com/callback');
+
+    const [, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const headers = opts.headers as Record<string, string>;
+    expect(headers['Authorization']).toBeUndefined();
   });
 
   test('should throw on non-ok response with error text', async () => {
@@ -117,7 +143,7 @@ describe('refreshToken', () => {
   let mockFetch: ReturnType<typeof mock>;
 
   const mockApiClient = {
-    getConfig: () => ({ baseUrl: 'https://api.timbal.ai' }),
+    getConfig: () => ({ baseUrl: 'https://api.timbal.ai', token: 'test-api-key' }),
   } as any;
 
   const mockTokens = {
@@ -149,7 +175,10 @@ describe('refreshToken', () => {
     const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.timbal.ai/oauth/token');
     expect(opts.method).toBe('POST');
-    expect(opts.headers).toEqual({ 'Content-Type': 'application/x-www-form-urlencoded' });
+
+    const headers = opts.headers as Record<string, string>;
+    expect(headers['Content-Type']).toBe('application/x-www-form-urlencoded');
+    expect(headers['Authorization']).toBe('Bearer test-api-key');
 
     const body = new URLSearchParams(opts.body as string);
     expect(body.get('grant_type')).toBe('refresh_token');
