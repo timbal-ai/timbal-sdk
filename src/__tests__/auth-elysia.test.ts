@@ -37,6 +37,14 @@ describe('timbalAuth Elysia plugin', () => {
       expect(html).toContain('Completing authentication');
     });
 
+    test('POST /auth/callback returns 200 with HTML (magic-link 307 redirect)', async () => {
+      const app = new Elysia().use(timbalAuth());
+      const res = await app.handle(new Request('http://localhost/auth/callback', { method: 'POST' }));
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('Completing authentication');
+    });
+
     test('GET /auth/invalid-provider returns 400', async () => {
       const app = new Elysia().use(timbalAuth());
       const res = await app.handle(new Request('http://localhost/auth/invalid'));
