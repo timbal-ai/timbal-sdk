@@ -48,6 +48,16 @@ export function createAuthRoutes(
           });
         },
         { detail: { hide: true } },
+      )
+      .post(
+        '/callback',
+        ({ path }) => {
+          const prefix = getPrefix(path);
+          return new Response(renderCallbackPage(prefix, afterLoginRedirect), {
+            headers: { 'Content-Type': 'text/html' },
+          });
+        },
+        { detail: { hide: true } },
       );
   }
 
