@@ -8,7 +8,7 @@ const mockApiClient = {
     orgId: process.env.TIMBAL_ORG_ID ?? '',
     kbId: process.env.TIMBAL_KB_ID ?? '',
     projectId: '',
-    envId: '',
+    rev: 'main',
     token: '',
   }),
 } as any;
