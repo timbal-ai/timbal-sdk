@@ -37,7 +37,7 @@ The SDK resolves each config field in this order, using the first value found:
 | `TIMBAL_BASE_URL`       | API base URL                             |
 | `TIMBAL_ORG_ID`         | Organization ID                          |
 | `TIMBAL_PROJECT_ID`     | Project ID                               |
-| `TIMBAL_PROJECT_ENV_ID` | Project environment ID                   |
+| `TIMBAL_PROJECT_REV`    | Git branch (default: `main`)             |
 | `TIMBAL_KB_ID`          | Knowledge base ID                        |
 | `TIMBAL_PROFILE`        | Profile to load from `~/.timbal/` files  |
 | `TIMBAL_CONFIG_DIR`     | Override the config directory (default: `~/.timbal`) |

@@ -33,7 +33,7 @@ describe('getProject', () => {
       orgId: process.env.TIMBAL_ORG_ID ?? '',
       projectId: process.env.TIMBAL_PROJECT_ID ?? '',
       kbId: '',
-      envId: '',
+      rev: 'main',
       token: '',
     }),
   } as any;

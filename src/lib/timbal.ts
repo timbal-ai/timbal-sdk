@@ -25,7 +25,7 @@ import {
   listWorkforces as listWorkforcesFn,
   callWorkforce as callWorkforceFn,
   streamWorkforce as streamWorkforceFn,
-  clearDeploymentCache as clearDeploymentCacheFn,
+  clearWorkforceCache as clearWorkforceCacheFn,
 } from './functions';
 
 export class Timbal {
@@ -123,7 +123,7 @@ export class Timbal {
     return streamWorkforceFn(this.apiClient, identifier, input, ctx, platformConfig);
   }
 
-  clearDeploymentCache(): void {
-    clearDeploymentCacheFn();
+  clearWorkforceCache(): void {
+    clearWorkforceCacheFn();
   }
 }

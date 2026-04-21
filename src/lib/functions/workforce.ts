@@ -3,35 +3,40 @@ import type { PlatformContext, WorkforceItem, PlatformConfig } from '../../types
 
 function nodeRequire(id: string): any { try { return require(id); } catch { return null; } }
 
-// ── Internal types ──
-
-interface Deployment {
-  domain: string;
-  target?: { id?: number; manifest_id?: string | null; uid?: string | null; name?: string | null };
-  [key: string]: unknown;
-}
-
 // ── Context resolution ──
 
-function resolveContext(client: ApiClient, ctx?: PlatformContext): { orgId?: string; projectId?: string; envId?: string } {
-  const config = client.getConfig();
-  const orgId = ctx?.orgId || config.orgId || undefined;
-  const projectId = ctx?.projectId || config.projectId || undefined;
-  const envId = ctx?.envId || config.envId || undefined;
-
-  return { orgId, projectId, envId };
+interface ResolvedContext {
+  orgId?: string;
+  projectId?: string;
+  rev: string;
 }
 
-function requireRemoteContext(resolved: { orgId?: string; projectId?: string }): { orgId: string; projectId: string } {
+function resolveContext(client: ApiClient, ctx?: PlatformContext): ResolvedContext {
+  const config = client.getConfig();
+  return {
+    orgId: ctx?.orgId || config.orgId || undefined,
+    projectId: ctx?.projectId || config.projectId || undefined,
+    rev: ctx?.rev || config.rev || 'main',
+  };
+}
+
+function requireRemoteContext(resolved: ResolvedContext): { orgId: string; projectId: string; rev: string } {
   if (!resolved.orgId) throw new Error('orgId is required. Provide it in context or set TIMBAL_ORG_ID env var.');
   if (!resolved.projectId) throw new Error('projectId is required. Provide it in context or set TIMBAL_PROJECT_ID env var.');
-  return { orgId: resolved.orgId, projectId: resolved.projectId };
+  return { orgId: resolved.orgId, projectId: resolved.projectId, rev: resolved.rev };
 }
 
-// ── Deployment resolution (internal) ──
+// ── Environment detection ──
 
-const deploymentCache = new Map<string, Deployment>();
-const deploymentsListCache = new Map<string, Deployment[]>();
+function isLocalEnvironment(): boolean {
+  return !!(process.env.TIMBAL_START_WORKFORCE ?? process.env.TIMBAL_WORKFORCE);
+}
+
+function isStudioEnvironment(): boolean {
+  return !!process.env.TIMBAL_STUDIO;
+}
+
+// ── Local workforce helpers ──
 
 function parseWorkforceEnv(): Map<string, number> {
   const raw = process.env.TIMBAL_START_WORKFORCE ?? process.env.TIMBAL_WORKFORCE;
@@ -44,60 +49,6 @@ function parseWorkforceEnv(): Map<string, number> {
   return map;
 }
 
-function buildPlatformConfig(client: ApiClient): PlatformConfig {
-  const config = client.getConfig();
-  const baseUrl = config.baseUrl.replace(/^https?:\/\//, '');
-  return {
-    host: baseUrl,
-    auth: {
-      type: 'bearer',
-      token: config.token,
-    },
-  };
-}
-
-async function resolveRemoteDeployment(
-  client: ApiClient,
-  orgId: string,
-  projectId: string,
-  envId: string | undefined,
-  item: WorkforceItem
-): Promise<Deployment | null> {
-  const itemCacheKey = `${orgId}:${projectId}:${item.id ?? item.uid}`;
-  const cached = deploymentCache.get(itemCacheKey);
-  if (cached) return cached;
-
-  const listCacheKey = `${orgId}:${projectId}:${envId}`;
-  let deployments = deploymentsListCache.get(listCacheKey);
-
-  if (!deployments) {
-    try {
-      const response = await client.get<{ deployments: Deployment[] }>(
-        `orgs/${orgId}/projects/${projectId}/deployments`,
-        { status: 'running', project_env_id: envId }
-      );
-      deployments = response.data.deployments ?? [];
-      deploymentsListCache.set(listCacheKey, deployments);
-    } catch {
-      return null;
-    }
-  }
-
-  const deployment = deployments.find(d => {
-    if (!d.target) return false;
-    const targetUid = d.target.uid ?? d.target.manifest_id;
-    if (item.id && d.target.id != null && String(d.target.id) === String(item.id)) return true;
-    if (item.uid && targetUid != null && String(targetUid) === String(item.uid)) return true;
-    if (item.name && d.target.name != null && String(d.target.name) === String(item.name)) return true;
-    return false;
-  });
-
-  if (!deployment?.domain) return null;
-
-  deploymentCache.set(itemCacheKey, deployment);
-  return deployment;
-}
-
 function resolveLocalDeployment(manifestId: string): string | null {
   const workforceMap = parseWorkforceEnv();
   const port = workforceMap.get(manifestId);
@@ -107,94 +58,8 @@ function resolveLocalDeployment(manifestId: string): string | null {
 async function resolveLocalWorkforceItem(identifier: string): Promise<WorkforceItem> {
   const items = await listLocalWorkforces();
   const found = items.find(w => w.uid === identifier || w.name === identifier || w.id === identifier);
-  // Fall back to treating identifier as uid directly (backward-compat)
   return found ?? { uid: identifier, name: identifier, id: identifier };
 }
-
-async function resolveEndpoint(
-  client: ApiClient,
-  resolved: { orgId?: string; projectId?: string; envId?: string },
-  item: WorkforceItem,
-  path: string
-): Promise<string | null> {
-  if (isLocalEnvironment()) {
-    const key = item.uid ?? item.name ?? item.id;
-    const base = key ? resolveLocalDeployment(key) : null;
-    return base ? `${base}${path}` : null;
-  }
-
-  const { orgId, projectId } = requireRemoteContext(resolved);
-  const deployment = await resolveRemoteDeployment(client, orgId, projectId, resolved.envId, item);
-  return deployment ? `https://${deployment.domain}${path}` : null;
-}
-
-function injectPlatformConfig(
-  payload: Record<string, unknown>,
-  client: ApiClient,
-  platformConfig?: PlatformConfig
-): Record<string, unknown> {
-  if (isLocalEnvironment()) return payload;
-
-  const config = platformConfig ?? buildPlatformConfig(client);
-  const existingContext = (payload.context && typeof payload.context === 'object') ? payload.context : {};
-  return {
-    ...payload,
-    context: {
-      ...existingContext,
-      platform_config: config,
-    },
-  };
-}
-
-function isLocalEnvironment(): boolean {
-  return !!(process.env.TIMBAL_START_WORKFORCE ?? process.env.TIMBAL_WORKFORCE);
-}
-
-function isStudioEnvironment(): boolean {
-  return !!process.env.TIMBAL_STUDIO;
-}
-
-function buildStudioUrl(client: ApiClient, resolved: { orgId?: string; projectId?: string }): string {
-  const { orgId, projectId } = requireRemoteContext(resolved);
-  const config = client.getConfig();
-  const baseUrl = config.baseUrl.endsWith('/') ? config.baseUrl.slice(0, -1) : config.baseUrl;
-  return `${baseUrl}/orgs/${orgId}/projects/${projectId}/git/codegen`;
-}
-
-interface StudioPayloadOptions {
-  stream?: boolean;
-  platformConfig?: PlatformConfig | Record<string, unknown>;
-  subject?: { org_id: string; app_id: string };
-}
-
-function buildStudioPayload(
-  workforceName: string,
-  input: Record<string, unknown>,
-  options?: StudioPayloadOptions
-): Record<string, unknown> {
-  const args: Record<string, unknown> = { input };
-  if (options?.stream) args.stream = true;
-
-  const context: Record<string, unknown> = {};
-  if (options?.platformConfig) {
-    Object.assign(context, options.platformConfig);
-  }
-  if (options?.subject) {
-    context.subject = options.subject;
-  }
-  if (Object.keys(context).length > 0) {
-    args.context = context;
-  }
-
-  return {
-    rev: process.env.TIMBAL_REV || 'main',
-    workforce: workforceName,
-    command: 'test',
-    args,
-  };
-}
-
-
 
 export async function scanTimbalYamls(rootDir: string): Promise<Map<string, { name: string; type?: string }>> {
   const result = new Map<string, { name: string; type?: string }>();
@@ -241,114 +106,194 @@ export async function listLocalWorkforces(rootDir?: string): Promise<WorkforceIt
   });
 }
 
-// ── Workforce resolution ──
+// ── Remote helpers ──
 
-const workforceCache = new Map<string, WorkforceItem[]>();
+/**
+ * List responses cached per `orgId:projectId:rev` so successive callWorkforce/
+ * streamWorkforce calls don't each trigger a list round-trip.
+ * Invalidate with `clearWorkforceCache()` when you deploy new code mid-session.
+ */
+const workforceListCache = new Map<string, WorkforceItem[]>();
 
-async function fetchWorkforceItems(
-  client: ApiClient,
-  resolved: { orgId?: string; projectId?: string }
-): Promise<WorkforceItem[]> {
-  const { orgId, projectId } = requireRemoteContext(resolved);
-  const cacheKey = `${orgId}:${projectId}`;
-  const cached = workforceCache.get(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const response = await client.get<{ workforce?: WorkforceItem[]; apps?: WorkforceItem[] }>(
-      `orgs/${orgId}/projects/${projectId}`
-    );
-    const rawItems = response.data.workforce ?? response.data.apps ?? [];
-    const items = rawItems.map(item => ({
-      id: item.id,
-      uid: item.uid,
-      type: item.type,
-      name: item.name,
-      description: item.description,
-    }));
-    workforceCache.set(cacheKey, items);
-    return items;
-  } catch {
-    return [];
-  }
-}
-
-function findWorkforceItem(items: WorkforceItem[], identifier: string): WorkforceItem | undefined {
-  return items.find(w => w.uid === identifier || w.id === identifier || w.name === identifier);
+export function clearWorkforceCache(): void {
+  workforceListCache.clear();
 }
 
 async function resolveWorkforceItem(
   client: ApiClient,
-  resolved: { orgId?: string; projectId?: string },
+  orgId: string,
+  projectId: string,
+  rev: string,
   identifier: string,
 ): Promise<WorkforceItem> {
-  const items = await fetchWorkforceItems(client, resolved);
-  const item = findWorkforceItem(items, identifier);
+  const cacheKey = `${orgId}:${projectId}:${rev}`;
+
+  const findInList = (items: WorkforceItem[]): WorkforceItem | undefined =>
+    items.find(w => w.id === identifier || w.uid === identifier || w.name === identifier);
+
+  let items = workforceListCache.get(cacheKey);
+  let item = items ? findInList(items) : undefined;
+
+  // Cache miss, or cached list predates a newly-registered component → refresh.
   if (!item) {
-    throw new Error(`Could not resolve workforce for identifier: ${identifier}`);
+    const response = await client.get<{ workforce: WorkforceItem[] }>(
+      `orgs/${orgId}/projects/${projectId}/workforce`,
+      { rev },
+    );
+    items = response.data.workforce ?? [];
+    workforceListCache.set(cacheKey, items);
+    item = findInList(items);
+  }
+
+  if (!item) {
+    throw new Error(`Workforce component not found for identifier "${identifier}" on rev "${rev}"`);
   }
   return item;
 }
 
+function appendPathToUrl(url: string, path: string): string {
+  const u = new URL(url);
+  const cleanPath = path.replace(/^\//, '');
+  if (!cleanPath) return url;
+  u.pathname = `${u.pathname.replace(/\/$/, '')}/${cleanPath}`;
+  return u.toString();
+}
+
+async function resolveWorkforceEndpoint(
+  client: ApiClient,
+  orgId: string,
+  projectId: string,
+  rev: string,
+  identifier: string,
+  path: string,
+): Promise<string> {
+  const item = await resolveWorkforceItem(client, orgId, projectId, rev, identifier);
+  if (!item.url) {
+    throw new Error(`No running deployment for workforce "${identifier}" on rev "${rev}"`);
+  }
+  return appendPathToUrl(item.url, path);
+}
+
+function postWorkforce(client: ApiClient, url: string, payload: Record<string, unknown>): Promise<Response> {
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${client.getConfig().token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+function buildPlatformConfig(client: ApiClient): PlatformConfig {
+  const config = client.getConfig();
+  const baseUrl = config.baseUrl.replace(/^https?:\/\//, '');
+  return {
+    host: baseUrl,
+    auth: {
+      type: 'bearer',
+      token: config.token,
+    },
+  };
+}
+
+function injectPlatformConfig(
+  payload: Record<string, unknown>,
+  client: ApiClient,
+  platformConfig?: PlatformConfig
+): Record<string, unknown> {
+  if (isLocalEnvironment()) return payload;
+
+  const config = platformConfig ?? buildPlatformConfig(client);
+  const existingContext = (payload.context && typeof payload.context === 'object') ? payload.context : {};
+  return {
+    ...payload,
+    context: {
+      ...existingContext,
+      platform_config: config,
+    },
+  };
+}
+
+// ── Studio helpers ──
+
+function buildStudioUrl(client: ApiClient, resolved: ResolvedContext): string {
+  const { orgId, projectId } = requireRemoteContext(resolved);
+  const config = client.getConfig();
+  const baseUrl = config.baseUrl.replace(/\/$/, '');
+  return `${baseUrl}/orgs/${orgId}/projects/${projectId}/git/codegen`;
+}
+
+interface StudioPayloadOptions {
+  stream?: boolean;
+  platformConfig?: PlatformConfig | Record<string, unknown>;
+  subject?: { org_id: string; app_id: string };
+  rev: string;
+}
+
+function buildStudioPayload(
+  workforceName: string,
+  input: Record<string, unknown>,
+  options: StudioPayloadOptions,
+): Record<string, unknown> {
+  const args: Record<string, unknown> = { input };
+  if (options.stream) args.stream = true;
+
+  const context: Record<string, unknown> = {};
+  if (options.platformConfig) {
+    Object.assign(context, options.platformConfig);
+  }
+  if (options.subject) {
+    context.subject = options.subject;
+  }
+  if (Object.keys(context).length > 0) {
+    args.context = context;
+  }
+
+  return {
+    rev: options.rev,
+    workforce: workforceName,
+    command: 'test',
+    args,
+  };
+}
 
 // ── Public functions ──
 
 /**
- * List all running workforce components for a project.
+ * List workforce components for a project.
  *
- * In remote mode (when `envId` is set), queries the Timbal API for running deployments.
+ * In remote mode, queries `GET /orgs/{orgId}/projects/{projectId}/workforce?rev={rev}`.
+ * Items include a `url` when a running deployment exists on the given branch.
  * In local mode, reads `timbal.yaml` manifests from the workforce directory on disk.
- * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_ENV_ID.
- *
- * @param client - The API client instance.
- * @param ctx - Optional workforce context overrides.
- * @param workforceDir - Override the local workforce directory. Defaults to `<cwd>/workforce`.
- * @returns A list of workforce items, each containing a manifest ID.
- *
- * @example
- * // Context from env vars
- * const workforces = await listWorkforces(client)
- *
- * // Explicit context
- * const workforces = await listWorkforces(client, {
- *   orgId: "10", projectId: "5", envId: "env-1"
- * })
+ * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_REV.
  */
 export async function listWorkforces(
   client: ApiClient,
   ctx?: PlatformContext,
 ): Promise<WorkforceItem[]> {
   if (isLocalEnvironment()) {
-    return await listLocalWorkforces();
+    return listLocalWorkforces();
   }
 
   const resolved = resolveContext(client, ctx);
-  return fetchWorkforceItems(client, resolved);
+  const { orgId, projectId, rev } = requireRemoteContext(resolved);
+  const response = await client.get<{ workforce: WorkforceItem[] }>(
+    `orgs/${orgId}/projects/${projectId}/workforce`,
+    { rev },
+  );
+  const items = response.data.workforce ?? [];
+  workforceListCache.set(`${orgId}:${projectId}:${rev}`, items);
+  return items;
 }
 
 /**
  * Call a workforce component and return the full response.
  *
- * Resolves the deployment for the given manifest ID, then POSTs to its `/run` endpoint.
- * In remote mode, platform credentials are automatically injected into the request context.
- * In local mode, resolves via `TIMBAL_START_WORKFORCE` env var and skips credential injection.
- * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_ENV_ID.
- *
- * @param client - The API client instance.
- * @param identifier - The identifier (uid, name, or id) of the workforce component to call.
- * @param input - The request payload to send to the workforce component.
- * @param ctx - Optional workforce context overrides.
- * @param platformConfig - Override the auto-injected platform config.
- * @returns The raw fetch Response. The caller can read JSON, pipe the body, etc.
- *
- * @example
- * // Context from env vars
- * const response = await callWorkforce(client, "my-agent", { message: "Hello!" })
- *
- * // Explicit context
- * const response = await callWorkforce(client, "my-agent", { message: "Hello!" }, {
- *   orgId: "10", projectId: "5", envId: "env-1"
- * })
+ * In remote mode, POSTs to `/orgs/{orgId}/projects/{projectId}/workforce/{identifier}/run?rev={rev}`.
+ * In local mode, resolves via `TIMBAL_START_WORKFORCE` env var.
+ * In studio mode (`TIMBAL_STUDIO`), routes through the codegen endpoint with the same rev.
+ * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_REV.
  */
 export async function callWorkforce(
   client: ApiClient,
@@ -360,12 +305,12 @@ export async function callWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
-    const item = await resolveWorkforceItem(client, resolved, identifier);
-    const { orgId } = requireRemoteContext(resolved);
+    const { orgId, rev } = requireRemoteContext(resolved);
     const url = buildStudioUrl(client, resolved);
-    const payload = buildStudioPayload(item.name!, input, {
+    const payload = buildStudioPayload(identifier, input, {
+      rev,
       platformConfig: platformConfig ?? buildPlatformConfig(client),
-      subject: { org_id: orgId, app_id: item.id! },
+      subject: { org_id: orgId, app_id: identifier },
     });
     return fetch(url, {
       method: 'POST',
@@ -377,44 +322,30 @@ export async function callWorkforce(
     });
   }
 
-  const item = isLocalEnvironment()
-    ? await resolveLocalWorkforceItem(identifier)
-    : await resolveWorkforceItem(client, resolved, identifier);
-  const url = await resolveEndpoint(client, resolved, item, '/run');
-  if (!url) {
-    throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
+  if (isLocalEnvironment()) {
+    const item = await resolveLocalWorkforceItem(identifier);
+    const key = item.uid ?? item.name ?? item.id;
+    const base = key ? resolveLocalDeployment(key) : null;
+    if (!base) throw new Error(`Could not resolve local workforce for: ${identifier}`);
+    return fetch(`${base}/run`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
+  const { orgId, projectId, rev } = requireRemoteContext(resolved);
+  const url = await resolveWorkforceEndpoint(client, orgId, projectId, rev, identifier, 'run');
   const payload = injectPlatformConfig(input, client, platformConfig);
-
-  return fetch(url, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  return postWorkforce(client, url, payload);
 }
 
 /**
  * Stream events from a workforce component via Server-Sent Events (SSE).
  *
- * Resolves the deployment for the given manifest ID, then POSTs to its `/stream` endpoint.
- * Platform credentials are automatically injected in remote mode, same as `callWorkforce`.
- * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_ENV_ID.
- *
- * @param client - The API client instance.
- * @param identifier - The identifier (uid, name, or id) of the workforce component to stream from.
- * @param input - The request payload to send to the workforce component.
- * @param ctx - Optional workforce context overrides.
- * @param platformConfig - Override the auto-injected platform config.
- * @returns The raw fetch Response. Use `response.body` to read the SSE stream.
- *
- * @example
- * // Context from env vars
- * const response = await streamWorkforce(client, "my-agent", { message: "Hello!" })
- *
- * // Pipe through in an API handler
- * return new Response(response.body, {
- *   headers: { "Content-Type": "text/event-stream" }
- * })
+ * In remote mode, POSTs to `/orgs/{orgId}/projects/{projectId}/workforce/{identifier}/stream?rev={rev}`.
+ * In local mode, resolves via `TIMBAL_START_WORKFORCE` env var.
+ * In studio mode (`TIMBAL_STUDIO`), routes through the codegen endpoint with the same rev.
+ * Context fields fall back to env vars: TIMBAL_ORG_ID, TIMBAL_PROJECT_ID, TIMBAL_PROJECT_REV.
  */
 export async function streamWorkforce(
   client: ApiClient,
@@ -426,13 +357,13 @@ export async function streamWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
-    const item = await resolveWorkforceItem(client, resolved, identifier);
-    const { orgId } = requireRemoteContext(resolved);
+    const { orgId, rev } = requireRemoteContext(resolved);
     const url = buildStudioUrl(client, resolved);
-    const payload = buildStudioPayload(item.name!, input, {
+    const payload = buildStudioPayload(identifier, input, {
+      rev,
       stream: true,
       platformConfig: platformConfig ?? buildPlatformConfig(client),
-      subject: { org_id: orgId, app_id: item.id! },
+      subject: { org_id: orgId, app_id: identifier },
     });
     return fetch(url, {
       method: 'POST',
@@ -444,30 +375,19 @@ export async function streamWorkforce(
     });
   }
 
-  const item = isLocalEnvironment()
-    ? await resolveLocalWorkforceItem(identifier)
-    : await resolveWorkforceItem(client, resolved, identifier);
-  const url = await resolveEndpoint(client, resolved, item, '/stream');
-  if (!url) {
-    throw new Error(`Could not resolve workforce deployment for: ${identifier}`);
+  if (isLocalEnvironment()) {
+    const item = await resolveLocalWorkforceItem(identifier);
+    const key = item.uid ?? item.name ?? item.id;
+    const base = key ? resolveLocalDeployment(key) : null;
+    if (!base) throw new Error(`Could not resolve local workforce for: ${identifier}`);
+    return fetch(`${base}/stream`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
   }
 
+  const { orgId, projectId, rev } = requireRemoteContext(resolved);
+  const url = await resolveWorkforceEndpoint(client, orgId, projectId, rev, identifier, 'stream');
   const payload = injectPlatformConfig(input, client, platformConfig);
-
-  return fetch(url, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-}
-
-/**
- * Clear the deployment cache.
- *
- * Deployments are cached after first resolution to avoid repeated API calls.
- * Call this when deployments change (e.g., after a new deploy) to force re-resolution.
- */
-export function clearDeploymentCache(): void {
-  deploymentCache.clear();
-  deploymentsListCache.clear();
-  workforceCache.clear();
+  return postWorkforce(client, url, payload);
 }

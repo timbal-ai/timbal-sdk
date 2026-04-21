@@ -333,6 +333,42 @@ describe('ApiClient', () => {
       expect(config1).toEqual(config2);
       expect(config1).not.toBe(config2);
     });
+
+    test('should default rev to "main" when nothing is configured', () => {
+      const saved = process.env.TIMBAL_PROJECT_REV;
+      delete process.env.TIMBAL_PROJECT_REV;
+      try {
+        const client = new ApiClient({ token: 'k' });
+        expect(client.getConfig().rev).toBe('main');
+      } finally {
+        if (saved !== undefined) process.env.TIMBAL_PROJECT_REV = saved;
+        else delete process.env.TIMBAL_PROJECT_REV;
+      }
+    });
+
+    test('should read rev from TIMBAL_PROJECT_REV env var', () => {
+      const saved = process.env.TIMBAL_PROJECT_REV;
+      process.env.TIMBAL_PROJECT_REV = 'feature-branch';
+      try {
+        const client = new ApiClient({ token: 'k' });
+        expect(client.getConfig().rev).toBe('feature-branch');
+      } finally {
+        if (saved !== undefined) process.env.TIMBAL_PROJECT_REV = saved;
+        else delete process.env.TIMBAL_PROJECT_REV;
+      }
+    });
+
+    test('should let explicit rev override TIMBAL_PROJECT_REV env var', () => {
+      const saved = process.env.TIMBAL_PROJECT_REV;
+      process.env.TIMBAL_PROJECT_REV = 'feature-branch';
+      try {
+        const client = new ApiClient({ token: 'k', rev: 'release' });
+        expect(client.getConfig().rev).toBe('release');
+      } finally {
+        if (saved !== undefined) process.env.TIMBAL_PROJECT_REV = saved;
+        else delete process.env.TIMBAL_PROJECT_REV;
+      }
+    });
   });
 });
 

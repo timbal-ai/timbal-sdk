@@ -11,7 +11,7 @@ export interface TimbalConfig extends ClientConfig {
   token?: string;
   orgId?: string;
   projectId?: string;
-  envId?: string;
+  rev?: string;
   kbId?: string;
 }
 
@@ -49,7 +49,7 @@ export interface Session {
 export interface PlatformContext {
   orgId?: string;
   projectId?: string;
-  envId?: string;
+  rev?: string;
 }
 
 // ── Query ──
@@ -84,12 +84,17 @@ export interface File {
 
 // ── Workforce ──
 
+export type WorkforceType = 'agent' | 'workflow' | 'unknown';
+
 export interface WorkforceItem {
   id?: string;
-  uid?: string;
-  type?: string;
+  uid?: string | null;
+  type?: WorkforceType | string;
   name?: string;
   description?: string | null;
+  /** Set only when list was queried with `rev` and the component has a running deployment on that branch. */
+  url?: string | null;
+  deleted_at?: number | null;
 }
 
 export interface PlatformConfig {
