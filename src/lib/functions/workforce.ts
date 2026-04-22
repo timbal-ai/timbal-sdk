@@ -305,12 +305,13 @@ export async function callWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
-    const { orgId, rev } = requireRemoteContext(resolved);
+    const { orgId, projectId, rev } = requireRemoteContext(resolved);
+    const item = await resolveWorkforceItem(client, orgId, projectId, rev, identifier);
     const url = buildStudioUrl(client, resolved);
-    const payload = buildStudioPayload(identifier, input, {
+    const payload = buildStudioPayload(item.name!, input, {
       rev,
       platformConfig: platformConfig ?? buildPlatformConfig(client),
-      subject: { org_id: orgId, app_id: identifier },
+      subject: { org_id: orgId, app_id: item.id! },
     });
     return fetch(url, {
       method: 'POST',
@@ -357,13 +358,14 @@ export async function streamWorkforce(
   const resolved = resolveContext(client, ctx);
 
   if (isStudioEnvironment()) {
-    const { orgId, rev } = requireRemoteContext(resolved);
+    const { orgId, projectId, rev } = requireRemoteContext(resolved);
+    const item = await resolveWorkforceItem(client, orgId, projectId, rev, identifier);
     const url = buildStudioUrl(client, resolved);
-    const payload = buildStudioPayload(identifier, input, {
+    const payload = buildStudioPayload(item.name!, input, {
       rev,
       stream: true,
       platformConfig: platformConfig ?? buildPlatformConfig(client),
-      subject: { org_id: orgId, app_id: identifier },
+      subject: { org_id: orgId, app_id: item.id! },
     });
     return fetch(url, {
       method: 'POST',
