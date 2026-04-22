@@ -226,9 +226,8 @@ function buildStudioUrl(client: ApiClient, resolved: ResolvedContext): string {
 
 interface StudioPayloadOptions {
   stream?: boolean;
-  platformConfig?: PlatformConfig | Record<string, unknown>;
-  subject?: { org_id: string; app_id: string };
   rev: string;
+  parentId?: string;
 }
 
 function buildStudioPayload(
@@ -238,17 +237,7 @@ function buildStudioPayload(
 ): Record<string, unknown> {
   const args: Record<string, unknown> = { input };
   if (options.stream) args.stream = true;
-
-  const context: Record<string, unknown> = {};
-  if (options.platformConfig) {
-    Object.assign(context, options.platformConfig);
-  }
-  if (options.subject) {
-    context.subject = options.subject;
-  }
-  if (Object.keys(context).length > 0) {
-    args.context = context;
-  }
+  if (options.parentId) args.context = { parent_id: options.parentId };
 
   return {
     rev: options.rev,
@@ -308,11 +297,7 @@ export async function callWorkforce(
     const { orgId, projectId, rev } = requireRemoteContext(resolved);
     const item = await resolveWorkforceItem(client, orgId, projectId, rev, identifier);
     const url = buildStudioUrl(client, resolved);
-    const payload = buildStudioPayload(item.name!, input, {
-      rev,
-      platformConfig: platformConfig ?? buildPlatformConfig(client),
-      subject: { org_id: orgId, app_id: item.id! },
-    });
+    const payload = buildStudioPayload(item.name!, input, { rev, parentId: ctx?.parentId });
     return fetch(url, {
       method: 'POST',
       headers: {
@@ -361,12 +346,7 @@ export async function streamWorkforce(
     const { orgId, projectId, rev } = requireRemoteContext(resolved);
     const item = await resolveWorkforceItem(client, orgId, projectId, rev, identifier);
     const url = buildStudioUrl(client, resolved);
-    const payload = buildStudioPayload(item.name!, input, {
-      rev,
-      stream: true,
-      platformConfig: platformConfig ?? buildPlatformConfig(client),
-      subject: { org_id: orgId, app_id: item.id! },
-    });
+    const payload = buildStudioPayload(item.name!, input, { rev, stream: true, parentId: ctx?.parentId });
     return fetch(url, {
       method: 'POST',
       headers: {

@@ -50,6 +50,8 @@ export interface PlatformContext {
   orgId?: string;
   projectId?: string;
   rev?: string;
+  /** Optional parent run id. Only emitted in studio-mode codegen requests as `args.context.parent_id`. */
+  parentId?: string;
 }
 
 // ── Query ──

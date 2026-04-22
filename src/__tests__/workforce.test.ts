@@ -645,24 +645,23 @@ describe('studio mode', () => {
     expect(body.command).toBe('test');
     expect(body.args.input).toEqual({ prompt: 'hello' });
     expect(body.args.stream).toBeUndefined();
-    expect(body.args.context).toBeDefined();
-    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '475' });
+    expect(body.args.context).toBeUndefined();
   });
 
-  test('should resolve uid identifier to canonical name and numeric app_id', async () => {
+  test('should resolve uid identifier to canonical name', async () => {
     await callWorkforce(mockApiClient, '802fbbfb484ed57c34e3d33390a2a20f', {}, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.workforce).toBe('sunny-squid');
-    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '473' });
+    expect(body.args.context).toBeUndefined();
   });
 
-  test('should resolve numeric id identifier to canonical name and numeric app_id', async () => {
+  test('should resolve numeric id identifier to canonical name', async () => {
     await callWorkforce(mockApiClient, '473', {}, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.workforce).toBe('sunny-squid');
-    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '473' });
+    expect(body.args.context).toBeUndefined();
   });
 
   test('should throw when identifier does not resolve', async () => {
@@ -679,7 +678,7 @@ describe('studio mode', () => {
     expect(body.args.stream).toBe(true);
     expect(body.args.input).toEqual({ prompt: 'hello' });
     expect(body.workforce).toBe('clever-jaguar');
-    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '474' });
+    expect(body.args.context).toBeUndefined();
   });
 
   test('should use rev from context when provided', async () => {
@@ -695,6 +694,28 @@ describe('studio mode', () => {
 
     const headers = mockFetch.mock.calls[0][1].headers;
     expect(headers.Authorization).toBe('Bearer test-key');
+  });
+
+  test('should include args.context.parent_id when parentId is provided in ctx', async () => {
+    await callWorkforce(mockApiClient, 'sunny-squid', {}, { ...remoteCtx, parentId: 'run-123' });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.args.context).toEqual({ parent_id: 'run-123' });
+  });
+
+  test('streamWorkforce should include args.context.parent_id when parentId is provided', async () => {
+    await streamWorkforce(mockApiClient, 'sunny-squid', {}, { ...remoteCtx, parentId: 'run-456' });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.args.stream).toBe(true);
+    expect(body.args.context).toEqual({ parent_id: 'run-456' });
+  });
+
+  test('should omit args.context entirely when parentId is not provided', async () => {
+    await callWorkforce(mockApiClient, 'sunny-squid', {}, remoteCtx);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.args.context).toBeUndefined();
   });
 });
 
