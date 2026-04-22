@@ -565,6 +565,37 @@ describe('studio mode', () => {
   let originalStudio: string | undefined;
   let originalRev: string | undefined;
 
+  function makeListResponse(rev: string) {
+    return {
+      workforce: [
+        {
+          id: '473',
+          uid: '802fbbfb484ed57c34e3d33390a2a20f',
+          type: 'agent',
+          name: 'sunny-squid',
+          description: null,
+          url: `https://api.timbal.ai/orgs/org1/projects/proj1/workforce/802fbbfb484ed57c34e3d33390a2a20f?rev=${rev}`,
+        },
+        {
+          id: '474',
+          uid: 'manifest-2',
+          type: 'workflow',
+          name: 'clever-jaguar',
+          description: null,
+          url: `https://api.timbal.ai/orgs/org1/projects/proj1/workforce/manifest-2?rev=${rev}`,
+        },
+        {
+          id: '475',
+          uid: 'manifest-3',
+          type: 'agent',
+          name: 'eager-pelican',
+          description: null,
+          url: `https://api.timbal.ai/orgs/org1/projects/proj1/workforce/manifest-3?rev=${rev}`,
+        },
+      ],
+    };
+  }
+
   const mockApiClient = {
     getConfig: () => ({
       baseUrl: 'https://api.timbal.ai',
@@ -574,9 +605,17 @@ describe('studio mode', () => {
       retryDelay: 1000,
       rev: 'main',
     }),
+    get: mock((_endpoint: string, params?: { rev: string }) =>
+      Promise.resolve({ data: makeListResponse(params?.rev ?? 'main') })
+    ),
   } as any;
 
   beforeEach(() => {
+    clearWorkforceCache();
+    mockApiClient.get.mockClear();
+    mockApiClient.get.mockImplementation((_endpoint: string, params?: { rev: string }) =>
+      Promise.resolve({ data: makeListResponse(params?.rev ?? 'main') })
+    );
     originalFetch = global.fetch;
     mockFetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ output: 'hello' }), { status: 200 }))
@@ -596,7 +635,7 @@ describe('studio mode', () => {
     else delete process.env.TIMBAL_PROJECT_REV;
   });
 
-  test('callWorkforce should POST codegen test command with identifier as workforce name', async () => {
+  test('callWorkforce should POST codegen test command with resolved name', async () => {
     await callWorkforce(mockApiClient, 'eager-pelican', { prompt: 'hello' }, remoteCtx);
 
     expect(mockFetch.mock.calls[0][0]).toBe('https://api.timbal.ai/orgs/org1/projects/proj1/git/codegen');
@@ -607,13 +646,29 @@ describe('studio mode', () => {
     expect(body.args.input).toEqual({ prompt: 'hello' });
     expect(body.args.stream).toBeUndefined();
     expect(body.args.context).toBeDefined();
+    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '475' });
   });
 
-  test('callWorkforce should pass identifier directly as workforce', async () => {
-    await callWorkforce(mockApiClient, 'manifest-2', { prompt: 'hello' }, remoteCtx);
+  test('should resolve uid identifier to canonical name and numeric app_id', async () => {
+    await callWorkforce(mockApiClient, '802fbbfb484ed57c34e3d33390a2a20f', {}, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.workforce).toBe('manifest-2');
+    expect(body.workforce).toBe('sunny-squid');
+    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '473' });
+  });
+
+  test('should resolve numeric id identifier to canonical name and numeric app_id', async () => {
+    await callWorkforce(mockApiClient, '473', {}, remoteCtx);
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.workforce).toBe('sunny-squid');
+    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '473' });
+  });
+
+  test('should throw when identifier does not resolve', async () => {
+    await expect(
+      callWorkforce(mockApiClient, 'nonexistent', {}, remoteCtx)
+    ).rejects.toThrow('Workforce component not found');
   });
 
   test('streamWorkforce should POST codegen test command with stream flag', async () => {
@@ -624,17 +679,19 @@ describe('studio mode', () => {
     expect(body.args.stream).toBe(true);
     expect(body.args.input).toEqual({ prompt: 'hello' });
     expect(body.workforce).toBe('clever-jaguar');
+    expect(body.args.context.subject).toEqual({ org_id: 'org1', app_id: '474' });
   });
 
   test('should use rev from context when provided', async () => {
-    await callWorkforce(mockApiClient, 'manifest-1', {}, { ...remoteCtx, rev: 'feature-branch' });
+    await callWorkforce(mockApiClient, 'sunny-squid', {}, { ...remoteCtx, rev: 'feature-branch' });
 
+    expect(mockApiClient.get).toHaveBeenCalledWith('orgs/org1/projects/proj1/workforce', { rev: 'feature-branch' });
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.rev).toBe('feature-branch');
   });
 
   test('should include Authorization header', async () => {
-    await callWorkforce(mockApiClient, 'manifest-1', {}, remoteCtx);
+    await callWorkforce(mockApiClient, 'sunny-squid', {}, remoteCtx);
 
     const headers = mockFetch.mock.calls[0][1].headers;
     expect(headers.Authorization).toBe('Bearer test-key');
