@@ -99,14 +99,6 @@ export interface WorkforceItem {
   deleted_at?: number | null;
 }
 
-export interface PlatformConfig {
-  host: string;
-  auth: {
-    type: string;
-    token: string;
-  };
-}
-
 // ── Project ──
 
 export interface WorkforcePreview {
