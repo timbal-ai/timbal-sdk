@@ -316,23 +316,35 @@ describe('callWorkforce', () => {
     expect(headers['Content-Type']).toBe('application/json');
   });
 
-  test('should inject platform config for remote calls', async () => {
+  test('should NOT inject platform_config for remote calls', async () => {
     await callWorkforce(mockApiClient, 'sunny-squid', { message: 'hi' }, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.context.platform_config).toEqual({
-      host: 'api.timbal.ai',
-      auth: { type: 'bearer', token: 'test-key' },
-    });
+    expect(body.context).toBeUndefined();
   });
 
-  test('should preserve existing input fields alongside injected context', async () => {
+  test('should preserve input fields and omit context when no parentId is provided', async () => {
     await callWorkforce(mockApiClient, 'sunny-squid', { message: 'hi', extra: 'data' }, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.message).toBe('hi');
     expect(body.extra).toBe('data');
-    expect(body.context.platform_config).toBeDefined();
+    expect(body.context).toBeUndefined();
+  });
+
+  test('should inject context.parent_id when ctx.parentId is provided', async () => {
+    await callWorkforce(mockApiClient, 'sunny-squid', { msg: 'hi' }, { ...remoteCtx, parentId: 'run-abc' });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.msg).toBe('hi');
+    expect(body.context).toEqual({ parent_id: 'run-abc' });
+  });
+
+  test('streamWorkforce should inject context.parent_id when ctx.parentId is provided', async () => {
+    await streamWorkforce(mockApiClient, 'sunny-squid', {}, { ...remoteCtx, parentId: 'run-def' });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.context).toEqual({ parent_id: 'run-def' });
   });
 
   test('should throw when orgId is missing', async () => {
@@ -347,19 +359,7 @@ describe('callWorkforce', () => {
     ).rejects.toThrow('projectId is required');
   });
 
-  test('should allow custom platform config', async () => {
-    const customConfig = {
-      host: 'custom.api.com',
-      auth: { type: 'bearer', token: 'custom-token' },
-    };
-
-    await callWorkforce(mockApiClient, 'sunny-squid', { msg: 'hi' }, remoteCtx, customConfig);
-
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.context.platform_config).toEqual(customConfig);
-  });
-
-  test('should skip platform config injection in local mode', async () => {
+  test('should not send context in local mode', async () => {
     const originalEnv = process.env.TIMBAL_START_WORKFORCE;
     process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
 
@@ -437,11 +437,11 @@ describe('callWorkforce', () => {
     }
   });
 
-  test('should call with empty input by default', async () => {
+  test('should call with empty input by default and omit context', async () => {
     await callWorkforce(mockApiClient, 'sunny-squid', undefined, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.context.platform_config).toBeDefined();
+    expect(body.context).toBeUndefined();
   });
 });
 
@@ -506,11 +506,11 @@ describe('streamWorkforce', () => {
     expect(body.message).toBe('hi');
   });
 
-  test('should inject platform config for stream calls', async () => {
+  test('should NOT inject platform_config for stream calls', async () => {
     await streamWorkforce(mockApiClient, 'sunny-squid', { msg: 'hi' }, remoteCtx);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.context.platform_config.host).toBe('api.timbal.ai');
+    expect(body.context).toBeUndefined();
   });
 
   test('should include Authorization header for stream calls', async () => {
@@ -526,7 +526,7 @@ describe('streamWorkforce', () => {
     ).rejects.toThrow('orgId is required');
   });
 
-  test('should skip platform config injection in local mode', async () => {
+  test('should not send context in local mode', async () => {
     const originalEnv = process.env.TIMBAL_START_WORKFORCE;
     process.env.TIMBAL_START_WORKFORCE = 'manifest-1:4000';
 

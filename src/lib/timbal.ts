@@ -7,7 +7,6 @@ import type {
   QueryOptions,
   PlatformContext,
   WorkforceItem,
-  PlatformConfig,
   OAuthProvider,
   TokenPair,
   Project,
@@ -109,18 +108,16 @@ export class Timbal {
     identifier: string,
     input?: Record<string, unknown>,
     ctx?: PlatformContext,
-    platformConfig?: PlatformConfig
   ): Promise<Response> {
-    return callWorkforceFn(this.apiClient, identifier, input, ctx, platformConfig);
+    return callWorkforceFn(this.apiClient, identifier, input, ctx);
   }
 
   async streamWorkforce(
     identifier: string,
     input?: Record<string, unknown>,
     ctx?: PlatformContext,
-    platformConfig?: PlatformConfig
   ): Promise<Response> {
-    return streamWorkforceFn(this.apiClient, identifier, input, ctx, platformConfig);
+    return streamWorkforceFn(this.apiClient, identifier, input, ctx);
   }
 
   clearWorkforceCache(): void {

@@ -1,5 +1,5 @@
 import type { ApiClient } from '../api';
-import type { PlatformContext, WorkforceItem, PlatformConfig } from '../../types';
+import type { PlatformContext, WorkforceItem } from '../../types';
 
 function nodeRequire(id: string): any { try { return require(id); } catch { return null; } }
 
@@ -185,32 +185,17 @@ function postWorkforce(client: ApiClient, url: string, payload: Record<string, u
   });
 }
 
-function buildPlatformConfig(client: ApiClient): PlatformConfig {
-  const config = client.getConfig();
-  const baseUrl = config.baseUrl.replace(/^https?:\/\//, '');
-  return {
-    host: baseUrl,
-    auth: {
-      type: 'bearer',
-      token: config.token,
-    },
-  };
-}
-
-function injectPlatformConfig(
+function injectParentId(
   payload: Record<string, unknown>,
-  client: ApiClient,
-  platformConfig?: PlatformConfig
+  parentId?: string,
 ): Record<string, unknown> {
-  if (isLocalEnvironment()) return payload;
-
-  const config = platformConfig ?? buildPlatformConfig(client);
+  if (!parentId) return payload;
   const existingContext = (payload.context && typeof payload.context === 'object') ? payload.context : {};
   return {
     ...payload,
     context: {
       ...existingContext,
-      platform_config: config,
+      parent_id: parentId,
     },
   };
 }
@@ -289,7 +274,6 @@ export async function callWorkforce(
   identifier: string,
   input: Record<string, unknown> = {},
   ctx?: PlatformContext,
-  platformConfig?: PlatformConfig
 ): Promise<Response> {
   const resolved = resolveContext(client, ctx);
 
@@ -321,7 +305,7 @@ export async function callWorkforce(
 
   const { orgId, projectId, rev } = requireRemoteContext(resolved);
   const url = await resolveWorkforceEndpoint(client, orgId, projectId, rev, identifier, 'run');
-  const payload = injectPlatformConfig(input, client, platformConfig);
+  const payload = injectParentId(input, ctx?.parentId);
   return postWorkforce(client, url, payload);
 }
 
@@ -338,7 +322,6 @@ export async function streamWorkforce(
   identifier: string,
   input: Record<string, unknown> = {},
   ctx?: PlatformContext,
-  platformConfig?: PlatformConfig
 ): Promise<Response> {
   const resolved = resolveContext(client, ctx);
 
@@ -370,6 +353,6 @@ export async function streamWorkforce(
 
   const { orgId, projectId, rev } = requireRemoteContext(resolved);
   const url = await resolveWorkforceEndpoint(client, orgId, projectId, rev, identifier, 'stream');
-  const payload = injectPlatformConfig(input, client, platformConfig);
+  const payload = injectParentId(input, ctx?.parentId);
   return postWorkforce(client, url, payload);
 }
