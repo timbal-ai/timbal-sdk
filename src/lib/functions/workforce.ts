@@ -297,9 +297,11 @@ export async function callWorkforce(
     const key = item.uid ?? item.name ?? item.id;
     const base = key ? resolveLocalDeployment(key) : null;
     if (!base) throw new Error(`Could not resolve local workforce for: ${identifier}`);
+    const payload = injectParentId(input, ctx?.parentId);
     return fetch(`${base}/run`, {
       method: 'POST',
-      body: JSON.stringify(input),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
   }
 
@@ -345,9 +347,11 @@ export async function streamWorkforce(
     const key = item.uid ?? item.name ?? item.id;
     const base = key ? resolveLocalDeployment(key) : null;
     if (!base) throw new Error(`Could not resolve local workforce for: ${identifier}`);
+    const payload = injectParentId(input, ctx?.parentId);
     return fetch(`${base}/stream`, {
       method: 'POST',
-      body: JSON.stringify(input),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
   }
 
