@@ -176,6 +176,36 @@ describe('ApiClient', () => {
       }
     });
 
+    test('should return data:null on 204 No Content (DELETE)', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 204,
+        // No json() — would throw if called.
+        json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+      });
+
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
+      const result = await client.delete('/test');
+
+      expect(result.data).toBeNull();
+      expect(result.statusCode).toBe(204);
+      expect(result.success).toBe(true);
+    });
+
+    test('should return data:null on empty 200 body', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.reject(new SyntaxError('Unexpected end of JSON input')),
+      });
+
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
+      const result = await client.get('/test');
+
+      expect(result.data).toBeNull();
+      expect(result.statusCode).toBe(200);
+    });
+
     test('should handle non-JSON error responses', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
