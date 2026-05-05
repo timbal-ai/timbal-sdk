@@ -401,6 +401,81 @@ describe('ApiClient', () => {
     });
   });
 
+  // ── TimbalApiError helpers ──
+
+  describe('TimbalApiError helpers', () => {
+    test('isClientError() is true for 4xx, false otherwise', () => {
+      expect(new TimbalApiError('x', 400).isClientError()).toBe(true);
+      expect(new TimbalApiError('x', 404).isClientError()).toBe(true);
+      expect(new TimbalApiError('x', 499).isClientError()).toBe(true);
+      expect(new TimbalApiError('x', 500).isClientError()).toBe(false);
+      expect(new TimbalApiError('x', 200).isClientError()).toBe(false);
+      expect(new TimbalApiError('x', 0, 'NETWORK_ERROR').isClientError()).toBe(false);
+    });
+
+    test('isServerError() is true for 5xx, false otherwise', () => {
+      expect(new TimbalApiError('x', 500).isServerError()).toBe(true);
+      expect(new TimbalApiError('x', 503).isServerError()).toBe(true);
+      expect(new TimbalApiError('x', 599).isServerError()).toBe(true);
+      expect(new TimbalApiError('x', 400).isServerError()).toBe(false);
+      expect(new TimbalApiError('x', 600).isServerError()).toBe(false);
+      expect(new TimbalApiError('x', 0, 'TIMEOUT_ERROR').isServerError()).toBe(false);
+    });
+
+    test('status-specific helpers match exact status codes', () => {
+      expect(new TimbalApiError('x', 401).isUnauthorized()).toBe(true);
+      expect(new TimbalApiError('x', 403).isUnauthorized()).toBe(false);
+
+      expect(new TimbalApiError('x', 403).isForbidden()).toBe(true);
+      expect(new TimbalApiError('x', 401).isForbidden()).toBe(false);
+
+      expect(new TimbalApiError('x', 404).isNotFound()).toBe(true);
+      expect(new TimbalApiError('x', 200).isNotFound()).toBe(false);
+
+      expect(new TimbalApiError('x', 409).isConflict()).toBe(true);
+      expect(new TimbalApiError('x', 400).isConflict()).toBe(false);
+
+      expect(new TimbalApiError('x', 429).isRateLimited()).toBe(true);
+      expect(new TimbalApiError('x', 503).isRateLimited()).toBe(false);
+    });
+
+    test('code-based helpers distinguish SDK-internal preconditions', () => {
+      expect(new TimbalApiError('x', 0, 'TIMEOUT_ERROR').isTimeout()).toBe(true);
+      expect(new TimbalApiError('x', 0, 'NETWORK_ERROR').isTimeout()).toBe(false);
+      expect(new TimbalApiError('x', 504).isTimeout()).toBe(false);
+
+      expect(new TimbalApiError('x', 0, 'NETWORK_ERROR').isNetworkError()).toBe(true);
+      expect(new TimbalApiError('x', 0, 'TIMEOUT_ERROR').isNetworkError()).toBe(false);
+
+      expect(new TimbalApiError('x', 0, 'AUTH_ERROR').isMissingAuth()).toBe(true);
+      expect(new TimbalApiError('x', 401).isMissingAuth()).toBe(false);
+    });
+
+    test('helpers work after instanceof narrowing on a thrown error', async () => {
+      mockFetch = mock(() =>
+        Promise.resolve({
+          ok: false,
+          status: 403,
+          json: () => Promise.resolve({ message: 'denied', code: 'FORBIDDEN' }),
+        })
+      );
+      global.fetch = mockFetch as unknown as typeof global.fetch;
+
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
+      try {
+        await client.get('/x');
+        expect(false).toBe(true);
+      } catch (err) {
+        expect(err).toBeInstanceOf(TimbalApiError);
+        if (err instanceof TimbalApiError) {
+          expect(err.isForbidden()).toBe(true);
+          expect(err.isClientError()).toBe(true);
+          expect(err.isServerError()).toBe(false);
+        }
+      }
+    });
+  });
+
   // ── Raw fetch ──
 
   describe('fetch (raw)', () => {
