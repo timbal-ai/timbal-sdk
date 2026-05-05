@@ -73,8 +73,10 @@ export class Timbal {
 
   // ── Session ──
 
-  async getSession(): Promise<Session> {
-    return getSessionFn(this.apiClient);
+  async getSession(): Promise<Session>;
+  async getSession(opts: { projectId: string | number }): Promise<{ session: Session; project: Project }>;
+  async getSession(opts?: { projectId?: string | number }): Promise<Session | { session: Session; project: Project }> {
+    return getSessionFn(this.apiClient, opts as any);
   }
 
   // ── Query ──

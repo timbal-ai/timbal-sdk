@@ -50,7 +50,7 @@ const TURN_2_PROMPT = `What is the session tag I asked you to remember? Repeat i
 
 function makeTimbal(): Timbal {
   return new Timbal({
-    ...(BASE_URL && { baseUrl: BASE_URL }),
+    baseUrl: BASE_URL ?? 'https://api.dev.timbal.ai',
     ...(TOKEN && { token: TOKEN }),
   });
 }

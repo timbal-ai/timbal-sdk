@@ -1,5 +1,6 @@
 import type { Timbal } from '../lib/timbal';
 import type { TimbalAuthOptions } from './types';
+import type { Session, Project } from '../types';
 
 const DEFAULT_PUBLIC_PATHS = ['/auth/', '/healthcheck'];
 
@@ -30,19 +31,27 @@ export function isPublicPath(
   return allPaths.some((p) => normalized.startsWith(p));
 }
 
+export interface ResolvedAuth {
+  token: string;
+  session: Session;
+  project: Project;
+}
+
 /**
  * Resolve an access token from a request.
  * Checks Bearer header first (API calls), falls back to cookie when Bearer is
  * missing or rejected (for browser sessions with a refreshed httpOnly cookie).
- * Validates the token by calling timbal.as(token).getProject().
+ * Validates the token via GET /me?project_id=... (single round trip, no orgId needed).
+ * Returns the token, session, and project together so callers pay zero extra round trips.
  */
 export async function resolveTokenFromRequest(
   timbal: Timbal,
   request: Request,
   cookieValue?: string | null,
-): Promise<string | null> {
+): Promise<ResolvedAuth | null> {
   if (isLocalDev()) return null;
 
+  const projectId = process.env.TIMBAL_PROJECT_ID as string;;
   const { method } = request;
   const path = new URL(request.url).pathname;
 
@@ -51,8 +60,8 @@ export async function resolveTokenFromRequest(
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     try {
-      await timbal.as(token).getProject();
-      return token;
+      const { session, project } = await timbal.as(token).getSession({ projectId });
+      return { token, session, project };
     } catch (err) {
       console.warn(
         `[auth] ${method} ${path} — bearer token rejected:`,
@@ -64,8 +73,8 @@ export async function resolveTokenFromRequest(
   // Fall back to cookie (browser navigations, or stale Bearer + fresh cookie).
   if (cookieValue) {
     try {
-      await timbal.as(cookieValue).getProject();
-      return cookieValue;
+      const { session, project } = await timbal.as(cookieValue).getSession({ projectId });
+      return { token: cookieValue, session, project };
     } catch (err) {
       console.warn(
         `[auth] ${method} ${path} — cookie token rejected:`,
