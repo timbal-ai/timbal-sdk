@@ -191,12 +191,20 @@ export class ApiClient {
         );
       }
 
-      const data = (await response.json()) as T;
-      return {
-        data,
-        success: true,
-        statusCode: response.status,
-      };
+      // 204 and other empty-body 2xx replies have no JSON to parse.
+      if (response.status === 204) {
+        return { data: null as T, success: true, statusCode: response.status };
+      }
+
+      try {
+        const data = (await response.json()) as T;
+        return { data, success: true, statusCode: response.status };
+      } catch (parseErr) {
+        if (parseErr instanceof SyntaxError) {
+          return { data: null as T, success: true, statusCode: response.status };
+        }
+        throw parseErr;
+      }
     } catch (error) {
       // Handle timeout
       if (error instanceof Error && error.name === 'AbortError') {
