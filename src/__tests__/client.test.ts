@@ -400,6 +400,97 @@ describe('ApiClient', () => {
       }
     });
   });
+
+  // ── Raw fetch ──
+
+  describe('fetch (raw)', () => {
+    test('returns the raw Response without parsing', async () => {
+      const fakeResponse = {
+        ok: true,
+        status: 200,
+        body: 'sentinel-stream',
+        json: () => Promise.reject(new Error('should not be called')),
+      };
+      mockFetch = mock(() => Promise.resolve(fakeResponse));
+      global.fetch = mockFetch as unknown as typeof global.fetch;
+
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
+      const resp = await client.fetch('/stream', { method: 'POST', body: '{"x":1}' });
+
+      expect(resp).toBe(fakeResponse as unknown as Response);
+      expect(resp.ok).toBe(true);
+      expect((resp as unknown as { body: string }).body).toBe('sentinel-stream');
+    });
+
+    test('attaches Authorization header and resolves baseUrl', async () => {
+      const client = new ApiClient({ token: 'my-key', baseUrl: 'https://api.test.com' });
+      await client.fetch('/runs/stream', { method: 'POST' });
+
+      expect(mockFetch.mock.calls[0][0]).toBe('https://api.test.com/runs/stream');
+      const headers = mockFetch.mock.calls[0][1].headers as Headers;
+      expect(headers.get('Authorization')).toBe('Bearer my-key');
+    });
+
+    test('does NOT throw on non-2xx — caller decides', async () => {
+      const errResponse = {
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ message: 'boom' }),
+      };
+      mockFetch = mock(() => Promise.resolve(errResponse));
+      global.fetch = mockFetch as unknown as typeof global.fetch;
+
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
+      const resp = await client.fetch('/x', { method: 'GET' });
+
+      expect(resp.ok).toBe(false);
+      expect(resp.status).toBe(500);
+    });
+
+    test('does NOT auto-retry on 5xx (single call)', async () => {
+      const errResponse = { ok: false, status: 503, json: () => Promise.resolve({}) };
+      mockFetch = mock(() => Promise.resolve(errResponse));
+      global.fetch = mockFetch as unknown as typeof global.fetch;
+
+      const client = new ApiClient({
+        token: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 3,
+        retryDelay: 1,
+      });
+      await client.fetch('/x');
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('throws AUTH_ERROR when no token configured', async () => {
+      const orig = process.env.TIMBAL_API_KEY;
+      const origConfigDir = process.env.TIMBAL_CONFIG_DIR;
+      delete process.env.TIMBAL_API_KEY;
+      process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
+      const client = new ApiClient({ baseUrl: 'https://api.test.com' });
+
+      try {
+        await client.fetch('/x');
+        expect(false).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(TimbalApiError);
+        expect((error as TimbalApiError).code).toBe('AUTH_ERROR');
+      } finally {
+        if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        if (origConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = origConfigDir;
+        else delete process.env.TIMBAL_CONFIG_DIR;
+      }
+    });
+
+    test('forwards caller-provided AbortSignal', async () => {
+      const client = new ApiClient({ token: 'k', baseUrl: 'https://api.test.com' });
+      const controller = new AbortController();
+      await client.fetch('/x', { method: 'GET', signal: controller.signal });
+
+      expect(mockFetch.mock.calls[0][1].signal).toBe(controller.signal);
+    });
+  });
 });
 
 // ── File config (profile loading) ──
