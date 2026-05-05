@@ -105,11 +105,14 @@ export class ApiClient {
     };
   }
 
-  private async makeRequest<T>(
+  /**
+   * Builds an authenticated request (URL + init) without executing it.
+   * Shared by `makeRequest` (typed JSON path) and `fetch` (raw escape hatch).
+   */
+  private prepareRequest(
     endpoint: string,
-    options: RequestInit = {},
-    retryCount = 0
-  ): Promise<ApiResponse<T>> {
+    options: RequestInit = {}
+  ): { url: string; init: RequestInit } {
     // Validate auth at request time (allows factory pattern)
     if (!this.config.token) {
       throw new TimbalApiError(
@@ -148,31 +151,41 @@ export class ApiClient {
       headers.set('Content-Type', 'application/json');
     }
 
-    const requestOptions: RequestInit = {
-      ...options,
-      headers,
-    };
+    return { url, init: { ...options, headers } };
+  }
+
+  /** Redacts auth headers for debug logging. */
+  private redactHeaders(headers: Headers): Record<string, string> {
+    const redacted: Record<string, string> = {};
+    headers.forEach((v, k) => {
+      redacted[k] =
+        k.toLowerCase() === 'authorization' || k.toLowerCase() === 'x-auth-token'
+          ? `${v.slice(0, 12)}...`
+          : v;
+    });
+    return redacted;
+  }
+
+  private async makeRequest<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    retryCount = 0
+  ): Promise<ApiResponse<T>> {
+    const { url, init } = this.prepareRequest(endpoint, options);
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
 
       if (process.env.TIMBAL_DEBUG) {
-        const redactedHeaders: Record<string, string> = {};
-        headers.forEach((v, k) => {
-          redactedHeaders[k] =
-            k.toLowerCase() === 'authorization' || k.toLowerCase() === 'x-auth-token'
-              ? `${v.slice(0, 12)}...`
-              : v;
-        });
         console.debug(
           `[timbal-sdk] ${options.method ?? 'GET'} ${url}`,
-          JSON.stringify(redactedHeaders)
+          JSON.stringify(this.redactHeaders(init.headers as Headers))
         );
       }
 
       const response = await fetch(url, {
-        ...requestOptions,
+        ...init,
         signal: controller.signal,
       });
 
@@ -336,6 +349,33 @@ export class ApiClient {
 
   public async request<T>(endpoint: string, options: RequestInit): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, options);
+  }
+
+  /**
+   * Raw escape hatch: returns the underlying `Response` so the caller can stream the body,
+   * inspect non-JSON content, or drive their own error handling.
+   *
+   * Differs from `request<T>()`:
+   * - returns `Response` (no JSON parse, no `ApiResponse<T>` wrapper)
+   * - does not throw on non-2xx — the caller checks `response.ok`
+   * - does not auto-retry, and does not apply the configured timeout
+   *   (long-lived streams shouldn't get aborted; pass your own `AbortSignal` via `options.signal` if needed)
+   *
+   * Auth/baseUrl/Content-Type defaults still apply, same as the typed methods.
+   *
+   * Use for: SSE / chunked streams, binary downloads, content types the SDK doesn't model.
+   */
+  public async fetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+    const { url, init } = this.prepareRequest(endpoint, options);
+
+    if (process.env.TIMBAL_DEBUG) {
+      console.debug(
+        `[timbal-sdk] (raw) ${init.method ?? 'GET'} ${url}`,
+        JSON.stringify(this.redactHeaders(init.headers as Headers))
+      );
+    }
+
+    return globalThis.fetch(url, init);
   }
 
   public getConfig(): Required<TimbalConfig> {
