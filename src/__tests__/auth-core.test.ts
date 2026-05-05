@@ -105,19 +105,21 @@ describe('resolveTokenFromRequest', () => {
   });
 
   test('returns token from Bearer header when valid', async () => {
+    const mockSession = { user_id: '1', user_email: 'test@example.com' };
+    const mockProject = { id: '248', name: 'Test' };
     const mockTimbal = {
-      as: () => ({ getProject: async () => ({}) }),
+      as: () => ({ getSession: async () => ({ session: mockSession, project: mockProject }) }),
     } as any;
     const request = new Request('http://localhost:3000/me', {
       headers: { Authorization: 'Bearer valid-token' },
     });
     const result = await resolveTokenFromRequest(mockTimbal, request);
-    expect(result).toBe('valid-token');
+    expect(result).toEqual({ token: 'valid-token', session: mockSession, project: mockProject });
   });
 
   test('returns null when Bearer token is invalid', async () => {
     const mockTimbal = {
-      as: () => ({ getProject: async () => { throw new Error('invalid'); } }),
+      as: () => ({ getSession: async () => { throw new Error('invalid'); } }),
     } as any;
     const request = new Request('http://localhost:3000/me', {
       headers: { Authorization: 'Bearer bad-token' },
@@ -127,11 +129,13 @@ describe('resolveTokenFromRequest', () => {
   });
 
   test('falls back to cookie when Bearer token is invalid', async () => {
+    const mockSession = { user_id: '1', user_email: 'test@example.com' };
+    const mockProject = { id: '248', name: 'Test' };
     const mockTimbal = {
       as: (token: string) => ({
-        getProject: async () => {
+        getSession: async () => {
           if (token === 'bad-token') throw new Error('invalid');
-          return {};
+          return { session: mockSession, project: mockProject };
         },
       }),
     } as any;
@@ -143,7 +147,7 @@ describe('resolveTokenFromRequest', () => {
       request,
       'valid-cookie-token',
     );
-    expect(result).toBe('valid-cookie-token');
+    expect(result).toEqual({ token: 'valid-cookie-token', session: mockSession, project: mockProject });
   });
 
   test('returns null when no token is available', async () => {

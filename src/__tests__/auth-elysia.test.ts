@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Elysia } from 'elysia';
 import { timbalAuth } from '../elysia';
 
@@ -101,6 +101,71 @@ describe('timbalAuth Elysia plugin', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+
+    test('derive context contains session and project for authenticated request', async () => {
+      const mockSession = {
+        user_id: 1,
+        user_name: 'Test User',
+        user_email: 'test@example.com',
+        user_photo_url: null,
+        user_phone: null,
+        user_lang: 'en',
+        access_level: 'admin',
+      };
+      const mockProject = {
+        id: '248',
+        name: 'Test Project',
+        description: null,
+        has_ui: false,
+        role: 'admin',
+        default_role: null,
+        is_public_template: false,
+        template_uses: 0,
+        publishable_api_key: 'pk_test',
+        use_platform_iam: false,
+        repository_url: null,
+        screenshot_url: null,
+        created_at: 0,
+        updated_at: 0,
+        workforce: [],
+      };
+
+      const originalFetch = global.fetch;
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ session: mockSession, project: mockProject }),
+        }),
+      ) as unknown as typeof global.fetch;
+
+      try {
+        let capturedSession: unknown;
+        let capturedProject: unknown;
+
+        const app = new Elysia()
+          .use(timbalAuth())
+          .get('/protected', ({ session, project }) => {
+            capturedSession = session;
+            capturedProject = project;
+            return 'ok';
+          });
+
+        const res = await app.handle(
+          new Request('http://localhost/protected', {
+            headers: { Authorization: 'Bearer test-token' },
+          }),
+        );
+
+        expect(res.status).toBe(200);
+        expect((capturedSession as any).user_email).toBe('test@example.com');
+        expect((capturedSession as any).user_id).toBe('1');
+        expect((capturedProject as any).id).toBe('248');
+        expect((capturedProject as any).name).toBe('Test Project');
+      } finally {
+        global.fetch = originalFetch;
+      }
     });
   });
 

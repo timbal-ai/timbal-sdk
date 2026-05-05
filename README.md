@@ -102,6 +102,16 @@ const session = await timbal.getSession();
 // { user_id, user_name, user_email, access_level, ... }
 ```
 
+Validate a token and fetch project access in a single round trip by passing `projectId`:
+
+```typescript
+const { session, project } = await timbal.as(token).getSession({ projectId: "56" });
+// session → { user_id, user_email, ... }
+// project → { id, name, workforce, ... }
+```
+
+This replaces the two-call pattern of `getProject()` followed by `getSession()`. A 401 means the token is invalid; a 403 means the token is valid but has no access to that project.
+
 ## Project
 
 ```typescript
@@ -239,21 +249,18 @@ This registers:
 - `POST /auth/refresh` — refresh access token
 - `POST /auth/logout` — clear cookie and redirect
 
-All other routes are protected automatically. The middleware injects `token` and `timbal` (a user-scoped SDK instance) into every route handler:
+All other routes are protected automatically. The middleware injects `token`, `timbal` (a user-scoped SDK instance), `session`, and `project` into every route handler — resolved in a single platform call per request:
 
 ```typescript
-app.get("/me", ({ timbal }) => timbal.getSession());
+app.get("/me", ({ session, project }) => ({ session, project }));
 ```
 
 ### Options
 
 ```typescript
 app.use(timbalAuth({
-  afterLoginRedirect: "/",           // where to go after login (default: "/")
-  afterLogoutRedirect: "/auth/login", // where to go after logout
-  publicPaths: ["/webhook"],          // extra paths that skip auth
-  cookieName: "timbal_access_token",  // cookie name
-  cookieMaxAge: 3600,                 // cookie TTL in seconds (1 hour)
+  afterLoginRedirect: "/",   // where to go after login (default: "/")
+  publicPaths: ["/webhook"], // extra paths that skip auth
 }));
 ```
 

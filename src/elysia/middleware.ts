@@ -43,9 +43,14 @@ export function createAuthMiddleware(
   return new Elysia({ name: 'timbal-auth-middleware' })
     .derive({ as: 'global' }, async ({ cookie, request }) => {
       const cookieValue = cookie[COOKIE_NAME]?.value as string | undefined;
-      const token = await resolveTokenFromRequest(timbal, request, cookieValue);
-      const scopedTimbal = token ? timbal.as(token) : timbal;
-      return { token, timbal: scopedTimbal };
+      const auth = await resolveTokenFromRequest(timbal, request, cookieValue);
+      const scopedTimbal = auth ? timbal.as(auth.token) : timbal;
+      return {
+        token: auth?.token ?? null,
+        timbal: scopedTimbal,
+        session: auth?.session ?? null,
+        project: auth?.project ?? null,
+      };
     })
     .onBeforeHandle({ as: 'global' }, ({ path, token, set }) => {
       if (isLocalDev()) return;
