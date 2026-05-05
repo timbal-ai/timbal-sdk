@@ -80,6 +80,60 @@ export class TimbalApiError extends Error {
     this.code = code;
     this.details = details;
   }
+
+  // ── Status-based helpers (server-emitted) ──
+
+  /** True for any HTTP 4xx (client-side error from the server). */
+  public isClientError(): boolean {
+    return this.statusCode >= 400 && this.statusCode < 500;
+  }
+
+  /** True for any HTTP 5xx (server-side error from the server). */
+  public isServerError(): boolean {
+    return this.statusCode >= 500 && this.statusCode < 600;
+  }
+
+  /** True for HTTP 401 (auth required, missing or expired token). */
+  public isUnauthorized(): boolean {
+    return this.statusCode === 401;
+  }
+
+  /** True for HTTP 403 (token valid but the action is denied). */
+  public isForbidden(): boolean {
+    return this.statusCode === 403;
+  }
+
+  /** True for HTTP 404. */
+  public isNotFound(): boolean {
+    return this.statusCode === 404;
+  }
+
+  /** True for HTTP 409 (conflict). */
+  public isConflict(): boolean {
+    return this.statusCode === 409;
+  }
+
+  /** True for HTTP 429 (rate limited). */
+  public isRateLimited(): boolean {
+    return this.statusCode === 429;
+  }
+
+  // ── Code-based helpers (SDK-internal preconditions, statusCode is 0) ──
+
+  /** True if the SDK aborted the request because it exceeded `timeout`. */
+  public isTimeout(): boolean {
+    return this.code === ERROR_CODES.TIMEOUT_ERROR;
+  }
+
+  /** True if the SDK couldn't reach the server (DNS/connection/network failure). */
+  public isNetworkError(): boolean {
+    return this.code === ERROR_CODES.NETWORK_ERROR;
+  }
+
+  /** True if the SDK was used without a configured token (precondition failure, never reached the wire). */
+  public isMissingAuth(): boolean {
+    return this.code === ERROR_CODES.AUTH_ERROR;
+  }
 }
 
 export class ApiClient {
