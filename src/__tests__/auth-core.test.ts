@@ -126,6 +126,26 @@ describe('resolveTokenFromRequest', () => {
     expect(result).toBeNull();
   });
 
+  test('falls back to cookie when Bearer token is invalid', async () => {
+    const mockTimbal = {
+      as: (token: string) => ({
+        getProject: async () => {
+          if (token === 'bad-token') throw new Error('invalid');
+          return {};
+        },
+      }),
+    } as any;
+    const request = new Request('http://localhost:3000/me', {
+      headers: { Authorization: 'Bearer bad-token' },
+    });
+    const result = await resolveTokenFromRequest(
+      mockTimbal,
+      request,
+      'valid-cookie-token',
+    );
+    expect(result).toBe('valid-cookie-token');
+  });
+
   test('returns null when no token is available', async () => {
     const mockTimbal = {} as any;
     const request = new Request('http://localhost:3000/me');

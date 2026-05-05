@@ -32,7 +32,8 @@ export function isPublicPath(
 
 /**
  * Resolve an access token from a request.
- * Checks Bearer header first (API calls), falls back to cookie (browser navigation).
+ * Checks Bearer header first (API calls), falls back to cookie when Bearer is
+ * missing or rejected (for browser sessions with a refreshed httpOnly cookie).
  * Validates the token by calling timbal.as(token).getProject().
  */
 export async function resolveTokenFromRequest(
@@ -57,11 +58,10 @@ export async function resolveTokenFromRequest(
         `[auth] ${method} ${path} — bearer token rejected:`,
         err instanceof Error ? err.message : err,
       );
-      return null;
     }
   }
 
-  // Fall back to cookie (browser navigations to /docs, /api-spec, etc.)
+  // Fall back to cookie (browser navigations, or stale Bearer + fresh cookie).
   if (cookieValue) {
     try {
       await timbal.as(cookieValue).getProject();
