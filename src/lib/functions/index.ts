@@ -5,3 +5,11 @@ export { getProject } from './project';
 export { getOAuthUrl, sendMagicLink, refreshToken } from './auth';
 export { listWorkforces, callWorkforce, streamWorkforce, clearWorkforceCache } from './workforce';
 export { parseSSELine } from './sse';
+export {
+  listKbs,
+  getKbSchema,
+  uploadKbFile,
+  listKbFiles,
+  getKbFile,
+  deleteKbFile,
+} from './kb';

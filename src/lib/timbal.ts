@@ -12,6 +12,7 @@ import type {
   Project,
 } from '../types';
 import { ApiClient } from './api';
+import { KbsSection } from './kb';
 import {
   query as queryFn,
   uploadFile as uploadFileFn,
@@ -28,7 +29,14 @@ import {
 } from './functions';
 
 export class Timbal {
-  private apiClient: ApiClient;
+  /**
+   * The underlying API client. Public as of v0.8 — committed as part of the
+   * semver-stable surface so power users can build their own typed wrappers
+   * (e.g. `new KB(timbal.apiClient, kbId)`).
+   */
+  public readonly apiClient: ApiClient;
+
+  private _kbs?: KbsSection;
 
   constructor(config: TimbalConfig = {}) {
     this.apiClient = new ApiClient(config);
@@ -46,9 +54,25 @@ export class Timbal {
 
   /**
    * Get the underlying API client for custom requests.
+   * @deprecated Use the `apiClient` field directly. Kept for backward compat.
    */
   getApiClient(): ApiClient {
     return this.apiClient;
+  }
+
+  // ── KB collection (Stripe-style) ──
+
+  /**
+   * Knowledge Base collection accessor.
+   *
+   * - `timbal.kbs.list()` — list KBs in the org
+   * - `timbal.kbs.get(kbId)` — sync, returns a scoped `KB` view (no network call)
+   *
+   * Lazy singleton on this `Timbal` instance.
+   */
+  get kbs(): KbsSection {
+    if (!this._kbs) this._kbs = new KbsSection(this.apiClient);
+    return this._kbs;
   }
 
   // ── Project ──
