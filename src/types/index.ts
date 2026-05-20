@@ -61,6 +61,8 @@ export interface QueryOptions {
   kbId?: string;
   /** Set to true to query a legacy knowledge base. Defaults to false (K2). */
   legacy?: boolean;
+  /** Runs `EXPLAIN ANALYZE` and includes the query plan in the response. */
+  explain?: boolean;
 }
 
 export interface QueryRow {
@@ -82,6 +84,184 @@ export interface File {
   created_at: string;
   expires_at?: string | null;
   url: string;
+}
+
+// ── Knowledge Base ──
+//
+// IDs (`KbInfo.id`, `K2File.id`, `K2File.kb_id`) are typed as `string` because
+// the platform serializes `int64` as JSON strings for JS precision safety,
+// even though the OpenAPI spec lists them as `integer`. Treat IDs as opaque
+// strings; the SDK accepts `string | number` on input and passes through.
+
+export interface KbInfo {
+  id: string;
+  uid: string;
+  name: string;
+  description?: string | null;
+  data_size_bytes?: number | null;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+// ── Schema ──
+
+export type TableSource = 'primary' | 'vectors' | (string & {});
+
+export type ConstraintType =
+  | 'PRIMARY_KEY'
+  | 'UNIQUE'
+  | 'FOREIGN_KEY'
+  | 'CHECK'
+  | 'NOT_NULL'
+  | (string & {});
+
+export interface ForeignKey {
+  column: string;
+  ref_table: string;
+  ref_column: string;
+}
+
+export interface TableConstraint {
+  constraint_type: ConstraintType;
+  /** Columns involved (for PK, UNIQUE, NOT_NULL). Empty for CHECK. */
+  columns?: string[];
+  /** CHECK expression, if applicable. */
+  expression?: string | null;
+  /** Foreign key references, if applicable. */
+  foreign_keys?: ForeignKey[];
+}
+
+export interface TableIndex {
+  name: string;
+  table_name: string;
+  columns: string[];
+  is_unique: boolean;
+}
+
+export interface TableSchemaColumn {
+  name: string;
+  data_type: string;
+  is_nullable: boolean;
+}
+
+export interface TableSchema {
+  name: string;
+  source: TableSource;
+  /** Schema namespace (e.g. "main"). */
+  schema?: string | null;
+  columns: TableSchemaColumn[];
+  indexes: TableIndex[];
+  constraints: TableConstraint[];
+  estimated_row_count: number;
+}
+
+// ── Files ──
+
+/**
+ * A file (or virtual directory) stored inside a Knowledge Base (K2).
+ *
+ * Distinct from {@link File} (org bucket) — KB files carry `kb_id`, `metadata`,
+ * `directory`, and a `parse_state` set by the platform's parse + embed pipeline.
+ *
+ * `kb.files.list` returns both regular files **and** virtual directories. Folder
+ * rows have `content_type` `application/vnd.timbal.k2-directory` and
+ * `content_length: 0`.
+ */
+export interface K2File {
+  id: string;
+  uid: string;
+  kb_id: string;
+  name: string;
+  content_type: string;
+  content_length: number;
+  /**
+   * `pending` — pipeline in flight.
+   * `success` — parse + embed both completed.
+   * `failed` — latest attempt failed.
+   * `skipped` — format unsupported (never parsed) or `parse: false` was passed.
+   */
+  parse_state: 'pending' | 'success' | 'failed' | 'skipped' | (string & {});
+  metadata: Record<string, unknown>;
+  directory?: string | null;
+  url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface K2FileParsing {
+  id: string;
+  kb_file_id: string;
+  provider: string;
+  status: string;
+  num_pages?: number | null;
+  chunk_count?: number | null;
+  cost_usd?: number | null;
+  error?: string | null;
+  provider_job_id?: string | null;
+  s3_bucket?: string | null;
+  s3_key?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface K2FileEmbedding {
+  id: string;
+  kb_file_id: string;
+  provider: string;
+  model: string;
+  status: string;
+  parsing_id?: string | null;
+  chunk_count?: number | null;
+  token_count?: number | null;
+  cost_usd?: number | null;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Response shape of `kb.files.get(id)` — K2File extended with pipeline rows. */
+export interface K2FileDetail extends K2File {
+  parsings: K2FileParsing[];
+  embeddings: K2FileEmbedding[];
+}
+
+export interface K2FilePage {
+  files: K2File[];
+  next_page_token?: string | null;
+}
+
+export interface KbFileUploadOptions {
+  /** Free-form metadata persisted on the K2File row; filterable later. Defaults to `{}`. */
+  metadata?: Record<string, unknown>;
+  /** Virtual directory inside the KB to store the file under. */
+  directory?: string;
+  /**
+   * Whether to run the parse + embed pipeline on upload.
+   *
+   * Not in the public OpenAPI spec but supported by the backend — passing
+   * `parse: false` results in `parse_state: "skipped"`. Use for typed metadata
+   * stores that won't be semantically searched.
+   *
+   * Defaults to the backend default (parse) when omitted.
+   */
+  parse?: boolean;
+}
+
+export interface KbFileListOptions {
+  directory?: string;
+  page_token?: string;
+}
+
+export interface KbListOptions {
+  page_token?: string;
+}
+
+export interface KbQueryOptions {
+  /** Set to true to query a legacy knowledge base via `/kbs/{kbId}/query` instead of `/k2/...`. */
+  legacy?: boolean;
+  /** Runs `EXPLAIN ANALYZE` and includes the query plan in the response. */
+  explain?: boolean;
 }
 
 // ── Workforce ──
