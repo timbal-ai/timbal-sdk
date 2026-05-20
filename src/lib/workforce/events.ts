@@ -16,13 +16,17 @@ export type WorkforceEvent = Record<string, unknown>;
  * Drops the `[DONE]` sentinel silently. Unparseable lines are skipped (not
  * thrown — the workforce can emit comments/heartbeats).
  *
- * Always wrap in `try / finally` if you need to release the underlying body
- * early; the iterator releases the reader on completion or abort.
+ * Cleanup: the iterator's `finally` calls `reader.cancel()` which signals
+ * the source's cancel algorithm — for a fetch `Response` body this aborts
+ * the underlying HTTP request and closes the socket. Releasing the lock
+ * alone (`releaseLock()`) would NOT do this; the connection would stay open
+ * until GC. Safe to break out of the loop early.
  *
  * ```ts
  * const res = await wf.stream({ message: "hi" });
  * for await (const ev of streamEvents(res)) {
  *   if (ev.type === "delta") process.stdout.write(String(ev.delta));
+ *   if (someCondition) break; // socket is closed here
  * }
  * ```
  */
@@ -57,7 +61,10 @@ export async function* streamEvents(response: Response): AsyncIterable<Workforce
       }
     }
   } finally {
-    try { reader.releaseLock(); } catch { /* already released */ }
+    // cancel() aborts the underlying fetch and implicitly releases the lock
+    // (per Streams spec). No-op on already-closed streams. Awaited so the
+    // socket teardown actually completes before the generator returns.
+    try { await reader.cancel(); } catch { /* already detached */ }
   }
 }
 
