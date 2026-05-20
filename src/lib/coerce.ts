@@ -74,11 +74,17 @@ export function coerceProject(raw: RawProject): Project {
  * Coerce a project response that may carry the legacy `apps` alias. Folds
  * `apps` into `workforce` (workforce wins when both are present) before
  * delegating to {@link coerceProject}.
+ *
+ * Note: `apps` is destructured out, not spread through — otherwise it would
+ * survive on the returned `Project` as a hidden runtime property holding
+ * uncoerced numeric ids, even though `Project` doesn't declare the field.
+ * TypeScript's structural typing would let that leak silently.
  */
 export function coerceProjectResponse(raw: RawProjectResponse): Project {
+  const { apps, workforce, ...rest } = raw;
   return coerceProject({
-    ...raw,
-    workforce: raw.workforce ?? raw.apps ?? [],
+    ...rest,
+    workforce: workforce ?? apps ?? [],
   });
 }
 
