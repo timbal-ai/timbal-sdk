@@ -179,6 +179,25 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     expect(out.workforce[0]!.uid).toBe('88');
   });
 
+  test('coerceProjectResponse does NOT leak `apps` onto the returned Project', () => {
+    // Regression: spreading `...raw` previously carried `apps` through to the
+    // returned object as a hidden runtime field with uncoerced numeric ids,
+    // while `workforce` had string ids — surfacing as a JSON.stringify mismatch.
+    const out = coerceProjectResponse({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+      apps: [{ id: 7, name: 'legacy', type: 'agent', description: null, uid: 88 }],
+    } as any);
+
+    expect('apps' in out).toBe(false);
+    expect(Object.keys(out)).not.toContain('apps');
+    expect(JSON.stringify(out)).not.toContain('"apps"');
+    expect(out.workforce[0]!.id).toBe('7');
+  });
+
   test('coerceProjectResponse prefers workforce when both are present', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
