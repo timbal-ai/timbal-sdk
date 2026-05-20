@@ -9,7 +9,13 @@ function resolveOrgId(client: ApiClient, ctx?: PlatformContext): string {
 
 // Server emits `id` as a JSON number (int64). We coerce at the boundary so
 // every ID in the SDK is a string, matching KBs / KB files / projects.
-function coerceFile(raw: File & { id: string | number }): File {
+//
+// Note: `Omit<File, 'id'> & { id: ... }` rather than `File & { id: ... }`
+// because TS collapses `string & (string | number)` to `string`, which would
+// hide the union from `raw.id` and make the `String()` call look redundant.
+type RawFile = Omit<File, 'id'> & { id: string | number };
+
+function coerceFile(raw: RawFile): File {
   return { ...raw, id: String(raw.id) };
 }
 
@@ -105,7 +111,7 @@ export async function uploadFile(
   const formData = new FormData();
   formData.append('file', new Blob([fileBuffer], { type: contentType }), fileName);
 
-  const response = await client.postFormData<File & { id: string | number }>(path, formData);
+  const response = await client.postFormData<RawFile>(path, formData);
   return coerceFile(response.data);
 }
 
@@ -127,6 +133,6 @@ export async function uploadFileFromBuffer(
   const formData = new FormData();
   formData.append('file', new Blob([data], { type: contentType }), filename);
 
-  const response = await client.postFormData<File & { id: string | number }>(path, formData);
+  const response = await client.postFormData<RawFile>(path, formData);
   return coerceFile(response.data);
 }
