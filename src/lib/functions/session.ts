@@ -1,12 +1,6 @@
 import type { ApiClient } from '../api';
 import type { Session, Project } from '../../types';
-import { coerceProject, type RawProject } from '../coerce';
-
-// `me` may return either `workforce` or `apps` historically.
-type RawProjectResponse = Omit<RawProject, 'workforce'> & {
-  workforce?: RawProject['workforce'];
-  apps?: RawProject['workforce'];
-};
+import { coerceProjectResponse, type RawProjectResponse } from '../coerce';
 
 type RawSession = Omit<Session, 'user_id'> & { user_id: string | number };
 
@@ -28,14 +22,7 @@ export async function getSession(
   };
 
   if (opts?.projectId != null) {
-    const rawProject = response.data.project!;
-    return {
-      session,
-      project: coerceProject({
-        ...rawProject,
-        workforce: rawProject.workforce ?? rawProject.apps ?? [],
-      }),
-    };
+    return { session, project: coerceProjectResponse(response.data.project!) };
   }
 
   return session;

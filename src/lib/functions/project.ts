@@ -1,12 +1,6 @@
 import type { ApiClient } from '../api';
 import type { Project, PlatformContext } from '../../types';
-import { coerceProject, type RawProject } from '../coerce';
-
-// Backend used to ship `apps`; current contract is `workforce`. Accept both.
-type RawProjectResponse = Omit<RawProject, 'workforce'> & {
-  workforce?: RawProject['workforce'];
-  apps?: RawProject['workforce'];
-};
+import { coerceProjectResponse, type RawProjectResponse } from '../coerce';
 
 /**
  * Get project details.
@@ -31,10 +25,5 @@ export async function getProject(
   if (!projectId) throw new Error('projectId is required. Provide it in ctx, client config, or set TIMBAL_PROJECT_ID env var.');
 
   const response = await client.get<RawProjectResponse>(`orgs/${orgId}/projects/${projectId}`);
-  const data = response.data;
-
-  return coerceProject({
-    ...data,
-    workforce: data.workforce ?? data.apps ?? [],
-  });
+  return coerceProjectResponse(response.data);
 }
