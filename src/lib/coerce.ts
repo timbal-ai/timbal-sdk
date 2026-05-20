@@ -132,11 +132,18 @@ export function coerceK2FileParsing(raw: RawK2FileParsing): K2FileParsing {
 }
 
 export function coerceK2FileEmbedding(raw: RawK2FileEmbedding): K2FileEmbedding {
+  // `parsing_id` is optional+nullable on the public type. Destructure it out
+  // before spreading so the raw `string | number` type doesn't survive on the
+  // returned object, then conditionally re-add — keeping an absent field
+  // absent (preserves `in`, `Object.keys`, and `JSON.stringify` semantics).
+  const { parsing_id, ...rest } = raw;
   return {
-    ...raw,
+    ...rest,
     id: toStringId(raw.id),
     kb_file_id: toStringId(raw.kb_file_id),
-    parsing_id: toStringIdOpt(raw.parsing_id) ?? null,
+    ...(parsing_id !== undefined && {
+      parsing_id: parsing_id === null ? null : String(parsing_id),
+    }),
   };
 }
 

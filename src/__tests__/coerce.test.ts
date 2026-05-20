@@ -87,6 +87,21 @@ describe('coerceK2FileParsing / Embedding / Detail', () => {
       created_at: 't', updated_at: 't',
     } as any);
     expect(out.parsing_id).toBe(null);
+    expect('parsing_id' in out).toBe(true);
+  });
+
+  test('embedding parsing_id absent stays absent (not materialized as null)', () => {
+    // Regression: previously `parsing_id: toStringIdOpt(v) ?? null` turned an
+    // omitted field into an explicit `null`, flipping `'parsing_id' in obj`,
+    // Object.keys, and JSON.stringify output vs the raw shape.
+    const raw = {
+      id: 21, kb_file_id: 1, provider: 'p', model: 'm', status: 's',
+      created_at: 't', updated_at: 't',
+    };
+    const out = coerceK2FileEmbedding(raw as any);
+    expect('parsing_id' in out).toBe(false);
+    expect(Object.keys(out)).not.toContain('parsing_id');
+    expect(JSON.stringify(out)).not.toContain('parsing_id');
   });
 
   test('detail recursively coerces nested parsings + embeddings', () => {
