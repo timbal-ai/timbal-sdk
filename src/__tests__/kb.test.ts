@@ -230,6 +230,33 @@ describe('KB', () => {
     expect(await kb.schema()).toEqual(tables);
   });
 
+  test('schema({ format: "sql" }) calls GET with format=sql and returns DDL strings', async () => {
+    const statements = [
+      'CREATE TABLE "orders" (id INTEGER PRIMARY KEY);',
+      'CREATE INDEX idx_orders_status ON "orders" (status);',
+    ];
+    const client = makeMockClient({
+      get: mock(() => Promise.resolve({ data: { statements }, success: true, statusCode: 200 })),
+    });
+    const kb = new KB(client, '162');
+
+    const result = await kb.schema({ format: 'sql' });
+
+    expect(result).toEqual(statements);
+    expect((client.get as ReturnType<typeof mock>).mock.calls[0][0]).toBe('orgs/10/k2/162/schema');
+    expect((client.get as ReturnType<typeof mock>).mock.calls[0][1]).toEqual({ format: 'sql' });
+  });
+
+  test('schema({ format: "sql" }) accepts a bare statements array (defensive)', async () => {
+    const statements = ['CREATE TABLE "x" (id INTEGER);'];
+    const client = makeMockClient({
+      get: mock(() => Promise.resolve({ data: statements, success: true, statusCode: 200 })),
+    });
+    const kb = new KB(client, '162');
+
+    expect(await kb.schema({ format: 'sql' })).toEqual(statements);
+  });
+
   test('files is a lazy singleton (same instance returned)', () => {
     const client = makeMockClient();
     const kb = new KB(client, '162');
