@@ -150,6 +150,31 @@ describe('Integration Tests — kb', () => {
   );
 
   test.skipIf(SKIP)(
+    'kb.schema({ format: "sql" }) returns DDL statement strings',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const statements = await ctx.kb.schema({ format: 'sql' });
+      console.log(`[kb] schema(sql) → ${statements.length} statements`);
+      if (statements[0]) console.log(`[kb] first: ${statements[0].slice(0, 120)}...`);
+
+      expect(Array.isArray(statements)).toBe(true);
+      expect(statements.length).toBeGreaterThan(0);
+      for (const stmt of statements) {
+        expect(typeof stmt).toBe('string');
+        expect(stmt.length).toBeGreaterThan(0);
+      }
+      // At least one statement should look like DDL for this KB (has real tables).
+      const hasDdl = statements.some(
+        s => s.includes('CREATE TABLE') || s.includes('create table'),
+      );
+      expect(hasDdl).toBe(true);
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
     'kb.files: upload → get → list → delete lifecycle (parse: false)',
     async () => {
       const ctx = ready();
