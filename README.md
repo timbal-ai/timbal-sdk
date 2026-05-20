@@ -13,182 +13,97 @@ npm install @timbal-ai/timbal-sdk
 ```typescript
 import Timbal from "@timbal-ai/timbal-sdk";
 
-const timbal = new Timbal({
-  token: "your-api-key",
-  orgId: "your-org-id",
-  projectId: "your-project-id",
+const timbal = new Timbal();
+// Picks up TIMBAL_API_KEY, TIMBAL_ORG_ID, etc. from the environment
+// or from `timbal configure` — see Configuration at the bottom.
+
+// Query a knowledge base
+const kb = timbal.kbs.get(process.env.TIMBAL_KB_ID!);
+const { rows } = await kb.query("SELECT * FROM orders LIMIT 10");
+
+// Call a workforce agent
+const res = await timbal.callWorkforce("my-agent", { message: "Hello!" });
+const data = await res.json();
+```
+
+## Knowledge Bases
+
+`timbal.kbs.get(id)` is **synchronous** — it returns a scoped `KB` view without a network call. Use it to query, inspect schema, and manage files inside one KB.
+
+```typescript
+const kb = timbal.kbs.get(process.env.TIMBAL_KB_ID!);
+
+await kb.query("SELECT * FROM orders WHERE status = $1", ["pending"]);
+await kb.schema(); // [{ table_name, columns: [...] }]
+
+// list KBs in the org
+const all = await timbal.kbs.list();
+
+// multi-KB without global state — each get() is a fresh, isolated view
+const [a, b] = await Promise.all([
+  timbal.kbs.get("162").query("..."),
+  timbal.kbs.get("222").query("..."),
+]);
+```
+
+### KB files
+
+Distinct from the org bucket (`timbal.uploadFile` below). KB files carry `metadata`, live under a virtual `directory`, and are parsed + embedded by the platform pipeline.
+
+```typescript
+const file = await kb.files.upload(buffer, "order.pdf", {
+  directory: "orders",
+  metadata: { source: "cron", sha256: "deadbeef" },
+  parse: false, // skip parse+embed when the KB is a typed metadata store
 });
+
+const page = await kb.files.list({ directory: "orders" });
+// { files: [...], next_page_token? }
+
+const one = await kb.files.get(file.id);
+await kb.files.delete(file.id);
 ```
 
-## Configuration
-
-The SDK resolves each config field in this order, using the first value found:
-
-1. **Explicit options** passed to `new Timbal({ ... })`
-2. **Environment variables**
-3. **`~/.timbal/` profile files** (shared with the Timbal CLI)
-4. **Defaults**
-
-### Environment variables
-
-| Variable                | Description                              |
-| ----------------------- | ---------------------------------------- |
-| `TIMBAL_API_KEY`        | API key / token                          |
-| `TIMBAL_BASE_URL`       | API base URL                             |
-| `TIMBAL_ORG_ID`         | Organization ID                          |
-| `TIMBAL_PROJECT_ID`     | Project ID                               |
-| `TIMBAL_PROJECT_REV`    | Git branch (default: `main`)             |
-| `TIMBAL_KB_ID`          | Knowledge base ID                        |
-| `TIMBAL_PROFILE`        | Profile to load from `~/.timbal/` files  |
-| `TIMBAL_CONFIG_DIR`     | Override the config directory (default: `~/.timbal`) |
-
-### Profile files
-
-If you've run `timbal configure`, the SDK automatically picks up your credentials — no env vars or explicit config needed.
-
-Profiles are stored in two INI files:
-
-**`~/.timbal/config`**
-```ini
-[default]
-base_url = https://api.timbal.ai
-org = your-org-id
-
-[profile staging]
-base_url = https://staging.timbal.ai
-org = staging-org-id
-```
-
-**`~/.timbal/credentials`**
-```ini
-[default]
-api_key = your-api-key
-
-[profile staging]
-api_key = staging-api-key
-```
-
-Select a profile with `TIMBAL_PROFILE`:
-
-```bash
-TIMBAL_PROFILE=staging node my-script.js
-```
-
-Or in code:
-```typescript
-process.env.TIMBAL_PROFILE = "staging";
-const timbal = new Timbal(); // picks up staging credentials automatically
-```
-
-## Scoped Clients
-
-Use `as()` to create a client scoped to a specific user token:
+Typed errors let consumers branch without sniffing status codes:
 
 ```typescript
-const userTimbal = timbal.as("user-access-token");
-const session = await userTimbal.getSession();
+import { KbFileAlreadyExistsError, KbFileNotFoundError } from "@timbal-ai/timbal-sdk";
+
+try {
+  await kb.files.upload(buf, "order.pdf", { directory: "orders" });
+} catch (err) {
+  if (err instanceof KbFileAlreadyExistsError) {
+    // idempotent cron retry: file already registered, no-op
+  }
+}
 ```
 
-You can also pass a partial config object:
+### Escape hatch
+
+`apiClient` is public. Construct a `KB` view directly when you need to bypass the `Timbal` wrapper (custom retry policy, pooled clients, tests):
 
 ```typescript
-const scoped = timbal.as({ token: "other-token", orgId: "other-org" });
-```
+import { KB } from "@timbal-ai/timbal-sdk";
 
-## Session
-
-```typescript
-const session = await timbal.getSession();
-// { user_id, user_name, user_email, access_level, ... }
-```
-
-Validate a token and fetch project access in a single round trip by passing `projectId`:
-
-```typescript
-const { session, project } = await timbal.as(token).getSession({ projectId: "56" });
-// session → { user_id, user_email, ... }
-// project → { id, name, workforce, ... }
-```
-
-This replaces the two-call pattern of `getProject()` followed by `getSession()`. A 401 means the token is invalid; a 403 means the token is valid but has no access to that project.
-
-## Project
-
-```typescript
-const project = await timbal.getProject();
-// { id, name, description, workforce, ... }
-```
-
-## Query
-
-Execute SQL queries against a knowledge base (PostgreSQL dialect):
-
-```typescript
-const rows = await timbal.query("SELECT * FROM documents WHERE id = $1", [42]);
-```
-
-Requires `orgId` and `kbId` to be set in config, env vars, or passed as context:
-
-```typescript
-const rows = await timbal.query("SELECT * FROM documents", [], {
-  orgId: "10",
-  kbId: "kb-1",
-});
-```
-
-For legacy knowledge bases, pass `legacy: true`:
-
-```typescript
-const rows = await timbal.query("SELECT * FROM documents", [], {
-  orgId: "10",
-  kbId: "kb-1",
-  legacy: true,
-});
-```
-
-## Files
-
-Upload a file from disk:
-
-```typescript
-const file = await timbal.uploadFile("/path/to/file.pdf");
-// { id, name, content_type, content_length, url, ... }
-```
-
-Upload from an in-memory buffer:
-
-```typescript
-const file = await timbal.uploadFileFromBuffer(
-  buffer,
-  "report.pdf",
-  "application/pdf",
-);
+const kb = new KB(timbal.apiClient, "162");
 ```
 
 ## Workforce
 
-List running workforce components:
-
 ```typescript
-const workforces = await timbal.listWorkforces();
-// [{ id, uid?, type: "agent", name: "my-agent", description }, ...]
-```
+// list deployed agents/workflows
+const items = await timbal.listWorkforces();
 
-Call a workforce component — accepts `id`, `uid`, or `name` as identifier:
-
-```typescript
-const response = await timbal.callWorkforce("my-agent", { message: "Hello!" });
-const data = await response.json();
+// call — accepts id, uid, or name
+const res = await timbal.callWorkforce("my-agent", { message: "Hello!" });
+const data = await res.json();
 ```
 
 Stream events via SSE:
 
 ```typescript
-const response = await timbal.streamWorkforce("my-agent", {
-  message: "Hello!",
-});
-
-const reader = response.body.getReader();
+const res = await timbal.streamWorkforce("my-agent", { message: "Hello!" });
+const reader = res.body!.getReader();
 const decoder = new TextDecoder();
 
 while (true) {
@@ -201,34 +116,55 @@ while (true) {
 Clear the deployment cache when deployments change:
 
 ```typescript
-timbal.clearDeploymentCache();
+timbal.clearWorkforceCache();
 ```
 
-## Authentication
+## Files (org bucket)
 
-Build an OAuth URL for social login:
+For files that aren't tied to a KB.
 
 ```typescript
-const url = timbal.getOAuthUrl("github", "https://myapp.com/callback");
-// Redirect the user to this URL
+const file = await timbal.uploadFile("/path/to/file.pdf");
+
+const fromBuf = await timbal.uploadFileFromBuffer(
+  buffer,
+  "report.pdf",
+  "application/pdf",
+);
 ```
 
-Send a passwordless magic link:
+## Session & Project
 
 ```typescript
-await timbal.sendMagicLink("user@example.com", "https://myapp.com/callback");
+const session = await timbal.getSession();
+// { user_id, user_name, user_email, access_level, ... }
+
+const project = await timbal.getProject();
+// { id, name, description, workforce, ... }
 ```
 
-Refresh an access token:
+Validate a token **and** fetch project access in a single round trip:
 
 ```typescript
-const tokens = await timbal.refreshToken("refresh-token");
-// { access_token, refresh_token }
+const { session, project } = await timbal.as(token).getSession({ projectId: "56" });
+// 401 → invalid token. 403 → valid token but no access to that project.
+```
+
+## Scoped clients
+
+`as()` returns a new `Timbal` bound to a different token (or other config overrides). Useful for per-request user-scoped clients in a server.
+
+```typescript
+const userTimbal = timbal.as(userAccessToken);
+const session = await userTimbal.getSession();
+
+// or override multiple fields
+const other = timbal.as({ token: "...", orgId: "other-org" });
 ```
 
 ## Elysia Auth Plugin
 
-Drop-in authentication for [Elysia](https://elysiajs.com) applications. Adds login pages, OAuth, magic link, token refresh, cookie management, and route guarding with a single line:
+Drop-in authentication for [Elysia](https://elysiajs.com) apps. Adds login pages, OAuth, magic link, token refresh, cookie management, and route guarding with a single line:
 
 ```typescript
 import { Elysia } from "elysia";
@@ -240,7 +176,7 @@ const app = new Elysia()
   .listen(3000);
 ```
 
-This registers:
+Registers:
 - `GET /auth/login` — built-in login page with OAuth + magic link
 - `GET /auth/:provider` — OAuth redirect (github, google, microsoft)
 - `GET /auth/callback` — OAuth callback handler
@@ -264,7 +200,7 @@ app.use(timbalAuth({
 }));
 ```
 
-### Custom Login Page
+### Custom login page
 
 ```typescript
 // Use your own HTML file (supports {{PREFIX}} placeholder)
@@ -274,7 +210,7 @@ app.use(timbalAuth({ loginPage: "./my-login.html" }));
 app.use(timbalAuth({ loginPage: false }));
 ```
 
-### Local Development
+### Local development
 
 When `TIMBAL_PROJECT_ID` is not set, auth is bypassed entirely — all routes are accessible without login.
 
@@ -282,7 +218,7 @@ Requires `elysia` as a peer dependency.
 
 ## Error Handling
 
-The SDK throws `TimbalApiError` for API errors:
+The SDK throws `TimbalApiError` for API errors, with status-aware predicates so you don't sniff codes manually:
 
 ```typescript
 import { TimbalApiError } from "@timbal-ai/timbal-sdk";
@@ -291,22 +227,49 @@ try {
   await timbal.query("SELECT * FROM documents");
 } catch (err) {
   if (err instanceof TimbalApiError) {
-    console.error(err.message); // Error message
-    console.error(err.statusCode); // HTTP status code
-    console.error(err.code); // Error code (e.g. "NETWORK_ERROR", "AUTH_ERROR")
-    console.error(err.details); // Additional details
+    if (err.isUnauthorized()) /* 401 */;
+    if (err.isForbidden())    /* 403 */;
+    if (err.isNotFound())     /* 404 */;
+    if (err.isConflict())     /* 409 */;
+    if (err.isRateLimited())  /* 429 */;
+    if (err.isServerError())  /* 5xx */;
+    if (err.isTimeout())      /* SDK aborted before the wire */;
+    if (err.isNetworkError()) /* DNS/connection failure */;
   }
 }
 ```
 
-Error codes: `NETWORK_ERROR`, `TIMEOUT_ERROR`, `AUTH_ERROR`, `VALIDATION_ERROR`, `RATE_LIMIT_ERROR`, `SERVER_ERROR`.
+KB-specific subclasses (`KbFileAlreadyExistsError`, `KbFileNotFoundError`) are thrown by `kb.files.*`; both still match `instanceof TimbalApiError`.
 
 The SDK retries automatically on 5xx errors, timeouts, and network errors (3 attempts by default).
 
-## Debug Logging
+---
 
-Set `TIMBAL_DEBUG=1` to enable request/response logging.
+## Configuration
+
+The SDK resolves each config field in order, using the first value found:
+
+1. **Explicit options** passed to `new Timbal({ ... })`
+2. **Environment variables**
+3. **`~/.timbal/` profile files** (managed by `timbal configure`)
+4. **Defaults**
+
+If you've run `timbal configure`, the SDK picks up your credentials automatically — no env vars or explicit config needed. Select a non-default profile with `TIMBAL_PROFILE=staging`.
+
+### Environment variables
+
+| Variable             | Description                                              |
+| -------------------- | -------------------------------------------------------- |
+| `TIMBAL_API_KEY`     | API key / token                                          |
+| `TIMBAL_BASE_URL`    | API base URL                                             |
+| `TIMBAL_ORG_ID`      | Organization ID                                          |
+| `TIMBAL_PROJECT_ID`  | Project ID                                               |
+| `TIMBAL_PROJECT_REV` | Git branch (default: `main`)                             |
+| `TIMBAL_KB_ID`       | Knowledge base ID                                        |
+| `TIMBAL_PROFILE`     | Profile to load from `~/.timbal/` files                  |
+| `TIMBAL_CONFIG_DIR`  | Override the config directory (default: `~/.timbal`)     |
+| `TIMBAL_DEBUG`       | Set to `1` to log every request/response                 |
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE).

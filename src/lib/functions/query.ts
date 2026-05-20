@@ -27,13 +27,16 @@ export async function query(
   if (!orgId) throw new Error('orgId is required. Provide it in options, client config, or set TIMBAL_ORG_ID env var.');
   if (!kbId) throw new Error('kbId is required. Provide it in options, client config, or set TIMBAL_KB_ID env var.');
 
+  const body: Record<string, unknown> = { sql, params };
+  if (options?.explain) body.explain = true;
+
   if (options?.legacy) {
     const path = `orgs/${orgId}/kbs/${kbId}/query`;
-    const response = await client.post<QueryRow[]>(path, { sql, params });
+    const response = await client.post<QueryRow[]>(path, body);
     return { rows: response.data };
   }
 
   const path = `orgs/${orgId}/k2/${kbId}/query`;
-  const response = await client.post<QueryResult>(path, { sql, params });
+  const response = await client.post<QueryResult>(path, body);
   return response.data;
 }
