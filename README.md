@@ -90,34 +90,53 @@ const kb = new KB(timbal.apiClient, "162");
 
 ## Workforce
 
-```typescript
-// list deployed agents/workflows
-const items = await timbal.listWorkforces();
+`timbal.workforce.get(identifier)` is **synchronous** — it returns a scoped `Workforce` view without a network call. `identifier` is a numeric id, uid, or name; resolution to a deployment URL happens lazily on the first `call` / `stream` / `events` and is cached per `orgId:projectId:rev`. Singular `workforce` because it's already the collection noun in Timbal (holds agents, workflows, tools).
 
-// call — accepts id, uid, or name
-const res = await timbal.callWorkforce("my-agent", { message: "Hello!" });
+```typescript
+const items = await timbal.workforce.list();
+
+const wf = timbal.workforce.get("my-agent");
+
+// JSON call
+const res = await wf.call({ message: "Hello!" });
 const data = await res.json();
 ```
 
-Stream events via SSE:
+### Streaming
+
+Two shapes — raw `Response` for power use, typed async iterator for the happy path:
 
 ```typescript
-const res = await timbal.streamWorkforce("my-agent", { message: "Hello!" });
-const reader = res.body!.getReader();
-const decoder = new TextDecoder();
-
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  console.log(decoder.decode(value));
+// Typed iterator: parsed SSE payloads, buffered across chunk boundaries.
+for await (const ev of wf.events({ message: "Hello!" })) {
+  if (ev.type === "delta") process.stdout.write(String(ev.delta));
 }
+
+// Or raw Response when you need the underlying body.
+const res = await wf.stream({ message: "Hello!" });
 ```
 
-Clear the deployment cache when deployments change:
+`events()` yields `Record<string, unknown>` — the exact shape is component-specific. Key off your known fields (`type`, `delta`, `output`, etc.). `[DONE]` sentinels and comment/heartbeat lines are filtered out.
+
+### Cache
+
+Invalidate the cached workforce list when deployments change mid-session:
 
 ```typescript
-timbal.clearWorkforceCache();
+timbal.workforce.clearCache();
 ```
+
+### Escape hatch
+
+Construct a `Workforce` view directly when you need to bypass the `Timbal` wrapper:
+
+```typescript
+import { Workforce } from "@timbal-ai/timbal-sdk";
+
+const wf = new Workforce(timbal.apiClient, "my-agent");
+```
+
+> **Deprecated:** `timbal.listWorkforces` / `callWorkforce` / `streamWorkforce` / `clearWorkforceCache` still work and delegate to the same backing functions. New code should use the section above.
 
 ## Files
 
