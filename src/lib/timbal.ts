@@ -14,6 +14,7 @@ import type {
 } from '../types';
 import { ApiClient } from './api';
 import { KbsSection } from './kb';
+import { WorkforceSection } from './workforce';
 import {
   query as queryFn,
   uploadTempFile as uploadTempFileFn,
@@ -40,6 +41,7 @@ export class Timbal {
   public readonly apiClient: ApiClient;
 
   private _kbs?: KbsSection;
+  private _workforce?: WorkforceSection;
 
   constructor(config: TimbalConfig = {}) {
     this.apiClient = new ApiClient(config);
@@ -76,6 +78,23 @@ export class Timbal {
   get kbs(): KbsSection {
     if (!this._kbs) this._kbs = new KbsSection(this.apiClient);
     return this._kbs;
+  }
+
+  // ── Workforce (Stripe-style) ──
+
+  /**
+   * Workforce accessor. Singular because "workforce" is the collection noun
+   * in Timbal — it holds agents, workflows, and tools.
+   *
+   * - `timbal.workforce.list()` — list components in the project
+   * - `timbal.workforce.get(identifier)` — sync, returns a scoped `Workforce` view
+   * - `timbal.workforce.clearCache()` — invalidate the per-rev list cache
+   *
+   * Lazy singleton on this `Timbal` instance.
+   */
+  get workforce(): WorkforceSection {
+    if (!this._workforce) this._workforce = new WorkforceSection(this.apiClient);
+    return this._workforce;
   }
 
   // ── Project ──
@@ -161,10 +180,12 @@ export class Timbal {
 
   // ── Workforce ──
 
+  /** @deprecated Use `timbal.workforce.list(ctx?)`. */
   async listWorkforces(ctx?: PlatformContext): Promise<WorkforceItem[]> {
     return listWorkforcesFn(this.apiClient, ctx);
   }
 
+  /** @deprecated Use `timbal.workforce.get(identifier).call(input, ctx?)`. */
   async callWorkforce(
     identifier: string,
     input?: Record<string, unknown>,
@@ -173,6 +194,11 @@ export class Timbal {
     return callWorkforceFn(this.apiClient, identifier, input, ctx);
   }
 
+  /**
+   * @deprecated Use `timbal.workforce.get(identifier).stream(input, ctx?)`
+   * for the raw `Response`, or `.events(input, ctx?)` for a typed async
+   * iterator over parsed SSE payloads.
+   */
   async streamWorkforce(
     identifier: string,
     input?: Record<string, unknown>,
@@ -181,6 +207,7 @@ export class Timbal {
     return streamWorkforceFn(this.apiClient, identifier, input, ctx);
   }
 
+  /** @deprecated Use `timbal.workforce.clearCache()`. */
   clearWorkforceCache(): void {
     clearWorkforceCacheFn();
   }
