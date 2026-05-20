@@ -4,3 +4,4 @@ export * from './utils';
 export * from './timbal';
 export * from './message';
 export * from './kb';
+export * from './workforce';
