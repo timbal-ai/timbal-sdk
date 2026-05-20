@@ -75,15 +75,50 @@ export interface QueryResult {
 }
 
 // ── Files ──
+//
+// IDs are typed as `string` for consistency with the rest of the SDK (KB IDs,
+// file IDs, etc.). The server serializes `int64` IDs as JSON numbers on this
+// endpoint, but the SDK coerces them to `string` at the boundary so callers
+// don't have to think about precision loss or type drift across resources.
 
+/**
+ * Long-lived org-bucket file. Returned by the legacy `POST /orgs/{org}/files`
+ * route.
+ *
+ * @deprecated Prefer {@link TempFile} for short-lived attachments
+ * (`timbal.uploadTempFile`) or a Knowledge Base file
+ * (`timbal.kbs.get(id).files.upload`) for long-lived, parsed, searchable
+ * storage. The org-bucket endpoint is undocumented and may be removed.
+ */
 export interface File {
-  id: number;
+  id: string;
   name: string;
   content_type: string;
   content_length: number;
   created_at: string;
   expires_at?: string | null;
   url: string;
+}
+
+/**
+ * Stateless temporary file metadata returned by `POST /files`.
+ *
+ * Stored under a `tmp/` prefix in object storage and removed by a storage
+ * lifecycle policy ~24h after upload. **No database row is created** — there
+ * is no `id`; clients must persist `url` / `name` themselves if they need to
+ * track it. Treat a 404 from `url` as "expired".
+ *
+ * Use for short-lived binary handoff to agents and workflows. For durable
+ * storage with parsing + embedding, use `kb.files.upload` instead.
+ */
+export interface TempFile {
+  name: string;
+  content_type: string;
+  content_length: number;
+  url: string;
+  created_at: string;
+  /** Advisory expiration (~24h after upload). Storage lifecycle may lag by up to a day. */
+  expires_at: string;
 }
 
 // ── Knowledge Base ──
