@@ -48,7 +48,7 @@ const [a, b] = await Promise.all([
 
 ### KB files
 
-Distinct from the org bucket (`timbal.uploadFile` below). KB files carry `metadata`, live under a virtual `directory`, and are parsed + embedded by the platform pipeline.
+Distinct from temporary files (`timbal.uploadTempFile` below). KB files carry `metadata`, live under a virtual `directory`, and are parsed + embedded by the platform pipeline.
 
 ```typescript
 const file = await kb.files.upload(buffer, "order.pdf", {
@@ -119,19 +119,25 @@ Clear the deployment cache when deployments change:
 timbal.clearWorkforceCache();
 ```
 
-## Files (org bucket)
+## Files
 
-For files that aren't tied to a KB.
+Short-lived binary handoff for agents and workflows. Hits the stateless `POST /files` endpoint — no org scope, no DB row, signed URL expires in ~24h. For durable, parsed, searchable storage use `kb.files.upload` instead.
 
 ```typescript
-const file = await timbal.uploadFile("/path/to/file.pdf");
+const tmp = await timbal.uploadTempFile("/path/to/report.pdf");
+// { name, url, content_type, content_length, created_at, expires_at }
 
-const fromBuf = await timbal.uploadFileFromBuffer(
+await timbal.callWorkforce("summarize", { file_url: tmp.url });
+
+// or from a buffer
+const fromBuf = await timbal.uploadTempFileFromBuffer(
   buffer,
   "report.pdf",
   "application/pdf",
 );
 ```
+
+> **Deprecated:** `timbal.uploadFile` / `timbal.uploadFileFromBuffer` hit an undocumented org-bucket route. They still work and now return `{ id: string, ... }` (numeric IDs are coerced at the boundary), but new code should pick between `uploadTempFile` and `kb.files.upload`.
 
 ## Session & Project
 
