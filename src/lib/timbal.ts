@@ -1,6 +1,7 @@
 import type {
   TimbalConfig,
   File,
+  TempFile,
   Session,
   QueryResult,
   QueryRow,
@@ -15,6 +16,8 @@ import { ApiClient } from './api';
 import { KbsSection } from './kb';
 import {
   query as queryFn,
+  uploadTempFile as uploadTempFileFn,
+  uploadTempFileFromBuffer as uploadTempFileFromBufferFn,
   uploadFile as uploadFileFn,
   uploadFileFromBuffer as uploadFileFromBufferFn,
   getSession as getSessionFn,
@@ -111,10 +114,42 @@ export class Timbal {
 
   // ── Files ──
 
+  /**
+   * Upload a temporary file from a local path.
+   *
+   * Hits the documented stateless `POST /files` route. Returns a
+   * {@link TempFile} with a short-lived URL (~24h). Not org-scoped, no DB
+   * row. Use for one-shot binary handoff to agents/workflows; use
+   * `kbs.get(id).files.upload(...)` for durable, parsed, searchable storage.
+   */
+  async uploadTempFile(filePath: string): Promise<TempFile> {
+    return uploadTempFileFn(this.apiClient, filePath);
+  }
+
+  /**
+   * Upload a temporary file from an in-memory buffer.
+   * See {@link uploadTempFile} for semantics.
+   */
+  async uploadTempFileFromBuffer(
+    data: ArrayBuffer | Uint8Array,
+    filename: string,
+    contentType?: string,
+  ): Promise<TempFile> {
+    return uploadTempFileFromBufferFn(this.apiClient, data, filename, contentType);
+  }
+
+  /**
+   * @deprecated Use {@link uploadTempFile} for short-lived attachments or
+   * `timbal.kbs.get(kbId).files.upload(...)` for durable storage. The
+   * org-bucket route is undocumented and slated for removal.
+   */
   async uploadFile(filePath: string, ctx?: PlatformContext): Promise<File> {
     return uploadFileFn(this.apiClient, filePath, ctx);
   }
 
+  /**
+   * @deprecated See {@link uploadFile}.
+   */
   async uploadFileFromBuffer(
     data: ArrayBuffer | Uint8Array,
     filename: string,
