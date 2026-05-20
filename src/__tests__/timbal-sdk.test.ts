@@ -45,6 +45,8 @@ describe('Timbal', () => {
       expect(typeof timbal.query).toBe('function');
       expect(typeof timbal.uploadFile).toBe('function');
       expect(typeof timbal.uploadFileFromBuffer).toBe('function');
+      expect(typeof timbal.uploadTempFile).toBe('function');
+      expect(typeof timbal.uploadTempFileFromBuffer).toBe('function');
       expect(typeof timbal.getSession).toBe('function');
       expect(typeof timbal.getProject).toBe('function');
       expect(typeof timbal.getOAuthUrl).toBe('function');
@@ -162,7 +164,56 @@ describe('Timbal', () => {
       });
 
       const result = await timbal.uploadFile(tempPath, { orgId: 'org1' });
-      expect(result.id).toBe(1);
+      expect(result.id).toBe('1');
+      expect(typeof result.id).toBe('string');
+    });
+
+    test('uploadTempFile should call POST /files (not org-scoped)', async () => {
+      const tempPath = '/tmp/timbal-test-temp-delegate.txt';
+      await Bun.write(tempPath, 'temp test');
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          name: 'tmp.txt',
+          content_type: 'text/plain',
+          content_length: 9,
+          url: 'https://content.timbal.ai/tmp/abc.txt',
+          created_at: '2024-01-01T00:00:00Z',
+          expires_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      const result = await timbal.uploadTempFile(tempPath);
+      const fetchCall = mockFetch.mock.calls[0];
+      expect(fetchCall[0]).toMatch(/\/files$/);
+      expect(result.url).toBe('https://content.timbal.ai/tmp/abc.txt');
+      expect((result as any).id).toBeUndefined();
+    });
+
+    test('uploadTempFileFromBuffer should call POST /files', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          name: 'hello.txt',
+          content_type: 'text/plain',
+          content_length: 5,
+          url: 'https://content.timbal.ai/tmp/hello.txt',
+          created_at: '2024-01-01T00:00:00Z',
+          expires_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      const result = await timbal.uploadTempFileFromBuffer(
+        new TextEncoder().encode('hello'),
+        'hello.txt',
+        'text/plain',
+      );
+      const fetchCall = mockFetch.mock.calls[0];
+      expect(fetchCall[0]).toMatch(/\/files$/);
+      expect(result.name).toBe('hello.txt');
     });
   });
 
