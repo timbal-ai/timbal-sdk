@@ -177,6 +177,62 @@ describe('streamEvents', () => {
       for await (const _ of streamEvents(res)) { /* unused */ }
     })()).rejects.toThrow('no body');
   });
+
+  test('cancels the underlying stream on early break (closes the HTTP socket)', async () => {
+    let cancelled = false;
+    let pulled = 0;
+    const events = [
+      'data: {"i":0}\n\n',
+      'data: {"i":1}\n\n',
+      'data: {"i":2}\n\n',
+      'data: {"i":3}\n\n',
+    ];
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (pulled < events.length) {
+          controller.enqueue(new TextEncoder().encode(events[pulled]!));
+          pulled++;
+        } else {
+          controller.close();
+        }
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const res = new Response(stream);
+
+    let seen = 0;
+    for await (const _ev of streamEvents(res)) {
+      seen++;
+      if (seen === 1) break;
+    }
+    // releaseLock() alone would leave `cancelled` as false; cancel() must be
+    // called for the source's cancel algorithm to run (and the fetch socket
+    // to close in production).
+    expect(seen).toBe(1);
+    expect(cancelled).toBe(true);
+  });
+
+  test('cancels on throw inside the consumer', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"x":1}\n\n'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const res = new Response(stream);
+
+    await expect((async () => {
+      for await (const _ev of streamEvents(res)) {
+        throw new Error('consumer boom');
+      }
+    })()).rejects.toThrow('consumer boom');
+    expect(cancelled).toBe(true);
+  });
 });
 
 // ── Timbal.workforce wiring ────────────────────────────────────────────────
