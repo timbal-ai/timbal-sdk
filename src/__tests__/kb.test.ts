@@ -81,7 +81,10 @@ describe('KbsSection', () => {
   });
 
   test('list() calls GET /orgs/{org}/k2 and returns array', async () => {
-    const items: KbInfo[] = [{ id: '1', name: 'kb-a' }, { id: '2', name: 'kb-b' }];
+    const items: KbInfo[] = [
+      { id: '1', uid: 'uid-1', name: 'kb-a', created_at: 't', updated_at: 't' },
+      { id: '2', uid: 'uid-2', name: 'kb-b', created_at: 't', updated_at: 't' },
+    ];
     const client = makeMockClient({
       get: mock(() => Promise.resolve({ data: items, success: true, statusCode: 200 })),
     });

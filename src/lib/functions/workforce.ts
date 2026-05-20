@@ -1,5 +1,6 @@
 import type { ApiClient } from '../api';
 import type { PlatformContext, WorkforceItem } from '../../types';
+import { coerceWorkforceItem, type RawWorkforceItem } from '../coerce';
 
 function nodeRequire(id: string): any { try { return require(id); } catch { return null; } }
 
@@ -136,11 +137,11 @@ async function resolveWorkforceItem(
 
   // Cache miss, or cached list predates a newly-registered component → refresh.
   if (!item) {
-    const response = await client.get<{ workforce: WorkforceItem[] }>(
+    const response = await client.get<{ workforce: RawWorkforceItem[] }>(
       `orgs/${orgId}/projects/${projectId}/workforce`,
       { rev },
     );
-    items = response.data.workforce ?? [];
+    items = (response.data.workforce ?? []).map(coerceWorkforceItem);
     workforceListCache.set(cacheKey, items);
     item = findInList(items);
   }
@@ -252,11 +253,11 @@ export async function listWorkforces(
 
   const resolved = resolveContext(client, ctx);
   const { orgId, projectId, rev } = requireRemoteContext(resolved);
-  const response = await client.get<{ workforce: WorkforceItem[] }>(
+  const response = await client.get<{ workforce: RawWorkforceItem[] }>(
     `orgs/${orgId}/projects/${projectId}/workforce`,
     { rev },
   );
-  const items = response.data.workforce ?? [];
+  const items = (response.data.workforce ?? []).map(coerceWorkforceItem);
   workforceListCache.set(`${orgId}:${projectId}:${rev}`, items);
   return items;
 }
