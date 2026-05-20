@@ -3,6 +3,7 @@ import type {
   KbQueryOptions,
   KbSchemaOptions,
   KbSchemaSqlOptions,
+  KbSchemaStructuredOptions,
   QueryResult,
   TableSchema,
 } from '../../types';
@@ -56,9 +57,12 @@ export class KB {
    * - `{ format: 'sql' }` — `string[]` of DDL statements (`CREATE TABLE`, `CREATE INDEX`, …).
    */
   schema(): Promise<TableSchema[]>;
-  schema(options?: KbSchemaOptions): Promise<TableSchema[]>;
   schema(options: KbSchemaSqlOptions): Promise<string[]>;
+  schema(options?: KbSchemaStructuredOptions): Promise<TableSchema[]>;
   schema(options?: KbSchemaOptions): Promise<TableSchema[] | string[]> {
+    if (options?.format === 'sql') {
+      return getKbSchema(this.apiClient, this.kbId, options);
+    }
     return getKbSchema(this.apiClient, this.kbId, options);
   }
 

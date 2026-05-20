@@ -11,6 +11,7 @@ import type {
   KbListOptions,
   KbSchemaOptions,
   KbSchemaSqlOptions,
+  KbSchemaStructuredOptions,
   TableSchema,
 } from '../../types';
 
@@ -58,13 +59,13 @@ export async function listKbs(
 export async function getKbSchema(
   client: ApiClient,
   kbId: string,
-  options?: KbSchemaOptions,
-): Promise<TableSchema[]>;
+  options: KbSchemaSqlOptions,
+): Promise<string[]>;
 export async function getKbSchema(
   client: ApiClient,
   kbId: string,
-  options: KbSchemaSqlOptions,
-): Promise<string[]>;
+  options?: KbSchemaStructuredOptions,
+): Promise<TableSchema[]>;
 export async function getKbSchema(
   client: ApiClient,
   kbId: string,
