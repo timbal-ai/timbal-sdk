@@ -8,6 +8,7 @@ import {
   coerceWorkforceItem,
   coerceWorkforcePreview,
   coerceProject,
+  coerceProjectResponse,
 } from '../lib/coerce';
 
 describe('coerceKbInfo', () => {
@@ -160,6 +161,36 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     expect(out.id).toBe('230');
     expect(out.workforce[0]!.id).toBe('5');
     expect(out.workforce[0]!.uid).toBe('99');
+  });
+
+  test('coerceProjectResponse folds legacy `apps` alias into workforce', () => {
+    const out = coerceProjectResponse({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+      apps: [
+        { id: 7, name: 'legacy-wf', type: 'agent', description: null, uid: 88 },
+      ],
+    } as any);
+    expect(out.id).toBe('230');
+    expect(out.workforce[0]!.id).toBe('7');
+    expect(out.workforce[0]!.uid).toBe('88');
+  });
+
+  test('coerceProjectResponse prefers workforce when both are present', () => {
+    const out = coerceProjectResponse({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+      workforce: [{ id: 1, name: 'wf-new', type: 'agent', description: null, uid: 11 }],
+      apps:      [{ id: 2, name: 'wf-old', type: 'agent', description: null, uid: 22 }],
+    } as any);
+    expect(out.workforce.length).toBe(1);
+    expect(out.workforce[0]!.name).toBe('wf-new');
   });
 
   test('project missing workforce defaults to []', () => {

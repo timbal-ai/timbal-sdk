@@ -49,6 +49,15 @@ export type RawProject =
   & Omit<Project, 'id' | 'workforce'>
   & { id: string | number; workforce?: RawWorkforcePreview[] };
 
+/**
+ * Wire shape for `GET /orgs/{org}/projects/{id}` and `GET /me?project_id=...`.
+ * The backend historically returned `apps`; the current contract is
+ * `workforce`. Accept both.
+ */
+export type RawProjectResponse =
+  & Omit<RawProject, 'workforce'>
+  & { workforce?: RawWorkforcePreview[]; apps?: RawWorkforcePreview[] };
+
 export function coerceWorkforcePreview(raw: RawWorkforcePreview): WorkforcePreview {
   return { ...raw, id: toStringId(raw.id), uid: toStringIdOpt(raw.uid) ?? null };
 }
@@ -59,6 +68,18 @@ export function coerceProject(raw: RawProject): Project {
     id: toStringId(raw.id),
     workforce: (raw.workforce ?? []).map(coerceWorkforcePreview),
   };
+}
+
+/**
+ * Coerce a project response that may carry the legacy `apps` alias. Folds
+ * `apps` into `workforce` (workforce wins when both are present) before
+ * delegating to {@link coerceProject}.
+ */
+export function coerceProjectResponse(raw: RawProjectResponse): Project {
+  return coerceProject({
+    ...raw,
+    workforce: raw.workforce ?? raw.apps ?? [],
+  });
 }
 
 // ── KB collection ──────────────────────────────────────────────────────────
