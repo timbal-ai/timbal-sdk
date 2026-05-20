@@ -1,6 +1,14 @@
 import type { ApiClient } from '../api';
 import { TimbalApiError } from '../api';
 import { KbFileNotFoundError, KbFileAlreadyExistsError } from '../kb/errors';
+import {
+  coerceK2File,
+  coerceK2FileDetail,
+  coerceKbInfo,
+  type RawK2File,
+  type RawK2FileDetail,
+  type RawKbInfo,
+} from '../coerce';
 import type {
   K2File,
   K2FileDetail,
@@ -39,15 +47,17 @@ export async function listKbs(
 ): Promise<KbInfo[]> {
   const orgId = resolveOrg(client, options?.orgId);
   const params = options?.page_token ? { page_token: options.page_token } : undefined;
-  const response = await client.get<KbInfo[] | { k2: KbInfo[] } | { items: KbInfo[] }>(
+  const response = await client.get<RawKbInfo[] | { k2: RawKbInfo[] } | { items: RawKbInfo[] }>(
     `orgs/${orgId}/k2`,
     params,
   );
   const data = response.data;
-  if (Array.isArray(data)) return data;
-  if (data && 'k2' in data) return data.k2 ?? [];
-  if (data && 'items' in data) return data.items ?? [];
-  return [];
+  let raw: RawKbInfo[];
+  if (Array.isArray(data)) raw = data;
+  else if (data && 'k2' in data) raw = data.k2 ?? [];
+  else if (data && 'items' in data) raw = data.items ?? [];
+  else raw = [];
+  return raw.map(coerceKbInfo);
 }
 
 // ── KB-scoped ──
@@ -136,8 +146,8 @@ export async function uploadKbFile(
   }
 
   try {
-    const response = await client.postFormData<K2File>(path, formData);
-    return response.data;
+    const response = await client.postFormData<RawK2File>(path, formData);
+    return coerceK2File(response.data);
   } catch (err) {
     if (err instanceof TimbalApiError && err.statusCode === 409) {
       throw new KbFileAlreadyExistsError(
@@ -170,13 +180,18 @@ export async function listKbFiles(
   if (options?.directory !== undefined) params.directory = options.directory;
   if (options?.page_token !== undefined) params.page_token = options.page_token;
 
-  const response = await client.get<K2FilePage | K2File[]>(
+  type RawK2FilePage = { files: RawK2File[]; next_page_token?: string | null };
+  const response = await client.get<RawK2FilePage | RawK2File[]>(
     `${basePath(org, kbId)}/files`,
     Object.keys(params).length ? params : undefined,
   );
   const data = response.data;
-  if (Array.isArray(data)) return { files: data };
-  return data ?? { files: [] };
+  if (Array.isArray(data)) return { files: data.map(coerceK2File) };
+  if (!data) return { files: [] };
+  return {
+    files: (data.files ?? []).map(coerceK2File),
+    ...(data.next_page_token !== undefined && { next_page_token: data.next_page_token }),
+  };
 }
 
 /**
@@ -196,8 +211,8 @@ export async function getKbFile(
 ): Promise<K2FileDetail> {
   const org = resolveOrg(client, orgId);
   try {
-    const response = await client.get<K2FileDetail>(`${basePath(org, kbId)}/files/${fileId}`);
-    return response.data;
+    const response = await client.get<RawK2FileDetail>(`${basePath(org, kbId)}/files/${fileId}`);
+    return coerceK2FileDetail(response.data);
   } catch (err) {
     if (err instanceof TimbalApiError && err.statusCode === 404) {
       throw new KbFileNotFoundError(
