@@ -1,5 +1,12 @@
 import type { ApiClient } from '../api';
-import type { KbQueryOptions, QueryResult, TableSchema } from '../../types';
+import type {
+  KbQueryOptions,
+  KbSchemaOptions,
+  KbSchemaSqlOptions,
+  KbSchemaStructuredOptions,
+  QueryResult,
+  TableSchema,
+} from '../../types';
 import { query as queryFn } from '../functions/query';
 import { getKbSchema } from '../functions/kb';
 import { KbFilesSection } from './files-section';
@@ -44,10 +51,19 @@ export class KB {
   }
 
   /**
-   * Fetch the KB's table schema (`GET /k2/{kb}/schema`).
+   * Fetch the KB schema (`GET /k2/{kb}/schema`).
+   *
+   * - Default / `{ format: 'structured' }` — `TableSchema[]` (tables, columns, indexes, …).
+   * - `{ format: 'sql' }` — `string[]` of DDL statements (`CREATE TABLE`, `CREATE INDEX`, …).
    */
-  schema(): Promise<TableSchema[]> {
-    return getKbSchema(this.apiClient, this.kbId);
+  schema(): Promise<TableSchema[]>;
+  schema(options: KbSchemaSqlOptions): Promise<string[]>;
+  schema(options?: KbSchemaStructuredOptions): Promise<TableSchema[]>;
+  schema(options?: KbSchemaOptions): Promise<TableSchema[] | string[]> {
+    if (options?.format === 'sql') {
+      return getKbSchema(this.apiClient, this.kbId, options);
+    }
+    return getKbSchema(this.apiClient, this.kbId, options);
   }
 
   /**

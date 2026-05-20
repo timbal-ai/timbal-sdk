@@ -9,6 +9,9 @@ import type {
   KbFileUploadOptions,
   KbInfo,
   KbListOptions,
+  KbSchemaOptions,
+  KbSchemaSqlOptions,
+  KbSchemaStructuredOptions,
   TableSchema,
 } from '../../types';
 
@@ -50,16 +53,43 @@ export async function listKbs(
 // ── KB-scoped ──
 
 /**
- * Fetch the schema (tables + columns) of a knowledge base.
+ * Fetch the KB schema in structured form (tables, columns, indexes, constraints).
+ * Default when `format` is omitted or `"structured"`.
  */
 export async function getKbSchema(
   client: ApiClient,
   kbId: string,
-  orgId?: string,
-): Promise<TableSchema[]> {
-  const org = resolveOrg(client, orgId);
+  options: KbSchemaSqlOptions,
+): Promise<string[]>;
+export async function getKbSchema(
+  client: ApiClient,
+  kbId: string,
+  options?: KbSchemaStructuredOptions,
+): Promise<TableSchema[]>;
+export async function getKbSchema(
+  client: ApiClient,
+  kbId: string,
+  options?: KbSchemaOptions,
+): Promise<TableSchema[] | string[]> {
+  const org = resolveOrg(client, options?.orgId);
+  const params =
+    options?.format === 'sql' ? { format: 'sql' as const } : undefined;
+
+  if (options?.format === 'sql') {
+    const response = await client.get<{ statements: string[] } | string[]>(
+      `${basePath(org, kbId)}/schema`,
+      params,
+    );
+    const data = response.data;
+    if (Array.isArray(data) && (data.length === 0 || typeof data[0] === 'string')) {
+      return data as string[];
+    }
+    return (data as { statements: string[] })?.statements ?? [];
+  }
+
   const response = await client.get<TableSchema[] | { tables: TableSchema[] }>(
     `${basePath(org, kbId)}/schema`,
+    params,
   );
   const data = response.data;
   if (Array.isArray(data)) return data;

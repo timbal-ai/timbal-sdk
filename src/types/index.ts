@@ -264,6 +264,21 @@ export interface KbQueryOptions {
   explain?: boolean;
 }
 
+/** `structured` (default) — tables + columns. `sql` — DDL statement strings. */
+export type KbSchemaFormat = 'structured' | 'sql';
+
+export interface KbSchemaStructuredOptions {
+  format?: 'structured';
+  orgId?: string;
+}
+
+export interface KbSchemaSqlOptions {
+  format: 'sql';
+  orgId?: string;
+}
+
+export type KbSchemaOptions = KbSchemaStructuredOptions | KbSchemaSqlOptions;
+
 // ── Workforce ──
 
 export type WorkforceType = 'agent' | 'workflow' | 'unknown';
