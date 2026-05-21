@@ -90,18 +90,20 @@ function ready(): { timbal: Timbal; kb: ReturnType<Timbal['kbs']['get']> } | nul
 
 describe('Integration Tests — kb', () => {
   test.skipIf(SKIP)(
-    'kbs.list() returns an array of KbInfo with the expected shape',
+    'kbs.listAll() returns every KB with string ids (list() is first page only)',
     async () => {
       const ctx = ready();
       if (!ctx) return;
 
-      const kbs = await ctx.timbal.kbs.list();
-      console.log(`[kb] kbs.list() → ${kbs.length} kbs (first: ${kbs[0]?.name ?? '<empty>'})`);
+      const firstPage = await ctx.timbal.kbs.list();
+      const all = await ctx.timbal.kbs.listAll();
+      console.log(
+        `[kb] kbs.list() → ${firstPage.length} (first page), listAll() → ${all.length}`,
+      );
 
-      expect(Array.isArray(kbs)).toBe(true);
-      // Don't assert KB_ID is included — endpoint appears to return only a recent
-      // page and the configured KB may be older. Just validate the shape.
-      for (const k of kbs) {
+      expect(Array.isArray(all)).toBe(true);
+      expect(all.length).toBeGreaterThanOrEqual(firstPage.length);
+      for (const k of all) {
         expect(typeof k.id).toBe('string');
         expect(typeof k.name).toBe('string');
       }

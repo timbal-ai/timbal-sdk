@@ -36,10 +36,13 @@ const kb = timbal.kbs.get(process.env.TIMBAL_KB_ID!);
 await kb.query("SELECT * FROM orders WHERE status = $1", ["pending"]);
 await kb.schema(); // [{ table_name, columns: [...] }]
 
-// list KBs in the org (first page)
-const all = await timbal.kbs.list();
+// first page only — do NOT assume this is every KB in the org
+const firstPage = await timbal.kbs.list();
 
-// walk every KB across pages
+// every KB (drains all pages; fine for small orgs)
+const everyKb = await timbal.kbs.listAll();
+
+// or stream pages without holding the full list in memory
 for await (const kb of timbal.kbs.iterate()) {
   console.log(kb.name, kb.id);
 }
