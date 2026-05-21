@@ -110,4 +110,14 @@ describe.skipIf(SKIP)('Integration Tests — workforce section', () => {
     const wf = t.workforce.get(AGENT!);
     expect(wf.identifier).toBe(AGENT);
   });
+
+  test('workforce.get(id).info() resolves the deployment metadata with string ids', async () => {
+    const t = ready();
+    if (!t) return;
+    const wf = t.workforce.get(AGENT!);
+    const info = await wf.info();
+    expect(info.id || info.uid || info.name).toBeTruthy();
+    if (info.id !== undefined) expect(typeof info.id).toBe('string');
+    if (info.uid != null) expect(typeof info.uid).toBe('string');
+  });
 });

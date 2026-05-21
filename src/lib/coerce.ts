@@ -162,11 +162,14 @@ export type RawWorkforceItem =
   & { id?: string | number; uid?: string | number | null };
 
 export function coerceWorkforceItem(raw: RawWorkforceItem): WorkforceItem {
-  // Cast: spread + Omit composition over optional fields drops the narrowed
-  // id type. Runtime is `string | undefined` which matches `WorkforceItem.id`.
+  // Destructure id/uid out before the spread so their raw `string | number`
+  // types don't leak through to the returned object (same hazard as the
+  // `apps` and `parsing_id` leaks fixed earlier). Conditional re-add keeps an
+  // omitted field omitted instead of materializing it as undefined/null.
+  const { id, uid, ...rest } = raw;
   return {
-    ...raw,
-    ...(raw.id !== undefined && { id: toStringId(raw.id) }),
-    ...(raw.uid !== undefined && { uid: toStringIdOpt(raw.uid) ?? null }),
-  } as WorkforceItem;
+    ...rest,
+    ...(id !== undefined && { id: toStringId(id) }),
+    ...(uid !== undefined && { uid: uid === null ? null : String(uid) }),
+  };
 }

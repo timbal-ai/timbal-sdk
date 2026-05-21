@@ -63,6 +63,78 @@ describe('WorkforceSection', () => {
 // ── Workforce ──────────────────────────────────────────────────────────────
 
 describe('Workforce', () => {
+  test('info() returns the resolved WorkforceItem with coerced ids', async () => {
+    const client = makeApiClient();
+    const wf = new Workforce(client, 'clever-jaguar');
+    const info = await wf.info();
+    expect(info.id).toBe('361');
+    expect(info.uid).toBe('manifest-1');
+    expect(info.name).toBe('clever-jaguar');
+    expect(info.url).toBe('https://wf-361.example.com');
+    expect(typeof info.id).toBe('string');
+  });
+
+  test('info() shares the workforce list cache with call()', async () => {
+    const client = makeApiClient();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response('{"ok":true}', { status: 200 })),
+    ) as any;
+
+    try {
+      const wf = new Workforce(client, 'clever-jaguar');
+      await wf.info();
+      await wf.call({ message: 'hi' });
+      // First info() refresh → 1; cached on the second call → still 1.
+      expect((client.get as any)).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('info() throws when identifier not found', async () => {
+    const client = makeApiClient();
+    const wf = new Workforce(client, 'nope-not-here');
+    await expect(wf.info()).rejects.toThrow(/not found/);
+  });
+
+  test('info() takes the studio (remote-resolve) path when TIMBAL_STUDIO is set, even with TIMBAL_START_WORKFORCE', async () => {
+    // Regression: callWorkforce / streamWorkforce check studio BEFORE local.
+    // info() must match — otherwise info() returns the YAML-scanned local item
+    // while call() hits the deployed remote item. Different items, same wf.
+    process.env.TIMBAL_STUDIO = '1';
+    process.env.TIMBAL_START_WORKFORCE = 'manifest-1:7100';
+    try {
+      const client = makeApiClient();
+      const wf = new Workforce(client, 'clever-jaguar');
+      const info = await wf.info();
+      // Remote shape — id "361" comes from the mocked workforce list,
+      // not from the synthetic local YAML scan which would set id=identifier.
+      expect(info.id).toBe('361');
+      expect(info.url).toBe('https://wf-361.example.com');
+      expect((client.get as any)).toHaveBeenCalled();
+    } finally {
+      delete process.env.TIMBAL_STUDIO;
+      delete process.env.TIMBAL_START_WORKFORCE;
+    }
+  });
+
+  test('info() falls back to local resolution only when studio is OFF', async () => {
+    // Pure-local mode: no TIMBAL_STUDIO, TIMBAL_START_WORKFORCE set.
+    // info() should NOT hit the network — local resolve handles it.
+    process.env.TIMBAL_START_WORKFORCE = 'standalone-x:7100';
+    try {
+      const client = makeApiClient();
+      const wf = new Workforce(client, 'standalone-x');
+      const info = await wf.info();
+      // Synthetic local item — uid comes straight from the env entry.
+      expect(info.uid).toBe('standalone-x');
+      expect((client.get as any)).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.TIMBAL_START_WORKFORCE;
+    }
+  });
+
   test('call() POSTs to the resolved deployment url with the payload', async () => {
     const client = makeApiClient();
     const originalFetch = globalThis.fetch;

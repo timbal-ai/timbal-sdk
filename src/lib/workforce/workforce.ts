@@ -1,8 +1,9 @@
 import type { ApiClient } from '../api';
-import type { PlatformContext } from '../../types';
+import type { PlatformContext, WorkforceItem } from '../../types';
 import {
   callWorkforce as callWorkforceFn,
   streamWorkforce as streamWorkforceFn,
+  getWorkforceItem as getWorkforceItemFn,
 } from '../functions/workforce';
 import { streamEvents, type WorkforceEvent } from './events';
 
@@ -22,6 +23,25 @@ export class Workforce {
     public readonly apiClient: ApiClient,
     public readonly identifier: string,
   ) {}
+
+  /**
+   * Resolve this view's identifier to the full `WorkforceItem` — id, uid,
+   * name, type, deployment url, etc.
+   *
+   * Hits the same cache (`orgId:projectId:rev`) as `call` / `stream`, so
+   * calling `info()` before invocation is free if you'll dispatch anyway.
+   * Useful for debugging ("which deployment am I hitting on rev X?") and
+   * for distinguishing "not deployed" from "deployed but failing" before
+   * making the first call.
+   *
+   * ```ts
+   * const info = await wf.info();
+   * console.log(`hitting ${info.url} (rev ${info.uid})`);
+   * ```
+   */
+  info(ctx?: PlatformContext): Promise<WorkforceItem> {
+    return getWorkforceItemFn(this.apiClient, this.identifier, ctx);
+  }
 
   /**
    * Invoke the component and return the raw `Response`.
