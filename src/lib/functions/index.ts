@@ -18,6 +18,7 @@ export {
 export { parseSSELine } from './sse';
 export {
   listKbs,
+  listKbsPage,
   getKbSchema,
   uploadKbFile,
   listKbFiles,

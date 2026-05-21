@@ -139,6 +139,12 @@ export interface KbInfo {
   [key: string]: unknown;
 }
 
+/** Response shape of `GET /orgs/{org}/k2` (`ListK2Response` in the OpenAPI spec). */
+export interface KbInfoPage {
+  k2: KbInfo[];
+  next_page_token?: string | null;
+}
+
 // ── Schema ──
 
 export type TableSource = 'primary' | 'vectors' | (string & {});
