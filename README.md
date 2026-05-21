@@ -36,8 +36,13 @@ const kb = timbal.kbs.get(process.env.TIMBAL_KB_ID!);
 await kb.query("SELECT * FROM orders WHERE status = $1", ["pending"]);
 await kb.schema(); // [{ table_name, columns: [...] }]
 
-// list KBs in the org
+// list KBs in the org (first page)
 const all = await timbal.kbs.list();
+
+// walk every KB across pages
+for await (const kb of timbal.kbs.iterate()) {
+  console.log(kb.name, kb.id);
+}
 
 // multi-KB without global state — each get() is a fresh, isolated view
 const [a, b] = await Promise.all([
@@ -59,6 +64,10 @@ const file = await kb.files.upload(buffer, "order.pdf", {
 
 const page = await kb.files.list({ directory: "orders" });
 // { files: [...], next_page_token? }
+
+for await (const f of kb.files.iterate({ directory: "orders" })) {
+  await process(f);
+}
 
 const one = await kb.files.get(file.id);
 await kb.files.delete(file.id);

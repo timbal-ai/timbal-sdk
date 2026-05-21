@@ -40,10 +40,41 @@ export class KbFilesSection {
 
   /**
    * List files in this KB. Returns a page (`{ files, next_page_token? }`); thread
-   * `next_page_token` to paginate. Auto-pagination iterator deferred to v0.9.
+   * `next_page_token` manually, or use {@link iterate} to walk all pages.
    */
   list(options?: KbFileListOptions): Promise<K2FilePage> {
     return listKbFiles(this.apiClient, this.kbId, options);
+  }
+
+  /**
+   * Async iterator over every file in this KB, walking pages automatically.
+   *
+   * Built on {@link list} — same filters (`directory`), same coercion. Pass
+   * `page_token` only to resume from a known cursor (e.g. after a crash).
+   *
+   * ```ts
+   * for await (const f of kb.files.iterate({ directory: "orders" })) {
+   *   await process(f);
+   * }
+   * ```
+   */
+  async *iterate(options?: KbFileListOptions): AsyncIterable<K2File> {
+    let pageToken = options?.page_token;
+
+    for (;;) {
+      const page = await listKbFiles(this.apiClient, this.kbId, {
+        ...(options?.directory !== undefined && { directory: options.directory }),
+        ...(pageToken !== undefined && { page_token: pageToken }),
+      });
+
+      for (const file of page.files) {
+        yield file;
+      }
+
+      const next = page.next_page_token;
+      if (next == null || next === '') break;
+      pageToken = next;
+    }
   }
 
   /**
