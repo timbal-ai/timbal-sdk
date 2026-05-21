@@ -16,6 +16,7 @@ import type {
   KbFileListOptions,
   KbFileUploadOptions,
   KbInfo,
+  KbInfoPage,
   KbListOptions,
   KbSchemaOptions,
   KbSchemaSqlOptions,
@@ -35,29 +36,51 @@ function basePath(orgId: string, kbId: string): string {
 
 // ── KB collection ──
 
+type RawKbListEnvelope = {
+  k2?: RawKbInfo[];
+  items?: RawKbInfo[];
+  next_page_token?: string | null;
+};
+
 /**
- * List all knowledge bases the caller has access to in the given org.
- *
- * @returns A list of `KbInfo` (id, name, …). The server may paginate; pass `page_token`
- *          to fetch subsequent pages.
+ * List knowledge bases in the org with full pagination metadata
+ * (`GET /orgs/{org}/k2` → `ListK2Response`).
+ */
+export async function listKbsPage(
+  client: ApiClient,
+  options?: KbListOptions & { orgId?: string },
+): Promise<KbInfoPage> {
+  const orgId = resolveOrg(client, options?.orgId);
+  const params = options?.page_token ? { page_token: options.page_token } : undefined;
+  const response = await client.get<RawKbInfo[] | RawKbListEnvelope>(
+    `orgs/${orgId}/k2`,
+    params,
+  );
+  const data = response.data;
+
+  if (Array.isArray(data)) {
+    return { k2: data.map(coerceKbInfo) };
+  }
+  if (!data) return { k2: [] };
+
+  const raw = data.k2 ?? data.items ?? [];
+  return {
+    k2: raw.map(coerceKbInfo),
+    ...(data.next_page_token !== undefined && { next_page_token: data.next_page_token }),
+  };
+}
+
+/**
+ * List knowledge bases in the org — **first page only** (`.k2` from
+ * {@link listKbsPage}). For the pagination cursor or automatic paging use
+ * `listKbsPage` or `timbal.kbs.iterate()`.
  */
 export async function listKbs(
   client: ApiClient,
   options?: KbListOptions & { orgId?: string },
 ): Promise<KbInfo[]> {
-  const orgId = resolveOrg(client, options?.orgId);
-  const params = options?.page_token ? { page_token: options.page_token } : undefined;
-  const response = await client.get<RawKbInfo[] | { k2: RawKbInfo[] } | { items: RawKbInfo[] }>(
-    `orgs/${orgId}/k2`,
-    params,
-  );
-  const data = response.data;
-  let raw: RawKbInfo[];
-  if (Array.isArray(data)) raw = data;
-  else if (data && 'k2' in data) raw = data.k2 ?? [];
-  else if (data && 'items' in data) raw = data.items ?? [];
-  else raw = [];
-  return raw.map(coerceKbInfo);
+  const page = await listKbsPage(client, options);
+  return page.k2;
 }
 
 // ── KB-scoped ──
@@ -167,8 +190,7 @@ export async function uploadKbFile(
 /**
  * List files in a KB, optionally filtered by `directory`.
  *
- * Returns a page object. No auto-pagination in v0.8 — callers thread `next_page_token`
- * manually. (`KbFilesSection.iter()` is planned for v0.9.)
+ * Returns a page object. For automatic pagination use `kb.files.iterate()`.
  */
 export async function listKbFiles(
   client: ApiClient,

@@ -110,6 +110,24 @@ describe('Integration Tests — kb', () => {
   );
 
   test.skipIf(SKIP)(
+    'kbs.iterate() yields KbInfo rows with string ids',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      let count = 0;
+      for await (const kb of ctx.timbal.kbs.iterate()) {
+        expect(typeof kb.id).toBe('string');
+        expect(typeof kb.name).toBe('string');
+        count++;
+        if (count >= 5) break;
+      }
+      console.log(`[kb] kbs.iterate() → sampled ${count} kb(s)`);
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
     'kb.query("SELECT 1") roundtrip',
     async () => {
       const ctx = ready();
@@ -170,6 +188,25 @@ describe('Integration Tests — kb', () => {
         s => s.includes('CREATE TABLE') || s.includes('create table'),
       );
       expect(hasDdl).toBe(true);
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'kb.files.iterate() walks pages and yields coerced string ids',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      let count = 0;
+      for await (const f of ctx.kb.files.iterate({ directory: TEST_DIRECTORY })) {
+        expect(typeof f.id).toBe('string');
+        expect(f.kb_id).toBeDefined();
+        expect(typeof f.kb_id).toBe('string');
+        count++;
+        if (count >= 10) break;
+      }
+      console.log(`[kb] iterate(${TEST_DIRECTORY}) → sampled ${count} file(s)`);
     },
     15_000,
   );

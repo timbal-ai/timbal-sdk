@@ -140,6 +140,70 @@ describe('KbsSection', () => {
 
     expect((client.get as ReturnType<typeof mock>).mock.calls[0][1]).toEqual({ page_token: 'tok_xyz' });
   });
+
+  test('listPage() returns { k2, next_page_token } per OpenAPI ListK2Response', async () => {
+    const items: KbInfo[] = [{
+      id: '1', uid: 'u1', name: 'kb-a', created_at: 't', updated_at: 't',
+    }];
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { k2: items, next_page_token: 'tok_2' },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const kbs = new KbsSection(client);
+
+    const page = await kbs.listPage();
+    expect(page).toEqual({ k2: items, next_page_token: 'tok_2' });
+  });
+
+  test('iterate() walks multiple KB pages via next_page_token', async () => {
+    const kb1: KbInfo = {
+      id: '1', uid: 'u1', name: 'kb-a', created_at: 't', updated_at: 't',
+    };
+    const kb2: KbInfo = {
+      id: '2', uid: 'u2', name: 'kb-b', created_at: 't', updated_at: 't',
+    };
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { k2: [kb1], next_page_token: 'tok_page_2' },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { k2: [kb2], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const client = makeMockClient({ get: getMock });
+    const kbs = new KbsSection(client);
+
+    const out: KbInfo[] = [];
+    for await (const kb of kbs.iterate()) out.push(kb);
+
+    expect(out).toEqual([kb1, kb2]);
+    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(getMock.mock.calls[1][1]).toEqual({ page_token: 'tok_page_2' });
+  });
+
+  test('iterate() yields nothing when the org has no KBs', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { k2: [], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const kbs = new KbsSection(client);
+    const out: KbInfo[] = [];
+    for await (const kb of kbs.iterate()) out.push(kb);
+    expect(out).toEqual([]);
+  });
 });
 
 // ── KB ──
@@ -394,6 +458,86 @@ describe('KbFilesSection', () => {
 
     const result = await kb.files.list();
     expect(result).toEqual({ files: [mockK2File] });
+  });
+
+  test('iterate() yields all files from a single page', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { files: [mockK2File], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const kb = new KB(client, '162');
+    const out: K2File[] = [];
+    for await (const f of kb.files.iterate({ directory: 'orders' })) out.push(f);
+
+    expect(out).toEqual([mockK2File]);
+    expect((client.get as ReturnType<typeof mock>)).toHaveBeenCalledTimes(1);
+    expect((client.get as ReturnType<typeof mock>).mock.calls[0][1]).toEqual({
+      directory: 'orders',
+    });
+  });
+
+  test('iterate() walks multiple pages via next_page_token', async () => {
+    const file2: K2File = { ...mockK2File, id: '8', name: 'b.pdf' };
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { files: [mockK2File], next_page_token: 'tok_page_2' },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { files: [file2], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const client = makeMockClient({ get: getMock });
+    const kb = new KB(client, '162');
+
+    const out: K2File[] = [];
+    for await (const f of kb.files.iterate()) out.push(f);
+
+    expect(out).toEqual([mockK2File, file2]);
+    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(getMock.mock.calls[0][1]).toBeUndefined();
+    expect(getMock.mock.calls[1][1]).toEqual({ page_token: 'tok_page_2' });
+  });
+
+  test('iterate() yields nothing when the first page is empty', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { files: [], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const kb = new KB(client, '162');
+    const out: K2File[] = [];
+    for await (const f of kb.files.iterate()) out.push(f);
+    expect(out).toEqual([]);
+  });
+
+  test('iterate() can resume from an initial page_token', async () => {
+    const getMock = mock(() =>
+      Promise.resolve({
+        data: { files: [mockK2File], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      }),
+    );
+    const client = makeMockClient({ get: getMock });
+    const kb = new KB(client, '162');
+
+    const out: K2File[] = [];
+    for await (const f of kb.files.iterate({ page_token: 'tok_resume' })) out.push(f);
+
+    expect(out).toEqual([mockK2File]);
+    expect(getMock.mock.calls[0][1]).toEqual({ page_token: 'tok_resume' });
   });
 
   test('get() returns the extended K2FileDetail (with parsings + embeddings)', async () => {
