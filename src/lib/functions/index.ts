@@ -12,6 +12,7 @@ export { listWorkforces, callWorkforce, streamWorkforce, clearWorkforceCache } f
 export { parseSSELine } from './sse';
 export {
   listKbs,
+  listKbsPage,
   getKbSchema,
   uploadKbFile,
   listKbFiles,
