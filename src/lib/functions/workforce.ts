@@ -120,6 +120,39 @@ export function clearWorkforceCache(): void {
   workforceListCache.clear();
 }
 
+/**
+ * Resolve a workforce identifier to its `WorkforceItem` (id, uid, name, type,
+ * url, …). Public wrapper over `resolveWorkforceItem` that handles env detection
+ * (studio / local / remote) and context resolution. Goes through the same
+ * `workforceListCache` as `call` / `stream`, so calling `info()` before `call()`
+ * is a free warm-up.
+ *
+ * - **Studio** (`TIMBAL_STUDIO`): remote resolve via `GET /orgs/{org}/projects/
+ *   {proj}/workforce?rev=...`. Studio takes precedence over local — same order
+ *   used by `call` / `stream` so `info()` always reveals the deployment they
+ *   will actually hit.
+ * - **Local** (`TIMBAL_START_WORKFORCE` / `TIMBAL_WORKFORCE`): scans
+ *   `timbal.yaml` manifests on disk. Returns a synthetic `{ uid, name, id }`
+ *   if not found.
+ * - **Remote** (default): hits the workforce list endpoint (cached) and finds
+ *   the matching component by id / uid / name.
+ */
+export async function getWorkforceItem(
+  client: ApiClient,
+  identifier: string,
+  ctx?: PlatformContext,
+): Promise<WorkforceItem> {
+  // Studio first to match callWorkforce / streamWorkforce precedence. Studio
+  // uses the same remote resolve path as remote — only pure-local mode
+  // (no studio) goes through the on-disk YAML scan.
+  if (isLocalEnvironment() && !isStudioEnvironment()) {
+    return resolveLocalWorkforceItem(identifier);
+  }
+  const resolved = resolveContext(client, ctx);
+  const { orgId, projectId, rev } = requireRemoteContext(resolved);
+  return resolveWorkforceItem(client, orgId, projectId, rev, identifier);
+}
+
 async function resolveWorkforceItem(
   client: ApiClient,
   orgId: string,

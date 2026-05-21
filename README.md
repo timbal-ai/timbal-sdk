@@ -100,6 +100,11 @@ const wf = timbal.workforce.get("my-agent");
 // JSON call
 const res = await wf.call({ message: "Hello!" });
 const data = await res.json();
+
+// Resolved deployment metadata (id, uid, name, type, url). Shares the
+// list cache with call() / stream() — free if you'll dispatch anyway.
+const info = await wf.info();
+console.log(`hitting ${info.url} (rev ${info.uid})`);
 ```
 
 ### Streaming
