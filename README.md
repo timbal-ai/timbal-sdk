@@ -136,9 +136,12 @@ timbal.workforce.clearCache();
 Construct a `Workforce` view directly when you need to bypass the `Timbal` wrapper:
 
 ```typescript
-import { Workforce } from "@timbal-ai/timbal-sdk";
+import { Workforce, getWorkforceItem } from "@timbal-ai/timbal-sdk";
 
 const wf = new Workforce(timbal.apiClient, "my-agent");
+
+// Or resolve metadata without constructing a view:
+const info = await getWorkforceItem(timbal.apiClient, "my-agent", { rev: "main" });
 ```
 
 > **Deprecated:** `timbal.listWorkforces` / `callWorkforce` / `streamWorkforce` / `clearWorkforceCache` still work and delegate to the same backing functions. New code should use the section above.
