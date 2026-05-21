@@ -72,8 +72,8 @@ export async function listKbsPage(
 
 /**
  * List knowledge bases in the org — **first page only** (`.k2` from
- * {@link listKbsPage}). For the pagination cursor or automatic paging use
- * `listKbsPage` or `timbal.kbs.iterate()`.
+ * {@link listKbsPage}). When you need every KB in the org, use
+ * {@link listKbsAll} or {@link iterateKbs}.
  */
 export async function listKbs(
   client: ApiClient,
@@ -81,6 +81,48 @@ export async function listKbs(
 ): Promise<KbInfo[]> {
   const page = await listKbsPage(client, options);
   return page.k2;
+}
+
+/**
+ * Async iterator over every KB in the org, walking pages via {@link listKbsPage}.
+ */
+export async function* iterateKbs(
+  client: ApiClient,
+  options?: KbListOptions & { orgId?: string },
+): AsyncIterable<KbInfo> {
+  let pageToken = options?.page_token;
+
+  for (;;) {
+    const page = await listKbsPage(client, {
+      orgId: options?.orgId,
+      ...(pageToken !== undefined && { page_token: pageToken }),
+    });
+
+    for (const kb of page.k2) {
+      yield kb;
+    }
+
+    const next = page.next_page_token;
+    if (next == null || next === '') break;
+    pageToken = next;
+  }
+}
+
+/**
+ * List every KB in the org, draining all pages into one array.
+ *
+ * Convenience over {@link iterateKbs} when you want the full set in memory.
+ * For large orgs prefer `iterate()` to avoid holding everything at once.
+ */
+export async function listKbsAll(
+  client: ApiClient,
+  options?: KbListOptions & { orgId?: string },
+): Promise<KbInfo[]> {
+  const out: KbInfo[] = [];
+  for await (const kb of iterateKbs(client, options)) {
+    out.push(kb);
+  }
+  return out;
 }
 
 // ── KB-scoped ──

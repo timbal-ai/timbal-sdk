@@ -71,7 +71,8 @@ export class Timbal {
    * Knowledge Base collection accessor.
    *
    * - `timbal.kbs.list()` — first page of KBs in the org
-   * - `timbal.kbs.listPage()` / `timbal.kbs.iterate()` — full pagination
+   * - `timbal.kbs.listAll()` — every KB (all pages, in memory)
+   * - `timbal.kbs.listPage()` / `timbal.kbs.iterate()` — manual / streaming pagination
    * - `timbal.kbs.get(kbId)` — sync, returns a scoped `KB` view (no network call)
    *
    * Lazy singleton on this `Timbal` instance.

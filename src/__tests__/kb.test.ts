@@ -204,6 +204,48 @@ describe('KbsSection', () => {
     for await (const kb of kbs.iterate()) out.push(kb);
     expect(out).toEqual([]);
   });
+
+  test('listAll() drains every page into one array', async () => {
+    const kb1: KbInfo = {
+      id: '1', uid: 'u1', name: 'kb-a', created_at: 't', updated_at: 't',
+    };
+    const kb2: KbInfo = {
+      id: '2', uid: 'u2', name: 'kb-b', created_at: 't', updated_at: 't',
+    };
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { k2: [kb1], next_page_token: 'tok_2' },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { k2: [kb2], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const client = makeMockClient({ get: getMock });
+    const kbs = new KbsSection(client);
+
+    const all = await kbs.listAll();
+    expect(all).toEqual([kb1, kb2]);
+    expect(getMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('list() returns only the first page when more pages exist', async () => {
+    const kb1: KbInfo = {
+      id: '1', uid: 'u1', name: 'kb-a', created_at: 't', updated_at: 't',
+    };
+    const getMock = mock().mockResolvedValueOnce({
+      data: { k2: [kb1], next_page_token: 'tok_2' },
+      success: true,
+      statusCode: 200,
+    });
+    const kbs = new KbsSection(makeMockClient({ get: getMock }));
+
+    const first = await kbs.list();
+    expect(first).toEqual([kb1]);
+    expect(getMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── KB ──
