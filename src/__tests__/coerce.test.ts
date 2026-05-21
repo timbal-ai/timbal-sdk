@@ -130,6 +130,8 @@ describe('coerceWorkforceItem', () => {
     const out = coerceWorkforceItem({ id: 361, uid: 540, name: 'x' } as any);
     expect(out.id).toBe('361');
     expect(out.uid).toBe('540');
+    expect(typeof out.id).toBe('string');
+    expect(typeof out.uid).toBe('string');
   });
 
   test('omits id when undefined (matches optional field)', () => {
@@ -138,9 +140,32 @@ describe('coerceWorkforceItem', () => {
     expect(out.uid).toBeUndefined();
   });
 
+  test('omitted id stays absent from object (not materialized as undefined/null)', () => {
+    // Same regression as the parsing_id and apps leaks: spread + conditional
+    // override must not leave a raw-typed `id`/`uid` on the returned object.
+    const out = coerceWorkforceItem({ name: 'x' } as any);
+    expect('id' in out).toBe(false);
+    expect('uid' in out).toBe(false);
+    expect(Object.keys(out)).not.toContain('id');
+    expect(Object.keys(out)).not.toContain('uid');
+    expect(JSON.stringify(out)).toBe('{"name":"x"}');
+  });
+
   test('preserves null uid', () => {
     const out = coerceWorkforceItem({ id: 1, uid: null, name: 'x' } as any);
     expect(out.uid).toBe(null);
+    expect('uid' in out).toBe(true);
+  });
+
+  test('preserves passthrough fields (type, url, description, deleted_at)', () => {
+    const out = coerceWorkforceItem({
+      id: 1, uid: 'u', name: 'x', type: 'agent',
+      description: 'd', url: 'https://x', deleted_at: null,
+    } as any);
+    expect(out).toEqual({
+      id: '1', uid: 'u', name: 'x', type: 'agent',
+      description: 'd', url: 'https://x', deleted_at: null,
+    });
   });
 });
 

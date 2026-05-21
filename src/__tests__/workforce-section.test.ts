@@ -63,6 +63,41 @@ describe('WorkforceSection', () => {
 // ── Workforce ──────────────────────────────────────────────────────────────
 
 describe('Workforce', () => {
+  test('info() returns the resolved WorkforceItem with coerced ids', async () => {
+    const client = makeApiClient();
+    const wf = new Workforce(client, 'clever-jaguar');
+    const info = await wf.info();
+    expect(info.id).toBe('361');
+    expect(info.uid).toBe('manifest-1');
+    expect(info.name).toBe('clever-jaguar');
+    expect(info.url).toBe('https://wf-361.example.com');
+    expect(typeof info.id).toBe('string');
+  });
+
+  test('info() shares the workforce list cache with call()', async () => {
+    const client = makeApiClient();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response('{"ok":true}', { status: 200 })),
+    ) as any;
+
+    try {
+      const wf = new Workforce(client, 'clever-jaguar');
+      await wf.info();
+      await wf.call({ message: 'hi' });
+      // First info() refresh → 1; cached on the second call → still 1.
+      expect((client.get as any)).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('info() throws when identifier not found', async () => {
+    const client = makeApiClient();
+    const wf = new Workforce(client, 'nope-not-here');
+    await expect(wf.info()).rejects.toThrow(/not found/);
+  });
+
   test('call() POSTs to the resolved deployment url with the payload', async () => {
     const client = makeApiClient();
     const originalFetch = globalThis.fetch;
