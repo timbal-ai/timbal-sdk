@@ -24,6 +24,7 @@ export {
   getKbSchema,
   uploadKbFile,
   listKbFiles,
+  createKbDirectory,
   getKbFile,
   deleteKbFile,
 } from './kb';

@@ -5,6 +5,7 @@ import {
   KbFilesSection,
   KbFileNotFoundError,
   KbFileAlreadyExistsError,
+  KbDirectoryConflictError,
   Timbal,
   TimbalApiError,
   type K2File,
@@ -475,6 +476,67 @@ describe('KbFilesSection', () => {
     expect(caught).toBeInstanceOf(TimbalApiError);
     expect(caught).not.toBeInstanceOf(KbFileAlreadyExistsError);
     expect((caught as TimbalApiError).statusCode).toBe(500);
+  });
+
+  test('mkdir() posts { directory } to /k2/{kbId}/directories', async () => {
+    const client = makeMockClient({
+      post: mock(() =>
+        Promise.resolve({
+          data: { directory: 'docs/reports', placeholder_file_id: 99, created: true },
+          success: true,
+          statusCode: 201,
+        }),
+      ),
+    });
+    const kb = new KB(client, '162');
+
+    const result = await kb.files.mkdir('docs/reports');
+
+    expect(result).toEqual({
+      directory: 'docs/reports',
+      placeholder_file_id: '99',
+      created: true,
+    });
+    const [path, body] = (client.post as ReturnType<typeof mock>).mock.calls[0];
+    expect(path).toBe('orgs/10/k2/162/directories');
+    expect(body).toEqual({ directory: 'docs/reports' });
+  });
+
+  test('mkdir() returns created: false for idempotent re-create (200)', async () => {
+    const client = makeMockClient({
+      post: mock(() =>
+        Promise.resolve({
+          data: { directory: 'docs/reports', placeholder_file_id: '99', created: false },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const kb = new KB(client, '162');
+
+    const result = await kb.files.mkdir('docs/reports');
+    expect(result.created).toBe(false);
+  });
+
+  test('mkdir() wraps 409 in KbDirectoryConflictError', async () => {
+    const client = makeMockClient({
+      post: mock(() => Promise.reject(new TimbalApiError('Conflict', 409, 'CONFLICT'))),
+    });
+    const kb = new KB(client, '162');
+
+    let caught: unknown;
+    try {
+      await kb.files.mkdir('docs/reports');
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(KbDirectoryConflictError);
+    const err = caught as KbDirectoryConflictError;
+    expect(err.kbId).toBe('162');
+    expect(err.directory).toBe('docs/reports');
+    expect(err.statusCode).toBe(409);
+    expect(err.name).toBe('KbDirectoryConflictError');
   });
 
   test('list() returns a page object and forwards directory + page_token', async () => {
