@@ -53,3 +53,28 @@ export class KbFileAlreadyExistsError extends TimbalApiError {
     this.directory = directory;
   }
 }
+
+/**
+ * Thrown when creating a virtual directory conflicts with an existing **file**
+ * at the same path (HTTP 409). Idempotent re-create of an existing folder
+ * returns 200/201 with `created: false` — this error is only for name clashes
+ * with a non-directory entry.
+ */
+export class KbDirectoryConflictError extends TimbalApiError {
+  public readonly kbId: string;
+  public readonly directory: string;
+
+  constructor(
+    message: string,
+    kbId: string,
+    directory: string,
+    statusCode: number,
+    code?: string,
+    details?: Record<string, unknown>,
+  ) {
+    super(message, statusCode, code, details);
+    this.name = 'KbDirectoryConflictError';
+    this.kbId = kbId;
+    this.directory = directory;
+  }
+}

@@ -3,6 +3,7 @@ import type {
   K2File,
   K2FileDetail,
   K2FilePage,
+  KbDirectoryCreateResult,
   KbFileListOptions,
   KbFileUploadOptions,
 } from '../../types';
@@ -11,12 +12,13 @@ import {
   listKbFiles,
   getKbFile,
   deleteKbFile,
+  createKbDirectory,
 } from '../functions/kb';
 
 /**
  * Files inside a Knowledge Base. Reached via `kb.files`.
  *
- * Maps 1:1 to `/orgs/{org}/k2/{kb}/files` and its sub-resources.
+ * Maps to `/orgs/{org}/k2/{kb}/files` and its sub-resources.
  */
 export class KbFilesSection {
   constructor(
@@ -92,5 +94,17 @@ export class KbFilesSection {
    */
   delete(fileId: string | number): Promise<void> {
     return deleteKbFile(this.apiClient, this.kbId, fileId);
+  }
+
+  /**
+   * Create a virtual directory (e.g. `"docs/reports"`).
+   *
+   * Idempotent when the folder already exists (`created: false`, HTTP 200).
+   * Throws {@link KbDirectoryConflictError} if a file occupies that path (409).
+   *
+   * Remove the folder with `kb.files.delete(result.placeholder_file_id)`.
+   */
+  mkdir(directory: string): Promise<KbDirectoryCreateResult> {
+    return createKbDirectory(this.apiClient, this.kbId, directory);
   }
 }
