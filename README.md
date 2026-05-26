@@ -74,12 +74,29 @@ for await (const f of kb.files.iterate({ directory: "orders" })) {
 
 const one = await kb.files.get(file.id);
 await kb.files.delete(file.id);
+
+// Virtual directories (idempotent — re-create returns created: false)
+const dir = await kb.files.mkdir("docs/reports");
+// dir.placeholder_file_id is the listing row; delete to remove the folder
+await kb.files.delete(dir.placeholder_file_id);
 ```
 
 Typed errors let consumers branch without sniffing status codes:
 
 ```typescript
-import { KbFileAlreadyExistsError, KbFileNotFoundError } from "@timbal-ai/timbal-sdk";
+import {
+  KbDirectoryConflictError,
+  KbFileAlreadyExistsError,
+  KbFileNotFoundError,
+} from "@timbal-ai/timbal-sdk";
+
+try {
+  await kb.files.mkdir("docs/reports");
+} catch (err) {
+  if (err instanceof KbDirectoryConflictError) {
+    // a file (not a folder) already occupies that path
+  }
+}
 
 try {
   await kb.files.upload(buf, "order.pdf", { directory: "orders" });
@@ -222,6 +239,7 @@ const app = new Elysia()
 ```
 
 Registers:
+
 - `GET /auth/login` — built-in login page with OAuth + magic link
 - `GET /auth/:provider` — OAuth redirect (github, google, microsoft)
 - `GET /auth/callback` — OAuth callback handler
@@ -296,24 +314,26 @@ The SDK resolves each config field in order, using the first value found:
 
 1. **Explicit options** passed to `new Timbal({ ... })`
 2. **Environment variables**
-3. **`~/.timbal/` profile files** (managed by `timbal configure`)
+3. `**~/.timbal/` profile files** (managed by `timbal configure`)
 4. **Defaults**
 
 If you've run `timbal configure`, the SDK picks up your credentials automatically — no env vars or explicit config needed. Select a non-default profile with `TIMBAL_PROFILE=staging`.
 
 ### Environment variables
 
-| Variable             | Description                                              |
-| -------------------- | -------------------------------------------------------- |
-| `TIMBAL_API_KEY`     | API key / token                                          |
-| `TIMBAL_BASE_URL`    | API base URL                                             |
-| `TIMBAL_ORG_ID`      | Organization ID                                          |
-| `TIMBAL_PROJECT_ID`  | Project ID                                               |
-| `TIMBAL_PROJECT_REV` | Git branch (default: `main`)                             |
-| `TIMBAL_KB_ID`       | Knowledge base ID                                        |
-| `TIMBAL_PROFILE`     | Profile to load from `~/.timbal/` files                  |
-| `TIMBAL_CONFIG_DIR`  | Override the config directory (default: `~/.timbal`)     |
-| `TIMBAL_DEBUG`       | Set to `1` to log every request/response                 |
+
+| Variable             | Description                                          |
+| -------------------- | ---------------------------------------------------- |
+| `TIMBAL_API_KEY`     | API key / token                                      |
+| `TIMBAL_BASE_URL`    | API base URL                                         |
+| `TIMBAL_ORG_ID`      | Organization ID                                      |
+| `TIMBAL_PROJECT_ID`  | Project ID                                           |
+| `TIMBAL_PROJECT_REV` | Git branch (default: `main`)                         |
+| `TIMBAL_KB_ID`       | Knowledge base ID                                    |
+| `TIMBAL_PROFILE`     | Profile to load from `~/.timbal/` files              |
+| `TIMBAL_CONFIG_DIR`  | Override the config directory (default: `~/.timbal`) |
+| `TIMBAL_DEBUG`       | Set to `1` to log every request/response             |
+
 
 ## License
 

@@ -1,6 +1,6 @@
 import type { ApiClient } from '../api';
 import { TimbalApiError } from '../api';
-import { KbFileNotFoundError, KbFileAlreadyExistsError } from '../kb/errors';
+import { KbFileNotFoundError, KbFileAlreadyExistsError, KbDirectoryConflictError } from '../kb/errors';
 import {
   coerceK2File,
   coerceK2FileDetail,
@@ -15,6 +15,7 @@ import type {
   K2FilePage,
   KbFileListOptions,
   KbFileUploadOptions,
+  KbDirectoryCreateResult,
   KbInfo,
   KbInfoPage,
   KbListOptions,
@@ -220,6 +221,48 @@ export async function uploadKbFile(
         kbId,
         filename,
         options?.directory ?? null,
+        err.statusCode,
+        err.code,
+        err.details,
+      );
+    }
+    throw err;
+  }
+}
+
+type RawKbDirectoryCreateResult =
+  Omit<KbDirectoryCreateResult, 'placeholder_file_id'> & { placeholder_file_id: string | number };
+
+/**
+ * Create a virtual directory in a KB (`POST /orgs/{org}/k2/{kb}/directories`).
+ *
+ * Idempotent: re-creating an existing folder returns `created: false` (HTTP 200).
+ * Throws {@link KbDirectoryConflictError} on HTTP 409 when a **file** (not a
+ * folder) already occupies that path segment.
+ */
+export async function createKbDirectory(
+  client: ApiClient,
+  kbId: string,
+  directory: string,
+  orgId?: string,
+): Promise<KbDirectoryCreateResult> {
+  const org = resolveOrg(client, orgId);
+  try {
+    const response = await client.post<RawKbDirectoryCreateResult>(
+      `${basePath(org, kbId)}/directories`,
+      { directory },
+    );
+    const data = response.data;
+    return {
+      ...data,
+      placeholder_file_id: String(data.placeholder_file_id),
+    };
+  } catch (err) {
+    if (err instanceof TimbalApiError && err.statusCode === 409) {
+      throw new KbDirectoryConflictError(
+        err.message,
+        kbId,
+        directory,
         err.statusCode,
         err.code,
         err.details,
