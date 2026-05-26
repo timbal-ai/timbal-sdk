@@ -294,6 +294,15 @@ export interface KbFileListOptions {
   page_token?: string;
 }
 
+/** Response from `POST /orgs/{org}/k2/{kb}/directories`. */
+export interface KbDirectoryCreateResult {
+  directory: string;
+  /** Listing id for the folder row — delete via `kb.files.delete(id)` to remove. */
+  placeholder_file_id: string;
+  /** `true` if created on this call; `false` if the folder already existed (200). */
+  created: boolean;
+}
+
 export interface KbListOptions {
   page_token?: string;
 }
