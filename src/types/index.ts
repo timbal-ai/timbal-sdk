@@ -621,6 +621,98 @@ export interface PersonalConnectionListOptions {
   orgId?: string;
 }
 
+// ── Shared connect + vend ──────────────────────────────────────────────────
+
+/**
+ * Inputs for `shared.connectOAuth(opts)` — start an OAuth flow that will
+ * land back on `redirect_uri` (defaults to
+ * `https://app.timbal.ai/org/{org_id}/integrations` when omitted).
+ *
+ * `oauth_params` carries provider-specific upfront knobs. Shopify, for
+ * example, needs `{ shop_url: "acme.myshopify.com" }` to construct the
+ * provider's authorize URL.
+ */
+export interface SharedConnectOAuthOptions {
+  provider: string;
+  label?: string | null;
+  redirect_uri?: string;
+  oauth_params?: Record<string, unknown>;
+}
+
+/**
+ * Inputs for `shared.connectCredentials(opts)` — synchronously create a
+ * shared connection from a static credentials blob (api keys, etc.).
+ *
+ * `credentials` is whatever the provider's auth schema defines (commonly
+ * `{ api_key: "..." }`, but providers can require multi-field shapes).
+ */
+export interface SharedConnectCredentialsOptions {
+  provider: string;
+  label?: string | null;
+  credentials: Record<string, unknown>;
+}
+
+/**
+ * Discriminated request union accepted by the raw `connectShared()`
+ * function and the `POST /orgs/{org}/integrations/connect` endpoint.
+ *
+ * Prefer the typed sugar (`shared.connectOAuth` / `shared.connectCredentials`)
+ * over building this manually unless you're driving connect dynamically
+ * from the catalog.
+ */
+export type SharedConnectOptions =
+  | ({ auth_type: 'oauth' } & SharedConnectOAuthOptions)
+  | ({ auth_type: 'credentials' } & SharedConnectCredentialsOptions);
+
+/**
+ * OAuth `/connect` response — the provider's authorize URL. Browser → there
+ * → callback → row appears in `shared.list()`. No id is returned here
+ * because the row doesn't exist yet.
+ */
+export interface SharedConnectOAuthResult {
+  result: 'oauth_redirect';
+  redirect_url: string;
+}
+
+/**
+ * Credentials `/connect` response — synchronous create, you get the row id
+ * back and can vend immediately.
+ */
+export interface SharedConnectCredentialsResult {
+  result: 'created';
+  org_integration_id: string;
+}
+
+export type SharedConnectResult =
+  | SharedConnectOAuthResult
+  | SharedConnectCredentialsResult;
+
+/**
+ * Vended payload for a shared connection. Discriminated on `type` so
+ * TypeScript narrows:
+ *
+ * ```ts
+ * const v = await shared.get('10').token();
+ * if (v.type === 'oauth') v.token;          // ya29.…
+ * else v.api_key;                            // or whatever the schema says
+ * ```
+ *
+ * Both branches carry `[key: string]: unknown` for provider-specific
+ * extras (Shopify oauth adds `shop_url`, AWS credentials add `secret_…`,
+ * etc.).
+ */
+export type SharedTokenVend =
+  | {
+      type: 'oauth';
+      token: string;
+      expires_at: string | null;
+      [key: string]: unknown;
+    }
+  | {
+      type: 'credentials';
+      [key: string]: unknown;
+    };
+
 // ── Personal vend + consent ────────────────────────────────────────────────
 
 /**

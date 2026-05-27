@@ -1,15 +1,21 @@
 import type { ApiClient } from '../api';
 import type {
+  SharedConnectCredentialsOptions,
+  SharedConnectOAuthOptions,
+  SharedConnectOAuthResult,
   SharedConnection,
   SharedConnectionListOptions,
   SharedConnectionPage,
 } from '../../types';
 import {
-  listSharedConnections,
-  listSharedConnectionsPage,
-  listSharedConnectionsAll,
+  connectShared,
   iterateSharedConnections,
+  listSharedConnections,
+  listSharedConnectionsAll,
+  listSharedConnectionsPage,
 } from '../functions/integrations';
+import { TimbalApiError } from '../api';
+import { SharedConnectionRef } from './shared-connection-ref';
 
 /**
  * Org-wide ("shared") integration connections — reached via
@@ -20,8 +26,10 @@ import {
  * the same row. Compare with {@link PersonalConnectionsSection} for
  * per-caller-token rows.
  *
- * Stripe-style collection ops; resource views (token vending, disconnect)
- * will land later.
+ * Stripe-style collection ops plus a resource view via {@link get} for
+ * token vending and connect sugar ({@link connectOAuth} /
+ * {@link connectCredentials}). Disconnect will land later — for now
+ * use {@link IntegrationsCatalog.disable} to drop a provider org-wide.
  */
 export class SharedConnectionsSection {
   constructor(private readonly apiClient: ApiClient) {}
@@ -73,5 +81,79 @@ export class SharedConnectionsSection {
       if (conn.integration_provider === provider) return conn;
     }
     return null;
+  }
+
+  /**
+   * Get a scoped view onto a specific shared connection row.
+   * **Synchronous, no network call** — wraps `apiClient` + `integrationId`.
+   *
+   * ```ts
+   * const ref = timbal.integrations.shared.get('10');
+   * const v = await ref.token();
+   * if (v.type === 'oauth') await callSlack(v.token);
+   * ```
+   */
+  get(integrationId: string): SharedConnectionRef {
+    return new SharedConnectionRef(this.apiClient, integrationId);
+  }
+
+  /**
+   * Start an OAuth connect flow for a shared connection. Returns the
+   * provider's authorize URL — send the user's browser there. After they
+   * complete OAuth and Timbal's `/oauth/callback/integrations` runs, the
+   * row appears in {@link list}. **No id is returned here** — connect
+   * doesn't create the row until callback completes.
+   *
+   * `redirect_uri` defaults server-side to
+   * `https://app.timbal.ai/org/{org_id}/integrations` when omitted.
+   * Allowlist applies (`*.timbal.ai`, org custom domains, `localhost`).
+   *
+   * Some providers need upfront knobs via `oauth_params`:
+   * ```ts
+   * await shared.connectOAuth({
+   *   provider: 'shopify',
+   *   oauth_params: { shop_url: 'acme.myshopify.com' },
+   * });
+   * ```
+   *
+   * For org reconnect (token expired, refresh dead) call this again with
+   * the same provider — there's no per-row consent flow for shared rows.
+   */
+  async connectOAuth(opts: SharedConnectOAuthOptions): Promise<SharedConnectOAuthResult> {
+    const result = await connectShared(this.apiClient, { auth_type: 'oauth', ...opts });
+    if (result.result !== 'oauth_redirect') {
+      throw new TimbalApiError(
+        `Expected oauth_redirect result for OAuth connect, got "${result.result}"`,
+        500,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Synchronously create a shared connection from a static credentials
+   * blob (api keys, etc.). Returns a {@link SharedConnectionRef} bound to
+   * the freshly-created row id — vend immediately, no browser step.
+   *
+   * `credentials` shape is provider-specific (commonly `{ api_key }`).
+   *
+   * ```ts
+   * const ref = await shared.connectCredentials({
+   *   provider: 'stripe',
+   *   label: 'Prod API key',
+   *   credentials: { api_key: process.env.STRIPE_KEY! },
+   * });
+   * const v = await ref.token();
+   * ```
+   */
+  async connectCredentials(opts: SharedConnectCredentialsOptions): Promise<SharedConnectionRef> {
+    const result = await connectShared(this.apiClient, { auth_type: 'credentials', ...opts });
+    if (result.result !== 'created') {
+      throw new TimbalApiError(
+        `Expected created result for credentials connect, got "${result.result}"`,
+        500,
+      );
+    }
+    return this.get(result.org_integration_id);
   }
 }

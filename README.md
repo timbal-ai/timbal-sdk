@@ -235,6 +235,72 @@ const slack = await timbal.integrations.shared.byProvider("slack");
 if (slack) console.log(slack.label, slack.metadata.account_name);
 ```
 
+### Shared: connect & vend
+
+Two flavors, two methods — different inputs, different outputs.
+
+#### OAuth (`shared.connectOAuth(opts)`)
+
+Starts an OAuth flow. Returns the provider's authorize URL. The row only appears in `shared.list()` after the user completes OAuth and Timbal's `/oauth/callback/integrations` runs.
+
+```typescript
+const r = await timbal.integrations.shared.connectOAuth({
+  provider: "slack",
+  label: "Acme Slack",
+  redirect_uri: "https://app.timbal.ai/org/42/integrations",
+});
+
+// r.result === "oauth_redirect"
+return res.redirect(r.redirect_url); // user → Slack consent → callback → row created
+```
+
+Some providers need upfront params (Shopify needs the shop):
+
+```typescript
+await timbal.integrations.shared.connectOAuth({
+  provider: "shopify",
+  oauth_params: { shop_url: "acme.myshopify.com" },
+});
+```
+
+For an OAuth reconnect (token expired, refresh dead), call `connectOAuth` again with the same provider — shared connections have **no per-row consent flow**.
+
+#### Credentials (`shared.connectCredentials(opts)`)
+
+Synchronously creates the row from a static credentials blob. Returns a `SharedConnectionRef` bound to the new id — vend immediately, no browser step.
+
+```typescript
+const ref = await timbal.integrations.shared.connectCredentials({
+  provider: "stripe",
+  label: "Prod API key",
+  credentials: { api_key: process.env.STRIPE_KEY! },
+});
+
+const v = await ref.token();
+// v.type === "credentials"; access provider-specific fields directly
+```
+
+#### Vend (`shared.get(id).token()`)
+
+Vend an existing shared row. Returns a discriminated union — narrow on `type`:
+
+```typescript
+const ref = timbal.integrations.shared.get("10");
+const v = await ref.token();
+
+if (v.type === "oauth") {
+  await callSlack(v.token); // v.expires_at is also available
+} else { // "credentials"
+  await callProvider(v.api_key as string);
+}
+```
+
+Failure modes (bubble as `TimbalApiError`):
+- `400 "Integration is not active"` — row exists but needs a reconnect (call `connectOAuth` again)
+- `404 "Integration not found"` — bad id
+
+No `consent_required` 401 here — that's personal-only.
+
 ### Personal connections (per-user)
 
 Returns `PersonalConnection` rows. Every row carries a `user` field describing the **current caller's** connection state. Use `if (row.user.connected)` to narrow.
@@ -368,6 +434,7 @@ Both still match `instanceof TimbalApiError` for generic handlers.
 import {
   IntegrationsCatalog,
   SharedConnectionsSection,
+  SharedConnectionRef,
   PersonalConnectionsSection,
   PersonalConnectionRef,
 } from "@timbal-ai/timbal-sdk";
@@ -375,7 +442,8 @@ import {
 const catalog  = new IntegrationsCatalog(timbal.apiClient);
 const shared   = new SharedConnectionsSection(timbal.apiClient);
 const personal = new PersonalConnectionsSection(timbal.apiClient);
-const ref      = new PersonalConnectionRef(timbal.apiClient, "15");
+const sref     = new SharedConnectionRef(timbal.apiClient, "10");
+const pref     = new PersonalConnectionRef(timbal.apiClient, "15");
 ```
 
 ## Files

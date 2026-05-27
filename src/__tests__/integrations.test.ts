@@ -6,6 +6,7 @@ import {
   IntegrationNotFoundError,
   PersonalConnectionRef,
   PersonalConnectionsSection,
+  SharedConnectionRef,
   SharedConnectionsSection,
   Timbal,
   TimbalApiError,
@@ -1013,6 +1014,213 @@ describe('PersonalConnectionsSection.get / connect', () => {
     const personal = new PersonalConnectionsSection(client);
 
     expect(await personal.connect('not_in_list', { redirect_uri: 'https://my-app/cb' })).toBeNull();
+  });
+});
+
+// ── SharedConnectionRef + connect sugar ────────────────────────────────────
+
+describe('SharedConnectionRef', () => {
+  test('construction is sync, no network', () => {
+    const client = makeMockClient();
+    const ref = new SharedConnectionRef(client, '10');
+
+    expect(ref.integrationId).toBe('10');
+    expect(ref.apiClient).toBe(client);
+    expect((client.get as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  test('token() GETs /orgs/{org}/integrations/{id} and returns oauth vend', async () => {
+    const payload = {
+      type: 'oauth',
+      token: 'xoxb-fake',
+      expires_at: '2026-06-01T12:00:00Z',
+    };
+    const getMock = mock(() =>
+      Promise.resolve({ data: payload, success: true, statusCode: 200 }),
+    );
+    const client = makeMockClient({ get: getMock });
+    const ref = new SharedConnectionRef(client, '10');
+
+    const v = await ref.token();
+    expect(v).toEqual(payload);
+    expect((getMock.mock.calls[0] as unknown[])[0]).toBe('orgs/1/integrations/10');
+
+    // Discriminated union narrows
+    if (v.type === 'oauth') {
+      expect(v.token).toBe('xoxb-fake');
+      expect(v.expires_at).toBe('2026-06-01T12:00:00Z');
+    } else {
+      throw new Error('expected oauth narrowing');
+    }
+  });
+
+  test('token() returns credentials vend (flattened provider-specific keys)', async () => {
+    const payload = { type: 'credentials', api_key: 'sk-fake' };
+    const getMock = mock(() =>
+      Promise.resolve({ data: payload, success: true, statusCode: 200 }),
+    );
+    const client = makeMockClient({ get: getMock });
+    const ref = new SharedConnectionRef(client, '10');
+
+    const v = await ref.token();
+    expect(v).toEqual(payload);
+
+    if (v.type === 'credentials') {
+      expect(v.api_key).toBe('sk-fake');
+    } else {
+      throw new Error('expected credentials narrowing');
+    }
+  });
+
+  test('token() lets TimbalApiError bubble on 400 not-active / 404 not-found (no special class)', async () => {
+    const getMock = mock(() =>
+      Promise.reject(new TimbalApiError('Integration is not active', 400, 'BAD_REQUEST')),
+    );
+    const client = makeMockClient({ get: getMock });
+    const ref = new SharedConnectionRef(client, '10');
+
+    let caught: unknown;
+    try {
+      await ref.token();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(TimbalApiError);
+    expect(caught).not.toBeInstanceOf(IntegrationConsentRequiredError);
+    expect((caught as TimbalApiError).statusCode).toBe(400);
+  });
+});
+
+describe('SharedConnectionsSection.get / connectOAuth / connectCredentials', () => {
+  test('get(id) returns a SharedConnectionRef synchronously', () => {
+    const client = makeMockClient();
+    const shared = new SharedConnectionsSection(client);
+
+    const ref = shared.get('10');
+    expect(ref).toBeInstanceOf(SharedConnectionRef);
+    expect(ref.integrationId).toBe('10');
+    expect(ref.apiClient).toBe(client);
+    expect((client.get as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  test('get(id) returns a fresh ref per call (stateless)', () => {
+    const client = makeMockClient();
+    const shared = new SharedConnectionsSection(client);
+
+    expect(shared.get('10')).not.toBe(shared.get('10'));
+  });
+
+  test('connectOAuth() POSTs auth_type=oauth and returns { redirect_url }', async () => {
+    const postMock = mock(() =>
+      Promise.resolve({
+        data: { result: 'oauth_redirect', redirect_url: 'https://slack.com/oauth/v2/authorize?...' },
+        success: true,
+        statusCode: 200,
+      }),
+    );
+    const client = makeMockClient({ post: postMock });
+    const shared = new SharedConnectionsSection(client);
+
+    const r = await shared.connectOAuth({
+      provider: 'slack',
+      label: 'Acme Slack',
+      redirect_uri: 'https://app.timbal.ai/org/1/integrations',
+    });
+
+    expect(r).toEqual({ result: 'oauth_redirect', redirect_url: 'https://slack.com/oauth/v2/authorize?...' });
+    const [path, body] = postMock.mock.calls[0] as unknown[];
+    expect(path).toBe('orgs/1/integrations/connect');
+    expect(body).toEqual({
+      auth_type: 'oauth',
+      provider: 'slack',
+      label: 'Acme Slack',
+      redirect_uri: 'https://app.timbal.ai/org/1/integrations',
+    });
+  });
+
+  test('connectOAuth() forwards oauth_params (e.g. Shopify shop_url)', async () => {
+    const postMock = mock(() =>
+      Promise.resolve({
+        data: { result: 'oauth_redirect', redirect_url: 'https://shopify.com/oauth?...' },
+        success: true,
+        statusCode: 200,
+      }),
+    );
+    const client = makeMockClient({ post: postMock });
+    const shared = new SharedConnectionsSection(client);
+
+    await shared.connectOAuth({
+      provider: 'shopify',
+      oauth_params: { shop_url: 'acme.myshopify.com' },
+    });
+
+    const body = (postMock.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(body.oauth_params).toEqual({ shop_url: 'acme.myshopify.com' });
+    expect(body.auth_type).toBe('oauth');
+  });
+
+  test('connectOAuth() throws if the wire returns a "created" shape (defensive)', async () => {
+    const postMock = mock(() =>
+      Promise.resolve({
+        data: { result: 'created', org_integration_id: '10' },
+        success: true,
+        statusCode: 200,
+      }),
+    );
+    const client = makeMockClient({ post: postMock });
+    const shared = new SharedConnectionsSection(client);
+
+    await expect(shared.connectOAuth({ provider: 'slack' })).rejects.toThrow(TimbalApiError);
+  });
+
+  test('connectCredentials() POSTs auth_type=credentials and returns a SharedConnectionRef', async () => {
+    const postMock = mock(() =>
+      Promise.resolve({
+        data: { result: 'created', org_integration_id: '10' },
+        success: true,
+        statusCode: 201,
+      }),
+    );
+    const client = makeMockClient({ post: postMock });
+    const shared = new SharedConnectionsSection(client);
+
+    const ref = await shared.connectCredentials({
+      provider: 'stripe',
+      label: 'Prod',
+      credentials: { api_key: 'sk-fake' },
+    });
+
+    expect(ref).toBeInstanceOf(SharedConnectionRef);
+    expect(ref.integrationId).toBe('10');
+    expect(ref.apiClient).toBe(client);
+
+    const [path, body] = postMock.mock.calls[0] as unknown[];
+    expect(path).toBe('orgs/1/integrations/connect');
+    expect(body).toEqual({
+      auth_type: 'credentials',
+      provider: 'stripe',
+      label: 'Prod',
+      credentials: { api_key: 'sk-fake' },
+    });
+  });
+
+  test('connectCredentials() throws if the wire returns "oauth_redirect" (defensive)', async () => {
+    const postMock = mock(() =>
+      Promise.resolve({
+        data: { result: 'oauth_redirect', redirect_url: 'https://slack.com/...' },
+        success: true,
+        statusCode: 200,
+      }),
+    );
+    const client = makeMockClient({ post: postMock });
+    const shared = new SharedConnectionsSection(client);
+
+    await expect(
+      shared.connectCredentials({
+        provider: 'slack',
+        credentials: { api_key: 'sk-fake' },
+      }),
+    ).rejects.toThrow(TimbalApiError);
   });
 });
 

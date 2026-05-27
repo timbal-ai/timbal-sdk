@@ -16,9 +16,12 @@ import type {
   PersonalConsentOptions,
   PersonalConsentResponse,
   PersonalTokenVend,
+  SharedConnectOptions,
+  SharedConnectResult,
   SharedConnection,
   SharedConnectionListOptions,
   SharedConnectionPage,
+  SharedTokenVend,
 } from '../../types';
 
 function resolveOrg(client: ApiClient, orgId?: string): string {
@@ -475,6 +478,76 @@ export async function startPersonalConsent(
   const response = await client.post<PersonalConsentResponse>(
     `orgs/${org}/integrations/${integrationId}/consent`,
     { redirect_uri: opts.redirect_uri },
+  );
+  return response.data;
+}
+
+// ── Shared: connect + vend ────────────────────────────────────────────────
+
+/**
+ * Start a shared (org-wide) connect flow against
+ * `POST /orgs/{org}/integrations/connect`. Returns a discriminated union
+ * keyed on `result`:
+ *
+ * - `oauth_redirect` → browser URL; the row appears in `shared.list()`
+ *   only after the user completes OAuth and `/oauth/callback/integrations`
+ *   runs.
+ * - `created` → synchronous create with `org_integration_id`; vend
+ *   immediately.
+ *
+ * Caller is responsible for sending the right shape per auth_type; the
+ * typed sugar (`shared.connectOAuth` / `shared.connectCredentials`)
+ * narrows this automatically.
+ */
+export async function connectShared(
+  client: ApiClient,
+  opts: SharedConnectOptions,
+  orgId?: string,
+): Promise<SharedConnectResult> {
+  const org = resolveOrg(client, orgId);
+  const response = await client.post<RawSharedConnectResult>(
+    `orgs/${org}/integrations/connect`,
+    opts,
+  );
+  return normalizeSharedConnectResult(response.data);
+}
+
+/**
+ * Backend currently serializes the OAuth redirect variant as
+ * `o_auth_redirect` (a serde casing quirk on the `OAuthRedirect` enum).
+ * Normalize to the cleaner `oauth_redirect` at the SDK boundary so
+ * consumers get a stable, spec-aligned discriminator. Accept both inputs
+ * so we keep working if/when the backend is fixed.
+ */
+type RawSharedConnectResult =
+  | { result: 'oauth_redirect' | 'o_auth_redirect'; redirect_url: string }
+  | { result: 'created'; org_integration_id: string };
+
+function normalizeSharedConnectResult(raw: RawSharedConnectResult): SharedConnectResult {
+  if (raw.result === 'created') return raw;
+  return { result: 'oauth_redirect', redirect_url: raw.redirect_url };
+}
+
+/**
+ * Vend a shared connection's token/credentials by row id
+ * (`GET /orgs/{org}/integrations/{id}`).
+ *
+ * Returns a discriminated union — `{ type: 'oauth', token, expires_at, … }`
+ * or `{ type: 'credentials', … }` (flattened provider-specific shape).
+ *
+ * Unlike personal vend, there's no `consent_required` 401 — reconnect for
+ * a shared row is a fresh `/connect` call, not a per-row consent flow. So
+ * we let `apiClient.get()` raise its normal `TimbalApiError` for 400
+ * ("Integration is not active") / 404 ("Integration not found") / etc.
+ */
+export async function vendSharedToken(
+  client: ApiClient,
+  integrationId: string,
+  orgId?: string,
+): Promise<SharedTokenVend> {
+  const org = resolveOrg(client, orgId);
+  const response = await client.get<SharedTokenVend>(
+    `orgs/${org}/integrations/${integrationId}`,
   );
   return response.data;
 }
