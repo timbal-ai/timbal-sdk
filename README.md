@@ -185,6 +185,34 @@ timbal.integrations.shared     // org-wide connections (one token per org)
 timbal.integrations.personal   // per-caller-token connections
 ```
 
+### Quick start
+
+```typescript
+// 1. Admin enables a provider for the org (once, idempotent)
+await timbal.integrations.catalog.enable("gmail");
+
+// 2a. Shared (one connection for the whole org)
+const r = await timbal.integrations.shared.connectOAuth({
+  provider: "gmail",
+  redirect_uri: "https://my-app/integrations/callback",
+});
+res.redirect(r.redirect_url);
+// …user completes OAuth → row appears in shared.list()…
+const shared = await timbal.integrations.shared.byProvider("gmail");
+const v = await timbal.integrations.shared.get(shared!.id).token();
+await callGmail(v.type === "oauth" ? v.token : v.api_key as string);
+
+// 2b. Personal (per-user; each caller has their own token)
+const p = await timbal.integrations.personal.connect("gmail", {
+  redirect_uri: "https://my-app/integrations/callback",
+});
+if (p === null) throw new Error("not enabled for this org");
+if (!p.connected) return res.redirect(p.redirect_url);
+await callGmail(p.token.token);
+```
+
+> **Prereq for both shared and personal:** an admin must `catalog.enable(provider)` first — connect / vend will 404 for providers that aren't enabled. `enable` is idempotent.
+
 ### Catalog (admin)
 
 ```typescript
@@ -238,6 +266,8 @@ if (slack) console.log(slack.label, slack.metadata.account_name);
 ### Shared: connect & vend
 
 Two flavors, two methods — different inputs, different outputs.
+
+> **Prereq:** `await timbal.integrations.catalog.enable("slack")` (admin, once per org).
 
 #### OAuth (`shared.connectOAuth(opts)`)
 
@@ -301,6 +331,14 @@ Failure modes (bubble as `TimbalApiError`):
 
 No `consent_required` 401 here — that's personal-only.
 
+#### Delete (`shared.get(id).delete()`)
+
+**Destructive** — the row is gone for the whole org, and every caller loses access to the vended token. To re-add, call `connectOAuth` / `connectCredentials` again. For "drop the whole provider org-wide" use `catalog.disable(provider)` instead.
+
+```typescript
+await timbal.integrations.shared.get("10").delete();
+```
+
 ### Personal connections (per-user)
 
 Returns `PersonalConnection` rows. Every row carries a `user` field describing the **current caller's** connection state. Use `if (row.user.connected)` to narrow.
@@ -336,6 +374,8 @@ if (gmail?.user.connected) {
 `PersonalUserState` is a discriminated union — TypeScript narrows automatically. The disconnected branch carries an optional `status` (`'expired'` / `'revoked'`) when a prior connection went bad; it's absent for never-connected rows.
 
 ### Personal: vending tokens & consent
+
+> **Prereq:** `await timbal.integrations.catalog.enable("gmail")` (admin, once per org) — creates the shell row that callers can then connect to.
 
 Use a personal connection in three flavors, from highest to lowest level.
 
@@ -397,6 +437,16 @@ ref.token()      → IntegrationConsentRequiredError
 ref.consent({…}) → { redirect_url }   (browser → provider → callback → your redirect_uri)
 ref.token()      → { type, token, expires_at }
 ```
+
+#### Revoke (`personal.get(id).revoke()`)
+
+The "sign out" of personal integrations. **Idempotent** — safe to call when already disconnected. The shell row stays; next `token()` throws `IntegrationConsentRequiredError` and a fresh `consent()` flow brings the user back online.
+
+```typescript
+await timbal.integrations.personal.get("15").revoke();
+```
+
+Throws `TimbalApiError` (403) if the id isn't a valid per-user OAuth row — e.g. you passed a shared row id by mistake.
 
 ### Typed errors
 

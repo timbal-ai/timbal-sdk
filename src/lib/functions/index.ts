@@ -45,6 +45,8 @@ export {
   iteratePersonalConnections,
   vendPersonalToken,
   startPersonalConsent,
+  revokePersonalToken,
   connectShared,
   vendSharedToken,
+  deleteSharedConnection,
 } from './integrations';

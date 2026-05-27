@@ -1,6 +1,9 @@
 import type { ApiClient } from '../api';
 import type { SharedTokenVend } from '../../types';
-import { vendSharedToken } from '../functions/integrations';
+import {
+  deleteSharedConnection,
+  vendSharedToken,
+} from '../functions/integrations';
 
 /**
  * A typed, scoped view onto a single shared (org-wide) integration row.
@@ -38,5 +41,17 @@ export class SharedConnectionRef {
    */
   token(): Promise<SharedTokenVend> {
     return vendSharedToken(this.apiClient, this.integrationId);
+  }
+
+  /**
+   * Delete this shared connection. **Destructive** — the row is gone for
+   * the whole org, and every caller loses access to the vended token.
+   *
+   * To re-add, call `shared.connectOAuth(...)` or
+   * `shared.connectCredentials(...)` again. For "drop the whole
+   * provider org-wide" use `catalog.disable(provider)` instead.
+   */
+  delete(): Promise<void> {
+    return deleteSharedConnection(this.apiClient, this.integrationId);
   }
 }

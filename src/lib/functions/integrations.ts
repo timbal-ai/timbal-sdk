@@ -551,3 +551,53 @@ export async function vendSharedToken(
   );
   return response.data;
 }
+
+// ── Personal: revoke ──────────────────────────────────────────────────────
+
+/**
+ * Revoke the caller's personal token for a row
+ * (`POST /orgs/{org}/integrations/{id}/revoke`).
+ *
+ * **Idempotent** — succeeds (204) even if you're already disconnected. No
+ * special grant required; any authenticated user can revoke their own
+ * token on a user-mode shell.
+ *
+ * Throws `TimbalApiError` on 403 (the id is not a valid per-user OAuth
+ * enablement row — e.g. you passed a shared row id or wrong org) or any
+ * other non-2xx.
+ *
+ * The shell row stays — next time you `vend` you'll get
+ * `IntegrationConsentRequiredError` and can re-`consent`. Use this when
+ * the user wants to "sign out" of an integration without the admin
+ * disabling the provider org-wide.
+ */
+export async function revokePersonalToken(
+  client: ApiClient,
+  integrationId: string,
+  orgId?: string,
+): Promise<void> {
+  const org = resolveOrg(client, orgId);
+  await client.post<unknown>(`orgs/${org}/integrations/${integrationId}/revoke`);
+}
+
+// ── Shared: delete ────────────────────────────────────────────────────────
+
+/**
+ * Delete a shared connection row
+ * (`DELETE /orgs/{org}/integrations/{id}`).
+ *
+ * Destructive — the row is gone for the whole org. After this, every
+ * caller in the org loses access to the vended token. To re-add, run
+ * `shared.connectOAuth(...)` or `shared.connectCredentials(...)` again.
+ *
+ * Compare with `catalog.disable(provider)`, which drops the provider
+ * (and all its connections) org-wide.
+ */
+export async function deleteSharedConnection(
+  client: ApiClient,
+  integrationId: string,
+  orgId?: string,
+): Promise<void> {
+  const org = resolveOrg(client, orgId);
+  await client.delete<unknown>(`orgs/${org}/integrations/${integrationId}`);
+}

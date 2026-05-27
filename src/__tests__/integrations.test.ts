@@ -896,6 +896,54 @@ describe('PersonalConnectionRef', () => {
     expect(postBody).toEqual({ redirect_uri: 'https://my-app/cb' });
   });
 
+  test('revoke() POSTs /orgs/{org}/integrations/{id}/revoke with no body and resolves on 204', async () => {
+    const fetchMock = mock(() => Promise.resolve(new Response('{}', { status: 200 })));
+    const postMock = mock(() =>
+      Promise.resolve({ data: null, success: true, statusCode: 204 }),
+    );
+    const client = {
+      getConfig: () => ({
+        orgId: '1', kbId: '', projectId: '', rev: 'main', token: 't',
+        baseUrl: 'https://api.test', timeout: 30000, retryAttempts: 0, retryDelay: 0,
+      }),
+      fetch: fetchMock,
+      post: postMock,
+      get: mock(() => Promise.resolve({ data: {}, success: true, statusCode: 200 })),
+    } as unknown as ApiClient;
+    const ref = new PersonalConnectionRef(client, '15');
+
+    await expect(ref.revoke()).resolves.toBeUndefined();
+
+    const [path, body] = postMock.mock.calls[0] as unknown[];
+    expect(path).toBe('orgs/1/integrations/15/revoke');
+    expect(body).toBeUndefined();
+  });
+
+  test('revoke() bubbles TimbalApiError on 403 (wrong audience — e.g. shared row id)', async () => {
+    const postMock = mock(() =>
+      Promise.reject(new TimbalApiError('Not a user-mode row', 403)),
+    );
+    const client = {
+      getConfig: () => ({
+        orgId: '1', kbId: '', projectId: '', rev: 'main', token: 't',
+        baseUrl: 'https://api.test', timeout: 30000, retryAttempts: 0, retryDelay: 0,
+      }),
+      fetch: mock(() => Promise.resolve(new Response('{}'))),
+      post: postMock,
+      get: mock(() => Promise.resolve({ data: {}, success: true, statusCode: 200 })),
+    } as unknown as ApiClient;
+    const ref = new PersonalConnectionRef(client, '10');
+
+    let caught: unknown;
+    try {
+      await ref.revoke();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(TimbalApiError);
+    expect((caught as TimbalApiError).statusCode).toBe(403);
+  });
+
   test('use() re-throws non-consent errors untouched', async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ error: 'kaboom' }), { status: 500 })),
@@ -1088,6 +1136,36 @@ describe('SharedConnectionRef', () => {
     expect(caught).toBeInstanceOf(TimbalApiError);
     expect(caught).not.toBeInstanceOf(IntegrationConsentRequiredError);
     expect((caught as TimbalApiError).statusCode).toBe(400);
+  });
+
+  test('delete() DELETEs /orgs/{org}/integrations/{id} and resolves on 204', async () => {
+    const deleteMock = mock(() =>
+      Promise.resolve({ data: null, success: true, statusCode: 204 }),
+    );
+    const client = makeMockClient({ delete: deleteMock });
+    const ref = new SharedConnectionRef(client, '10');
+
+    await expect(ref.delete()).resolves.toBeUndefined();
+
+    const [path] = deleteMock.mock.calls[0] as unknown[];
+    expect(path).toBe('orgs/1/integrations/10');
+  });
+
+  test('delete() bubbles TimbalApiError on 404 (bad id)', async () => {
+    const deleteMock = mock(() =>
+      Promise.reject(new TimbalApiError('Integration not found', 404, 'NOT_FOUND')),
+    );
+    const client = makeMockClient({ delete: deleteMock });
+    const ref = new SharedConnectionRef(client, '999');
+
+    let caught: unknown;
+    try {
+      await ref.delete();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(TimbalApiError);
+    expect((caught as TimbalApiError).statusCode).toBe(404);
   });
 });
 
