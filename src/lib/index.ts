@@ -5,3 +5,4 @@ export * from './timbal';
 export * from './message';
 export * from './kb';
 export * from './workforce';
+export * from './integrations';
