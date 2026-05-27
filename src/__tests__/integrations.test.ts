@@ -1,8 +1,10 @@
 import { test, expect, describe, mock } from 'bun:test';
 import {
+  IntegrationConsentRequiredError,
   IntegrationsSection,
   IntegrationsCatalog,
   IntegrationNotFoundError,
+  PersonalConnectionRef,
   PersonalConnectionsSection,
   SharedConnectionsSection,
   Timbal,
@@ -745,6 +747,272 @@ describe('PersonalConnectionsSection', () => {
     const personal = new PersonalConnectionsSection(client);
 
     expect(await personal.byProvider('notion')).toBeNull();
+  });
+});
+
+// ── PersonalConnectionRef (vend + consent + use) ───────────────────────────
+
+function makeFetchMockClient(fetchImpl: (path: string, init: RequestInit) => Response | Promise<Response>): ApiClient {
+  return {
+    getConfig: () => ({
+      orgId: '1', kbId: '', projectId: '', rev: 'main', token: 't',
+      baseUrl: 'https://api.test', timeout: 30000, retryAttempts: 0, retryDelay: 0,
+    }),
+    fetch: mock(fetchImpl),
+    post: mock(() =>
+      Promise.resolve({ data: { redirect_url: 'https://accounts.example.com/oauth' }, success: true, statusCode: 200 }),
+    ),
+    get: mock(() =>
+      Promise.resolve({ data: { integrations: [], next_page_token: null }, success: true, statusCode: 200 }),
+    ),
+  } as unknown as ApiClient;
+}
+
+describe('PersonalConnectionRef', () => {
+  test('construction is sync, no network', () => {
+    const client = makeFetchMockClient(() => new Response('{}'));
+    const ref = new PersonalConnectionRef(client, '15');
+
+    expect(ref.integrationId).toBe('15');
+    expect(ref.apiClient).toBe(client);
+    expect((client.fetch as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  test('token() GETs /orgs/{org}/integrations/{id} and returns the vend payload', async () => {
+    const payload = { type: 'oauth', token: 'ya29.fake', expires_at: '2026-06-01T12:00:00Z' };
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    const result = await ref.token();
+    expect(result).toEqual(payload);
+    expect((fetchMock.mock.calls[0] as unknown[])[0]).toBe('orgs/1/integrations/15');
+    expect(((fetchMock.mock.calls[0] as unknown[])[1] as RequestInit).method).toBe('GET');
+  });
+
+  test('token() throws IntegrationConsentRequiredError on 401 consent_required (with consent_url)', async () => {
+    const body = {
+      error: 'consent_required',
+      consent_url: 'https://api.test/orgs/1/integrations/15/consent',
+    };
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify(body), { status: 401, headers: { 'content-type': 'application/json' } })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    let caught: unknown;
+    try {
+      await ref.token();
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(IntegrationConsentRequiredError);
+    expect(caught).toBeInstanceOf(TimbalApiError);
+    const err = caught as IntegrationConsentRequiredError;
+    expect(err.name).toBe('IntegrationConsentRequiredError');
+    expect(err.integrationId).toBe('15');
+    expect(err.consentUrl).toBe('https://api.test/orgs/1/integrations/15/consent');
+    expect(err.statusCode).toBe(401);
+    expect(err.message).toBe('consent_required');
+    // Full body lands in details so consumers can grab anything else.
+    expect(err.details).toEqual(body);
+  });
+
+  test('token() throws generic TimbalApiError on other 4xx (NOT consent variant)', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    let caught: unknown;
+    try {
+      await ref.token();
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(TimbalApiError);
+    expect(caught).not.toBeInstanceOf(IntegrationConsentRequiredError);
+    expect((caught as TimbalApiError).statusCode).toBe(403);
+  });
+
+  test('token() throws TimbalApiError on empty 2xx body (defensive)', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response('', { status: 200 })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    await expect(ref.token()).rejects.toThrow(TimbalApiError);
+  });
+
+  test('consent() POSTs { redirect_uri } and returns { redirect_url }', async () => {
+    const client = makeFetchMockClient(() => new Response('{}'));
+    const ref = new PersonalConnectionRef(client, '15');
+
+    const result = await ref.consent({ redirect_uri: 'https://my-app/cb' });
+
+    expect(result).toEqual({ redirect_url: 'https://accounts.example.com/oauth' });
+    const [path, body] = (client.post as ReturnType<typeof mock>).mock.calls[0];
+    expect(path).toBe('orgs/1/integrations/15/consent');
+    expect(body).toEqual({ redirect_uri: 'https://my-app/cb' });
+  });
+
+  test('use() — connected: returns { connected: true, token }', async () => {
+    const payload = { type: 'oauth', token: 'ya29.fake', expires_at: null };
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    const r = await ref.use({ redirect_uri: 'https://my-app/cb' });
+
+    expect(r).toEqual({ connected: true, token: payload });
+    // No consent POST when the token vended cleanly.
+    expect((client.post as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  test('use() — not connected: catches IntegrationConsentRequiredError and returns redirect_url', async () => {
+    const body = { error: 'consent_required', consent_url: 'https://api.test/orgs/1/integrations/15/consent' };
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify(body), { status: 401 })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    const r = await ref.use({ redirect_uri: 'https://my-app/cb' });
+
+    expect(r).toEqual({ connected: false, redirect_url: 'https://accounts.example.com/oauth' });
+    // Consent POST should have been called once with the right body.
+    const [path, postBody] = (client.post as ReturnType<typeof mock>).mock.calls[0];
+    expect(path).toBe('orgs/1/integrations/15/consent');
+    expect(postBody).toEqual({ redirect_uri: 'https://my-app/cb' });
+  });
+
+  test('use() re-throws non-consent errors untouched', async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ error: 'kaboom' }), { status: 500 })),
+    );
+    const client = makeFetchMockClient(fetchMock as (p: string, i: RequestInit) => Response | Promise<Response>);
+    const ref = new PersonalConnectionRef(client, '15');
+
+    let caught: unknown;
+    try {
+      await ref.use({ redirect_uri: 'https://my-app/cb' });
+    } catch (e) {
+      caught = e;
+    }
+
+    expect(caught).toBeInstanceOf(TimbalApiError);
+    expect(caught).not.toBeInstanceOf(IntegrationConsentRequiredError);
+    expect((caught as TimbalApiError).statusCode).toBe(500);
+    // No consent POST when the failure isn't consent_required.
+    expect((client.post as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+});
+
+// ── PersonalConnectionsSection.get / connect ───────────────────────────────
+
+describe('PersonalConnectionsSection.get / connect', () => {
+  test('get(id) returns a PersonalConnectionRef synchronously', () => {
+    const client = makeMockClient();
+    const personal = new PersonalConnectionsSection(client);
+
+    const ref = personal.get('15');
+    expect(ref).toBeInstanceOf(PersonalConnectionRef);
+    expect(ref.integrationId).toBe('15');
+    expect(ref.apiClient).toBe(client);
+    expect((client.get as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
+
+  test('get(id) returns a fresh ref per call (stateless)', () => {
+    const client = makeMockClient();
+    const personal = new PersonalConnectionsSection(client);
+
+    expect(personal.get('15')).not.toBe(personal.get('15'));
+  });
+
+  test('connect(provider) — happy path: byProvider hit + use connected', async () => {
+    const payload = { type: 'oauth', token: 'ya29.fake', expires_at: null };
+    const listResponse = {
+      data: { integrations: [personalGmailDisconnected], next_page_token: null },
+      success: true,
+      statusCode: 200,
+    };
+    const client = {
+      getConfig: () => ({
+        orgId: '1', kbId: '', projectId: '', rev: 'main', token: 't',
+        baseUrl: 'https://api.test', timeout: 30000, retryAttempts: 0, retryDelay: 0,
+      }),
+      get: mock(() => Promise.resolve(listResponse)),
+      fetch: mock(() =>
+        Promise.resolve(new Response(JSON.stringify(payload), { status: 200 })),
+      ),
+      post: mock(() => Promise.resolve({ data: {}, success: true, statusCode: 200 })),
+    } as unknown as ApiClient;
+    const personal = new PersonalConnectionsSection(client);
+
+    const r = await personal.connect('gmail', { redirect_uri: 'https://my-app/cb' });
+
+    expect(r).toEqual({ connected: true, token: payload });
+    // Vend was called against the row id from the list (id=15).
+    expect(((client.fetch as ReturnType<typeof mock>).mock.calls[0] as unknown[])[0]).toBe('orgs/1/integrations/15');
+  });
+
+  test('connect(provider) — consent path: byProvider hit + use disconnected returns redirect_url', async () => {
+    const body = { error: 'consent_required', consent_url: 'https://api.test/orgs/1/integrations/15/consent' };
+    const client = {
+      getConfig: () => ({
+        orgId: '1', kbId: '', projectId: '', rev: 'main', token: 't',
+        baseUrl: 'https://api.test', timeout: 30000, retryAttempts: 0, retryDelay: 0,
+      }),
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [personalGmailDisconnected], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+      fetch: mock(() =>
+        Promise.resolve(new Response(JSON.stringify(body), { status: 401 })),
+      ),
+      post: mock(() =>
+        Promise.resolve({
+          data: { redirect_url: 'https://accounts.google.com/o/oauth2/auth?...' },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    } as unknown as ApiClient;
+    const personal = new PersonalConnectionsSection(client);
+
+    const r = await personal.connect('gmail', { redirect_uri: 'https://my-app/cb' });
+
+    expect(r).toEqual({
+      connected: false,
+      redirect_url: 'https://accounts.google.com/o/oauth2/auth?...',
+    });
+  });
+
+  test('connect(unknown_provider) returns null (no row to act on)', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [personalGmailDisconnected], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const personal = new PersonalConnectionsSection(client);
+
+    expect(await personal.connect('not_in_list', { redirect_uri: 'https://my-app/cb' })).toBeNull();
   });
 });
 

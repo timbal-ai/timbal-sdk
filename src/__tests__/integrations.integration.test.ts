@@ -1,6 +1,10 @@
 import { describe, test, expect } from 'bun:test';
 import { Timbal } from '../lib/timbal';
-import { IntegrationNotFoundError } from '../lib/integrations/errors';
+import {
+  IntegrationConsentRequiredError,
+  IntegrationNotFoundError,
+} from '../lib/integrations/errors';
+import { PersonalConnectionRef } from '../lib/integrations/personal-connection-ref';
 import { TimbalApiError } from '../lib/api';
 
 // ─────────────────────────────────────────────────────────────
@@ -493,6 +497,201 @@ describe('Integration Tests — integrations.catalog', () => {
       }
       console.log(`[integrations] personal iterate=${iterated.length} listAll=${all.length}`);
       expect(iterated.length).toBe(all.length);
+    },
+    15_000,
+  );
+});
+
+// ── Personal vend + consent ───────────────────────────────────
+//
+// Notes:
+//   - These are read-mostly: vend is a GET, consent only generates a URL
+//     (doesn't actually authenticate anyone). Safe against shared dev orgs.
+//   - We use `http://localhost:3000/sdk-test-callback` as the redirect_uri
+//     because localhost is on the platform allowlist by spec.
+//   - The "connected" branch runs only if some personal row in the org is
+//     already connected (otherwise we'd need real OAuth — not happening in
+//     CI). Disconnected rows always exist in a dev org with personal
+//     integrations enabled.
+//
+const DEV_REDIRECT_URI = 'http://localhost:3000/sdk-test-callback';
+
+describe('Integration Tests — integrations.personal vend + consent', () => {
+  test.skipIf(SKIP)(
+    'personal.get(id) returns a synchronous PersonalConnectionRef bound to the shared client',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const ref = ctx.timbal.integrations.personal.get('999999');
+      expect(ref).toBeInstanceOf(PersonalConnectionRef);
+      expect(ref.integrationId).toBe('999999');
+      expect(ref.apiClient).toBe(ctx.timbal.apiClient);
+    },
+  );
+
+  test.skipIf(SKIP)(
+    'personal.get(id).token() throws IntegrationConsentRequiredError for a disconnected row, with the right consentUrl',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.personal.list();
+      const disconnected = rows.find(r => !r.user.connected);
+      if (!disconnected) {
+        console.warn('[integrations] no disconnected personal rows — skipping vend-401 check');
+        return;
+      }
+
+      const ref = ctx.timbal.integrations.personal.get(disconnected.id);
+
+      let caught: unknown;
+      try {
+        await ref.token();
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(IntegrationConsentRequiredError);
+      expect(caught).toBeInstanceOf(TimbalApiError);
+      const err = caught as IntegrationConsentRequiredError;
+      expect(err.statusCode).toBe(401);
+      expect(err.integrationId).toBe(disconnected.id);
+      expect(err.consentUrl).toContain(`/integrations/${disconnected.id}/consent`);
+      console.log(
+        `[integrations] vend(${disconnected.integration_provider} id=${disconnected.id}) ` +
+        `→ consent_required (consentUrl=${err.consentUrl})`,
+      );
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'personal.get(id).consent({ redirect_uri }) returns a browser redirect_url',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.personal.list();
+      // Pick any row — consent works regardless of connected state.
+      const row = rows[0];
+      if (!row) {
+        console.warn('[integrations] no personal rows — skipping consent check');
+        return;
+      }
+
+      const ref = ctx.timbal.integrations.personal.get(row.id);
+      let result: Awaited<ReturnType<typeof ref.consent>> | null = null;
+      try {
+        result = await ref.consent({ redirect_uri: DEV_REDIRECT_URI });
+      } catch (e) {
+        // The dev API might not have localhost allowlisted — skip rather than fail.
+        if (e instanceof TimbalApiError && e.statusCode === 400) {
+          console.warn(
+            `[integrations] consent rejected redirect_uri (400) — likely allowlist. ` +
+            `Skipping. err=${e.message}`,
+          );
+          return;
+        }
+        throw e;
+      }
+
+      expect(result).not.toBeNull();
+      expect(typeof result!.redirect_url).toBe('string');
+      expect(result!.redirect_url.length).toBeGreaterThan(0);
+      // Sanity: the browser URL is not the same as the API consent endpoint.
+      expect(result!.redirect_url).not.toContain(`/integrations/${row.id}/consent`);
+      console.log(
+        `[integrations] consent(${row.integration_provider} id=${row.id}) ` +
+        `→ redirect_url (${new URL(result!.redirect_url).host})`,
+      );
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'personal.get(id).use({ redirect_uri }) returns tagged union (connected | redirect_url)',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.personal.list();
+      const row = rows[0];
+      if (!row) {
+        console.warn('[integrations] no personal rows — skipping use check');
+        return;
+      }
+
+      const ref = ctx.timbal.integrations.personal.get(row.id);
+      let r: Awaited<ReturnType<typeof ref.use>>;
+      try {
+        r = await ref.use({ redirect_uri: DEV_REDIRECT_URI });
+      } catch (e) {
+        if (e instanceof TimbalApiError && e.statusCode === 400) {
+          console.warn(`[integrations] use() rejected redirect_uri (400) — skipping. err=${e.message}`);
+          return;
+        }
+        throw e;
+      }
+
+      if (r.connected) {
+        expect(typeof r.token.type).toBe('string');
+        expect(typeof r.token.token).toBe('string');
+        console.log(`[integrations] use(${row.integration_provider}) → connected (type=${r.token.type})`);
+      } else {
+        expect(typeof r.redirect_url).toBe('string');
+        expect(r.redirect_url.length).toBeGreaterThan(0);
+        console.log(
+          `[integrations] use(${row.integration_provider}) → not connected ` +
+          `(redirect_url host=${new URL(r.redirect_url).host})`,
+        );
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'personal.connect(provider) returns same shape as use() for an existing row, null for unknown',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const miss = await ctx.timbal.integrations.personal.connect(
+        '__sdk_test_nonexistent_provider_xyz__',
+        { redirect_uri: DEV_REDIRECT_URI },
+      );
+      expect(miss).toBeNull();
+
+      const rows = await ctx.timbal.integrations.personal.list();
+      const row = rows[0];
+      if (!row) {
+        console.warn('[integrations] no personal rows — skipping connect(provider) check');
+        return;
+      }
+
+      let r: Awaited<ReturnType<typeof ctx.timbal.integrations.personal.connect>>;
+      try {
+        r = await ctx.timbal.integrations.personal.connect(
+          row.integration_provider,
+          { redirect_uri: DEV_REDIRECT_URI },
+        );
+      } catch (e) {
+        if (e instanceof TimbalApiError && e.statusCode === 400) {
+          console.warn(`[integrations] connect() redirect_uri rejected (400) — skipping. err=${e.message}`);
+          return;
+        }
+        throw e;
+      }
+
+      expect(r).not.toBeNull();
+      if (r!.connected) {
+        expect(typeof r!.token.token).toBe('string');
+      } else {
+        expect(typeof r!.redirect_url).toBe('string');
+      }
+      console.log(
+        `[integrations] connect(${row.integration_provider}) → ${r!.connected ? 'connected' : 'not connected'}`,
+      );
     },
     15_000,
   );

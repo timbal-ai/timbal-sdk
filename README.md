@@ -261,20 +261,84 @@ for (const row of personal) {
 const gmail = await timbal.integrations.personal.byProvider("gmail");
 
 if (gmail?.user.connected) {
-  // Render the connected account card
   renderAccount(gmail.user.metadata.account_email, gmail.user.metadata.account_picture);
 } else {
-  // Render the Connect button — consent/vend flow lands in the next slice
   renderConnectButton(gmail?.integration_provider);
 }
 ```
 
 `PersonalUserState` is a discriminated union — TypeScript narrows automatically. The disconnected branch carries an optional `status` (`'expired'` / `'revoked'`) when a prior connection went bad; it's absent for never-connected rows.
 
+### Personal: vending tokens & consent
+
+Use a personal connection in three flavors, from highest to lowest level.
+
+#### One-shot: `personal.connect(provider, opts)`
+
+The 90% case. Looks up the row, tries to vend, and if the user hasn't consented yet, starts the consent flow and returns the OAuth provider's redirect URL. Returns a tagged union — no exceptions for the "not connected" case.
+
+```typescript
+const r = await timbal.integrations.personal.connect("gmail", {
+  redirect_uri: "https://my-app.projects.timbal.ai/integrations/callback",
+});
+
+if (r === null) {
+  throw new Error("Gmail isn't available in this org — admin needs to enable it");
+}
+
+if (!r.connected) {
+  // Send the browser to the OAuth provider; they'll come back to redirect_uri
+  return res.redirect(r.redirect_url);
+}
+
+await callGmail(r.token.token); // r.token: PersonalTokenVend
+```
+
+`redirect_uri` must be allowlisted by the platform — `*.timbal.ai`, your org's custom domains, or `localhost`.
+
+#### Per-row: `personal.get(id)`
+
+When you already have the row id (e.g. from `personal.list()` / `byProvider()`) and don't want a second lookup, get a sync resource view and drive it directly.
+
+```typescript
+const row = await timbal.integrations.personal.byProvider("gmail");
+if (!row) throw new Error("not available");
+
+const ref = timbal.integrations.personal.get(row.id);
+
+// Try-then-consent — the high level
+const r = await ref.use({ redirect_uri: "https://my-app/cb" });
+
+// Or split the steps yourself
+try {
+  const token = await ref.token();
+  await callGmail(token.token);
+} catch (err) {
+  if (err instanceof IntegrationConsentRequiredError) {
+    const { redirect_url } = await ref.consent({ redirect_uri: "https://my-app/cb" });
+    return res.redirect(redirect_url);
+  }
+  throw err;
+}
+```
+
+`get(id)` is synchronous and stateless — no network call, cheap to allocate per request.
+
+#### Typical loop
+
+```
+ref.token()      → IntegrationConsentRequiredError
+ref.consent({…}) → { redirect_url }   (browser → provider → callback → your redirect_uri)
+ref.token()      → { type, token, expires_at }
+```
+
 ### Typed errors
 
 ```typescript
-import { IntegrationNotFoundError } from "@timbal-ai/timbal-sdk";
+import {
+  IntegrationNotFoundError,
+  IntegrationConsentRequiredError,
+} from "@timbal-ai/timbal-sdk";
 
 try {
   await timbal.integrations.catalog.enable("not_a_real_provider");
@@ -283,9 +347,20 @@ try {
     console.log(`unknown provider: ${err.provider}`);
   }
 }
+
+try {
+  const token = await timbal.integrations.personal.get("15").token();
+  await callProvider(token.token);
+} catch (err) {
+  if (err instanceof IntegrationConsentRequiredError) {
+    // err.integrationId === "15"
+    // err.consentUrl is the API consent endpoint (call ref.consent() to use it)
+    console.log("user needs to (re)consent");
+  }
+}
 ```
 
-Still matches `instanceof TimbalApiError` for generic handlers.
+Both still match `instanceof TimbalApiError` for generic handlers.
 
 ### Escape hatch
 
@@ -294,11 +369,13 @@ import {
   IntegrationsCatalog,
   SharedConnectionsSection,
   PersonalConnectionsSection,
+  PersonalConnectionRef,
 } from "@timbal-ai/timbal-sdk";
 
 const catalog  = new IntegrationsCatalog(timbal.apiClient);
 const shared   = new SharedConnectionsSection(timbal.apiClient);
 const personal = new PersonalConnectionsSection(timbal.apiClient);
+const ref      = new PersonalConnectionRef(timbal.apiClient, "15");
 ```
 
 ## Files

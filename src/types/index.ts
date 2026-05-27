@@ -621,6 +621,63 @@ export interface PersonalConnectionListOptions {
   orgId?: string;
 }
 
+// ── Personal vend + consent ────────────────────────────────────────────────
+
+/**
+ * Vended token payload for a personal connection. Returned by `vend` /
+ * `personal.get(id).token()` on success.
+ *
+ * For OAuth rows: `token` is the access token, `expires_at` is the access
+ * token's expiry. Refresh is handled server-side — the SDK only sees fresh
+ * tokens (or a 401 `consent_required` when refresh is impossible).
+ *
+ * `[key: string]: unknown` carries through any provider-specific fields the
+ * backend adds later (e.g. credentials-mode auxiliary fields).
+ */
+export interface PersonalTokenVend {
+  type: IntegrationAuthType;
+  token: string;
+  expires_at: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Input for `personal.get(id).consent(...)` /
+ * `personal.connect(provider, ...)`.
+ *
+ * `redirect_uri` must be allowlisted by the platform (typically
+ * `*.timbal.ai`, org custom domains, or `localhost`). Non-allowlisted URIs
+ * get a 400 from the backend.
+ */
+export interface PersonalConsentOptions {
+  redirect_uri: string;
+}
+
+/**
+ * Response of starting consent — the OAuth provider's authorize URL.
+ *
+ * Send the user's browser here. After the provider redirects them back
+ * through `/oauth/callback/integrations`, they land on the `redirect_uri`
+ * the caller supplied. Re-vend afterwards to pick up the token.
+ */
+export interface PersonalConsentResponse {
+  redirect_url: string;
+}
+
+/**
+ * Tagged-union result of `personal.get(id).use(...)` /
+ * `personal.connect(provider, ...)`. No exceptions for the not-connected
+ * case — the SDK catches `IntegrationConsentRequiredError` internally and
+ * surfaces it as `{ connected: false, redirect_url }`.
+ *
+ * `redirect_url` here is the same browser URL returned by
+ * `PersonalConsentResponse` — distinct from the API endpoint URL exposed on
+ * `IntegrationConsentRequiredError.consentUrl`.
+ */
+export type PersonalUseResult =
+  | { connected: true; token: PersonalTokenVend }
+  | { connected: false; redirect_url: string };
+
 // ── Messages ──
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
