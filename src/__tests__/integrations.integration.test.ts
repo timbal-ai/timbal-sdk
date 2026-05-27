@@ -312,4 +312,188 @@ describe('Integration Tests — integrations.catalog', () => {
     },
     15_000,
   );
+
+  // ── shared connections ────────────────────────────────────────
+
+  test.skipIf(SKIP)(
+    'shared.list() returns rows with connection_mode=org and no user field',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.shared.list();
+      console.log(`[integrations] shared.list() → ${rows.length} rows`);
+
+      expect(Array.isArray(rows)).toBe(true);
+      for (const r of rows) {
+        expect(typeof r.id).toBe('string');
+        expect(typeof r.integration_id).toBe('string');
+        expect(r.connection_mode).toBe('org');
+        expect(typeof r.integration_provider).toBe('string');
+        expect(typeof r.integration_name).toBe('string');
+        expect(typeof r.status).toBe('string');
+        expect(['oauth', 'credentials']).toContain(r.auth_type as string);
+        // No user field on org rows — strict structural check.
+        expect((r as unknown as { user?: unknown }).user).toBeUndefined();
+      }
+
+      if (rows[0]) {
+        const r = rows[0];
+        console.log(
+          `[integrations] shared sample: ${r.integration_provider} ` +
+          `(${r.integration_name}) status=${r.status} label=${r.label ?? '<null>'} ` +
+          `metadata.keys=[${Object.keys(r.metadata).join(',')}]`,
+        );
+      }
+    },
+    20_000,
+  );
+
+  test.skipIf(SKIP)(
+    'shared.listPage() coerces numeric next_page_token to string',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const page = await ctx.timbal.integrations.shared.listPage();
+      console.log(
+        `[integrations] shared.listPage() → ${page.integrations.length} rows, ` +
+        `next_page_token=${page.next_page_token}`,
+      );
+
+      if (page.next_page_token != null) {
+        expect(typeof page.next_page_token).toBe('string');
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'shared.iterate() yields the same count as listAll()',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const all = await ctx.timbal.integrations.shared.listAll();
+      const iterated: typeof all = [];
+      for await (const c of ctx.timbal.integrations.shared.iterate()) {
+        iterated.push(c);
+      }
+      console.log(`[integrations] shared iterate=${iterated.length} listAll=${all.length}`);
+      expect(iterated.length).toBe(all.length);
+    },
+    30_000,
+  );
+
+  test.skipIf(SKIP)(
+    'shared.byProvider() returns the matching row or null',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.shared.list();
+      if (rows.length === 0) {
+        console.warn('[integrations] no shared rows — skipping byProvider check');
+        return;
+      }
+
+      const target = rows[0]!.integration_provider;
+      const hit = await ctx.timbal.integrations.shared.byProvider(target);
+      console.log(`[integrations] shared.byProvider(${target}) → id=${hit?.id ?? '<null>'}`);
+      expect(hit?.integration_provider).toBe(target);
+
+      const miss = await ctx.timbal.integrations.shared.byProvider(
+        '__sdk_test_nonexistent_provider_xyz__',
+      );
+      expect(miss).toBeNull();
+    },
+    30_000,
+  );
+
+  // ── personal connections ──────────────────────────────────────
+
+  test.skipIf(SKIP)(
+    'personal.list() returns rows with connection_mode=user and a user state',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.personal.list();
+      console.log(`[integrations] personal.list() → ${rows.length} rows`);
+
+      for (const r of rows) {
+        expect(typeof r.id).toBe('string');
+        expect(typeof r.integration_id).toBe('string');
+        expect(r.connection_mode).toBe('user');
+        expect(typeof r.integration_provider).toBe('string');
+        expect(r.user).toBeDefined();
+        expect(typeof r.user.connected).toBe('boolean');
+        if (r.user.connected) {
+          expect(typeof r.user.status).toBe('string');
+          expect(r.user.metadata).toBeDefined();
+        }
+      }
+
+      const connected = rows.filter(r => r.user.connected);
+      const disconnected = rows.filter(r => !r.user.connected);
+      console.log(`[integrations] personal: ${connected.length} connected, ${disconnected.length} not`);
+
+      if (connected[0]) {
+        const u = connected[0].user;
+        if (u.connected) {
+          console.log(
+            `[integrations] personal connected sample: ${connected[0].integration_provider} ` +
+            `account=${u.metadata.account_email ?? u.metadata.account_name ?? '<unknown>'} ` +
+            `expires=${u.expires_at ?? '<null>'}`,
+          );
+        }
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'personal.byProvider() returns the matching row or null',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.personal.list();
+      if (rows.length === 0) {
+        console.warn('[integrations] no personal rows — skipping byProvider check');
+        return;
+      }
+
+      const target = rows[0]!.integration_provider;
+      const hit = await ctx.timbal.integrations.personal.byProvider(target);
+      console.log(
+        `[integrations] personal.byProvider(${target}) → id=${hit?.id ?? '<null>'} ` +
+        `connected=${hit?.user.connected ?? '<n/a>'}`,
+      );
+      expect(hit?.integration_provider).toBe(target);
+
+      const miss = await ctx.timbal.integrations.personal.byProvider(
+        '__sdk_test_nonexistent_provider_xyz__',
+      );
+      expect(miss).toBeNull();
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'personal.iterate() yields the same count as listAll()',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const all = await ctx.timbal.integrations.personal.listAll();
+      const iterated: typeof all = [];
+      for await (const c of ctx.timbal.integrations.personal.iterate()) {
+        iterated.push(c);
+      }
+      console.log(`[integrations] personal iterate=${iterated.length} listAll=${all.length}`);
+      expect(iterated.length).toBe(all.length);
+    },
+    15_000,
+  );
 });

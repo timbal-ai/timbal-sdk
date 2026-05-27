@@ -3,9 +3,13 @@ import {
   IntegrationsSection,
   IntegrationsCatalog,
   IntegrationNotFoundError,
+  PersonalConnectionsSection,
+  SharedConnectionsSection,
   Timbal,
   TimbalApiError,
   type IntegrationCatalogEntry,
+  type PersonalConnection,
+  type SharedConnection,
 } from '..';
 import type { ApiClient } from '../lib/api';
 
@@ -396,6 +400,377 @@ describe('IntegrationsSection', () => {
   });
 });
 
+// ── Shared connections ─────────────────────────────────────────────────────
+
+const sharedSlack: SharedConnection = {
+  id: '10',
+  integration_id: '3',
+  auth_type: 'oauth',
+  connection_mode: 'org',
+  label: 'Acme Slack',
+  status: 'active',
+  integration_name: 'Slack',
+  integration_provider: 'slack',
+  integration_logo_url: 'https://content.timbal.ai/assets/slack_favicon.svg',
+  metadata: { account_name: 'Acme Workspace', team_id: 'T012345' },
+  expires_at: '2026-06-01T12:00:00Z',
+  created_at: '2026-04-10T09:00:00Z',
+  updated_at: '2026-05-20T14:00:00Z',
+};
+
+const sharedExcel: SharedConnection = {
+  id: '11',
+  integration_id: '388',
+  auth_type: 'oauth',
+  connection_mode: 'org',
+  label: null,
+  status: 'active',
+  integration_name: 'Excel',
+  integration_provider: 'excel',
+  integration_logo_url: 'https://content.timbal.ai/assets/excel_favicon.svg',
+  metadata: {},
+  expires_at: null,
+  created_at: '2026-05-26T10:02:55Z',
+  updated_at: '2026-05-26T10:02:55Z',
+};
+
+describe('SharedConnectionsSection', () => {
+  test('list() calls GET /orgs/{org}/integrations?connection_mode=org', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [sharedSlack], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const shared = new SharedConnectionsSection(client);
+
+    const result = await shared.list();
+
+    expect(result).toEqual([sharedSlack]);
+    const [path, params] = (client.get as ReturnType<typeof mock>).mock.calls[0];
+    expect(path).toBe('orgs/1/integrations');
+    expect(params).toEqual({ connection_mode: 'org' });
+  });
+
+  test('list() threads page_token when provided', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({ data: { integrations: [] }, success: true, statusCode: 200 }),
+      ),
+    });
+    const shared = new SharedConnectionsSection(client);
+
+    await shared.list({ page_token: 'tok_xyz' });
+
+    expect((client.get as ReturnType<typeof mock>).mock.calls[0][1]).toEqual({
+      connection_mode: 'org',
+      page_token: 'tok_xyz',
+    });
+  });
+
+  test('list() overrides orgId via options', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({ data: { integrations: [] }, success: true, statusCode: 200 }),
+      ),
+    });
+    const shared = new SharedConnectionsSection(client);
+
+    await shared.list({ orgId: '42' });
+
+    expect((client.get as ReturnType<typeof mock>).mock.calls[0][0]).toBe('orgs/42/integrations');
+  });
+
+  test('listPage() coerces numeric next_page_token to string (wire returns a number)', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [sharedSlack], next_page_token: 30 },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const shared = new SharedConnectionsSection(client);
+
+    const page = await shared.listPage();
+    expect(page.integrations).toEqual([sharedSlack]);
+    expect(page.next_page_token).toBe('30');
+    expect(typeof page.next_page_token).toBe('string');
+  });
+
+  test('iterate() walks pages using the coerced string token', async () => {
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { integrations: [sharedSlack], next_page_token: 30 },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { integrations: [sharedExcel], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const shared = new SharedConnectionsSection(makeMockClient({ get: getMock }));
+
+    const out: SharedConnection[] = [];
+    for await (const c of shared.iterate()) out.push(c);
+
+    expect(out).toEqual([sharedSlack, sharedExcel]);
+    expect(getMock).toHaveBeenCalledTimes(2);
+    expect(getMock.mock.calls[1][1]).toEqual({ connection_mode: 'org', page_token: '30' });
+  });
+
+  test('listAll() drains every page', async () => {
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { integrations: [sharedSlack], next_page_token: 1 },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { integrations: [sharedExcel], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const shared = new SharedConnectionsSection(makeMockClient({ get: getMock }));
+
+    expect(await shared.listAll()).toEqual([sharedSlack, sharedExcel]);
+  });
+
+  test('byProvider() returns the matching connection across pages', async () => {
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { integrations: [sharedSlack], next_page_token: 1 },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { integrations: [sharedExcel], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const shared = new SharedConnectionsSection(makeMockClient({ get: getMock }));
+
+    expect(await shared.byProvider('excel')).toEqual(sharedExcel);
+  });
+
+  test('byProvider() returns null when no row matches', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [sharedSlack], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const shared = new SharedConnectionsSection(client);
+
+    expect(await shared.byProvider('not_in_list')).toBeNull();
+  });
+
+  test('list() handles a bare array response (defensive)', async () => {
+    const client = makeMockClient({
+      get: mock(() => Promise.resolve({ data: [sharedSlack], success: true, statusCode: 200 })),
+    });
+    expect(await new SharedConnectionsSection(client).list()).toEqual([sharedSlack]);
+  });
+
+  test('list() throws when orgId is missing everywhere', async () => {
+    const client = {
+      getConfig: () => ({
+        orgId: '', kbId: '', projectId: '', rev: 'main', token: 't',
+        baseUrl: 'https://api.test', timeout: 30000, retryAttempts: 0, retryDelay: 0,
+      }),
+      get: mock(() => Promise.resolve({ data: {}, success: true, statusCode: 200 })),
+    } as unknown as ApiClient;
+
+    await expect(new SharedConnectionsSection(client).list()).rejects.toThrow(/orgId is required/);
+  });
+});
+
+// ── Personal connections ───────────────────────────────────────────────────
+
+const personalGmailDisconnected: PersonalConnection = {
+  id: '15',
+  integration_id: '8',
+  auth_type: 'oauth',
+  connection_mode: 'user',
+  label: null,
+  status: 'active',
+  integration_name: 'Gmail',
+  integration_provider: 'gmail',
+  integration_logo_url: 'https://content.timbal.ai/assets/gmail_favicon.svg',
+  metadata: {},
+  expires_at: null,
+  created_at: '2026-05-01T10:00:00Z',
+  updated_at: '2026-05-01T10:00:00Z',
+  user: { connected: false },
+};
+
+const personalGmailConnected: PersonalConnection = {
+  ...personalGmailDisconnected,
+  user: {
+    connected: true,
+    status: 'active',
+    expires_at: '2026-06-01T12:00:00Z',
+    metadata: { account_email: 'you@example.com', account_name: 'You Example' },
+  },
+};
+
+const personalSlackExpired: PersonalConnection = {
+  ...personalGmailDisconnected,
+  id: '16',
+  integration_provider: 'slack',
+  integration_name: 'Slack',
+  user: { connected: false, status: 'expired', expires_at: '2026-05-01T00:00:00Z' },
+};
+
+describe('PersonalConnectionsSection', () => {
+  test('list() calls GET /orgs/{org}/integrations?connection_mode=user', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [personalGmailDisconnected], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const personal = new PersonalConnectionsSection(client);
+
+    const result = await personal.list();
+    expect(result).toEqual([personalGmailDisconnected]);
+    const [path, params] = (client.get as ReturnType<typeof mock>).mock.calls[0];
+    expect(path).toBe('orgs/1/integrations');
+    expect(params).toEqual({ connection_mode: 'user' });
+  });
+
+  test('rows always carry user state — disconnected variant', () => {
+    const u = personalGmailDisconnected.user;
+    expect(u.connected).toBe(false);
+    // Narrows correctly — connected:false branch only has optional status/expires_at
+    if (!u.connected) {
+      expect(u.status).toBeUndefined();
+      expect(u.expires_at).toBeUndefined();
+    }
+  });
+
+  test('rows always carry user state — connected variant exposes account metadata', () => {
+    const u = personalGmailConnected.user;
+    expect(u.connected).toBe(true);
+    if (u.connected) {
+      expect(u.metadata.account_email).toBe('you@example.com');
+      expect(u.status).toBe('active');
+      expect(u.expires_at).toBe('2026-06-01T12:00:00Z');
+    }
+  });
+
+  test('rows always carry user state — expired variant (post-revoke)', () => {
+    const u = personalSlackExpired.user;
+    expect(u.connected).toBe(false);
+    if (!u.connected) {
+      expect(u.status).toBe('expired');
+      expect(u.expires_at).toBe('2026-05-01T00:00:00Z');
+    }
+  });
+
+  test('iterate() walks pages and yields rows in order', async () => {
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { integrations: [personalGmailConnected], next_page_token: 5 },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { integrations: [personalSlackExpired], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const personal = new PersonalConnectionsSection(makeMockClient({ get: getMock }));
+
+    const out: PersonalConnection[] = [];
+    for await (const c of personal.iterate()) out.push(c);
+
+    expect(out).toEqual([personalGmailConnected, personalSlackExpired]);
+    expect(getMock.mock.calls[1][1]).toEqual({ connection_mode: 'user', page_token: '5' });
+  });
+
+  test('listAll() drains every page', async () => {
+    const getMock = mock()
+      .mockResolvedValueOnce({
+        data: { integrations: [personalGmailConnected], next_page_token: 1 },
+        success: true,
+        statusCode: 200,
+      })
+      .mockResolvedValueOnce({
+        data: { integrations: [personalSlackExpired], next_page_token: null },
+        success: true,
+        statusCode: 200,
+      });
+    const personal = new PersonalConnectionsSection(makeMockClient({ get: getMock }));
+
+    expect(await personal.listAll()).toEqual([personalGmailConnected, personalSlackExpired]);
+  });
+
+  test('byProvider() returns the matching row', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [personalGmailDisconnected, personalSlackExpired], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const personal = new PersonalConnectionsSection(client);
+
+    expect(await personal.byProvider('slack')).toEqual(personalSlackExpired);
+  });
+
+  test('byProvider() returns null when provider absent (not enabled + never connected)', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({
+          data: { integrations: [personalGmailDisconnected], next_page_token: null },
+          success: true,
+          statusCode: 200,
+        }),
+      ),
+    });
+    const personal = new PersonalConnectionsSection(client);
+
+    expect(await personal.byProvider('notion')).toBeNull();
+  });
+});
+
+// ── IntegrationsSection wiring ─────────────────────────────────────────────
+
+describe('IntegrationsSection sub-accessors', () => {
+  test('shared is a lazy singleton', () => {
+    const section = new IntegrationsSection(makeMockClient());
+    expect(section.shared).toBeInstanceOf(SharedConnectionsSection);
+    expect(section.shared).toBe(section.shared);
+  });
+
+  test('personal is a lazy singleton', () => {
+    const section = new IntegrationsSection(makeMockClient());
+    expect(section.personal).toBeInstanceOf(PersonalConnectionsSection);
+    expect(section.personal).toBe(section.personal);
+  });
+
+  test('catalog / shared / personal are three distinct instances', () => {
+    const section = new IntegrationsSection(makeMockClient());
+    expect(section.catalog).not.toBe(section.shared as unknown);
+    expect(section.shared).not.toBe(section.personal as unknown);
+    expect(section.catalog).not.toBe(section.personal as unknown);
+  });
+});
+
 // ── Timbal wiring ──────────────────────────────────────────────────────────
 
 describe('Timbal.integrations wiring', () => {
@@ -417,6 +792,22 @@ describe('Timbal.integrations wiring', () => {
     expect(list).toEqual([airtable]);
     expect(get.mock.calls[0][0]).toBe('integrations');
     expect(get.mock.calls[0][1]).toEqual({ org_id: '1' });
+  });
+
+  test('integrations.shared and integrations.personal hit org-scoped routes', async () => {
+    const t = new Timbal({ token: 'k', orgId: '1', baseUrl: 'https://api.test' });
+    const get = mock(() =>
+      Promise.resolve({ data: { integrations: [], next_page_token: null }, success: true, statusCode: 200 }),
+    );
+    (t.apiClient as unknown as { get: typeof get }).get = get;
+
+    await t.integrations.shared.list();
+    await t.integrations.personal.list();
+
+    expect(get.mock.calls[0][0]).toBe('orgs/1/integrations');
+    expect(get.mock.calls[0][1]).toEqual({ connection_mode: 'org' });
+    expect(get.mock.calls[1][0]).toBe('orgs/1/integrations');
+    expect(get.mock.calls[1][1]).toEqual({ connection_mode: 'user' });
   });
 
   test('escape hatch: new IntegrationsCatalog(timbal.apiClient) works directly', () => {
