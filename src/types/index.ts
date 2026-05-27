@@ -489,6 +489,138 @@ export interface IntegrationEnableResult {
  */
 export type IntegrationDisableResult = IntegrationEnableResult;
 
+// ── Integration connections ────────────────────────────────────────────────
+//
+// Two completely separate types, two separate accessors
+// (`timbal.integrations.shared` vs `timbal.integrations.personal`). Sharing
+// nothing structural means it's impossible to pass a shared connection
+// where a personal one is expected.
+
+export type IntegrationAuthType = 'oauth' | 'credentials' | (string & {});
+
+/**
+ * Auth status of a connection row. `'active'` is the happy path; the others
+ * appear on personal rows after a token has gone bad.
+ */
+export type IntegrationConnectionStatus =
+  | 'active'
+  | 'expired'
+  | 'revoked'
+  | (string & {});
+
+/**
+ * Shared (org-wide) connection — one row per provider the org wired up
+ * centrally (admin-owned OAuth or credentials). Every caller in the org
+ * vends the same token from this row. No `user` field — that's session-scoped
+ * state only.
+ */
+export interface SharedConnection {
+  id: string;
+  /** Catalog id this connection is bound to (FK to {@link IntegrationCatalogEntry.id}). */
+  integration_id: string;
+  auth_type: IntegrationAuthType;
+  connection_mode: 'org';
+  /** Optional admin-set label (e.g. "Acme Slack"). */
+  label: string | null;
+  status: IntegrationConnectionStatus;
+  integration_name: string;
+  integration_provider: string;
+  integration_logo_url: string;
+  /**
+   * Provider-shaped metadata (e.g. `account_name`, `team_id`, `scope`,
+   * `token_type`). Open shape because contents vary per provider.
+   */
+  metadata: Record<string, unknown>;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Personal account metadata reported on a *connected* personal row. Provider
+ * fills in whatever it knows about the authenticated account.
+ */
+export interface PersonalAccountMetadata {
+  account_email?: string;
+  account_name?: string;
+  account_picture?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Discriminated union by `connected`. Use `if (user.connected)` to narrow:
+ * the connected branch exposes `metadata` and `expires_at`; the disconnected
+ * branch optionally exposes a `status` like `'expired'` / `'revoked'` when a
+ * prior connection has gone bad (absent for never-connected rows).
+ */
+export type PersonalUserState =
+  | {
+      connected: true;
+      status: IntegrationConnectionStatus;
+      expires_at: string | null;
+      metadata: PersonalAccountMetadata;
+    }
+  | {
+      connected: false;
+      /** Present only when a prior connection went bad (`expired` / `revoked`). Absent for never-connected rows. */
+      status?: IntegrationConnectionStatus;
+      expires_at?: string | null;
+    };
+
+/**
+ * Personal (per-caller-token) connection.
+ *
+ * The row's existence is session-scoped: a user sees a personal row if either
+ * the provider is enabled in the catalog, *or* they already hold a token
+ * (e.g. admin re-disabled the provider after they connected). The `user`
+ * field always carries the caller's connection state.
+ *
+ * Top-level `metadata` / `expires_at` describe the *shell row*, not the
+ * caller's token — that lives under `user.metadata` / `user.expires_at`.
+ */
+export interface PersonalConnection {
+  id: string;
+  /** Catalog id this connection is bound to (FK to {@link IntegrationCatalogEntry.id}). */
+  integration_id: string;
+  auth_type: IntegrationAuthType;
+  connection_mode: 'user';
+  label: string | null;
+  status: IntegrationConnectionStatus;
+  integration_name: string;
+  integration_provider: string;
+  integration_logo_url: string;
+  /** Shell-row metadata. Caller's per-token metadata is under `user.metadata`. */
+  metadata: Record<string, unknown>;
+  /** Shell-row expiry. Caller's per-token expiry is under `user.expires_at`. */
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Per-caller connection state. Always present on user-mode rows. */
+  user: PersonalUserState;
+  [key: string]: unknown;
+}
+
+export interface SharedConnectionPage {
+  integrations: SharedConnection[];
+  next_page_token?: string | null;
+}
+
+export interface PersonalConnectionPage {
+  integrations: PersonalConnection[];
+  next_page_token?: string | null;
+}
+
+export interface SharedConnectionListOptions {
+  page_token?: string;
+  orgId?: string;
+}
+
+export interface PersonalConnectionListOptions {
+  page_token?: string;
+  orgId?: string;
+}
+
 // ── Messages ──
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';

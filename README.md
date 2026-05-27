@@ -175,6 +175,132 @@ const info = await getWorkforceItem(timbal.apiClient, "my-agent", { rev: "main" 
 
 > **Deprecated:** `timbal.listWorkforces` / `callWorkforce` / `streamWorkforce` / `clearWorkforceCache` still work and delegate to the same backing functions. New code should use the section above.
 
+## Integrations
+
+Three sub-accessors mirror the platform's mental model. Catalog is the **what your org may use** layer; shared and personal are two separate **connection** layers with two separate types — impossible to mix.
+
+```typescript
+timbal.integrations.catalog    // what providers the org may use (admin)
+timbal.integrations.shared     // org-wide connections (one token per org)
+timbal.integrations.personal   // per-caller-token connections
+```
+
+### Catalog (admin)
+
+```typescript
+// Every provider the platform offers, with this org's enabled flag
+const entries = await timbal.integrations.catalog.list();
+// [{ id, provider, name, description, logo_url, enabled, auth_methods, ... }]
+
+await timbal.integrations.catalog.enable("gmail");   // { provider: "gmail" }
+await timbal.integrations.catalog.disable("gmail");  // { provider: "gmail" }
+
+// Both are idempotent — re-enabling an already-enabled provider returns 200.
+// Unknown providers throw IntegrationNotFoundError (see below).
+
+if (await timbal.integrations.catalog.isEnabled("gmail")) {
+  // ...
+}
+
+// Pagination is threaded even though the endpoint returns one page today.
+for await (const e of timbal.integrations.catalog.iterate()) {
+  console.log(e.provider, e.enabled);
+}
+```
+
+### Shared connections (org-wide)
+
+Returns `SharedConnection` rows. **No `user` field** — these are org-level credentials. Every caller in the org vends the same token from the same row.
+
+```typescript
+const shared = await timbal.integrations.shared.list();
+// [{ id, integration_id, integration_provider, label, status,
+//    metadata: { account_name?, team_id?, scope?, ... },
+//    expires_at, ... }]
+
+// Full pagination envelope (this endpoint paginates server-side)
+const page = await timbal.integrations.shared.listPage();
+// { integrations, next_page_token? }  ← coerced to string at the SDK boundary
+
+// Drain every page
+const all = await timbal.integrations.shared.listAll();
+
+// Or stream without holding everything in memory
+for await (const conn of timbal.integrations.shared.iterate()) {
+  if (conn.status !== "active") console.warn(`${conn.integration_provider} is ${conn.status}`);
+}
+
+// Look up by provider — walks pages, early-exits on hit, null if not present
+const slack = await timbal.integrations.shared.byProvider("slack");
+if (slack) console.log(slack.label, slack.metadata.account_name);
+```
+
+### Personal connections (per-user)
+
+Returns `PersonalConnection` rows. Every row carries a `user` field describing the **current caller's** connection state. Use `if (row.user.connected)` to narrow.
+
+Visibility: a personal row appears if either the provider is enabled in the catalog *or* the caller already holds a token (admin may have re-disabled the provider since they connected).
+
+```typescript
+const personal = await timbal.integrations.personal.list();
+
+for (const row of personal) {
+  if (row.user.connected) {
+    // Narrowed — metadata + status + expires_at are guaranteed present
+    console.log(`${row.integration_provider}: ${row.user.metadata.account_email}`);
+  } else if (row.user.status === "expired") {
+    console.log(`${row.integration_provider}: token expired, reconnect needed`);
+  } else if (row.user.status === "revoked") {
+    console.log(`${row.integration_provider}: revoked`);
+  } else {
+    console.log(`${row.integration_provider}: not connected`);
+  }
+}
+
+// Same byProvider helper, same pagination helpers as the other two sections
+const gmail = await timbal.integrations.personal.byProvider("gmail");
+
+if (gmail?.user.connected) {
+  // Render the connected account card
+  renderAccount(gmail.user.metadata.account_email, gmail.user.metadata.account_picture);
+} else {
+  // Render the Connect button — consent/vend flow lands in the next slice
+  renderConnectButton(gmail?.integration_provider);
+}
+```
+
+`PersonalUserState` is a discriminated union — TypeScript narrows automatically. The disconnected branch carries an optional `status` (`'expired'` / `'revoked'`) when a prior connection went bad; it's absent for never-connected rows.
+
+### Typed errors
+
+```typescript
+import { IntegrationNotFoundError } from "@timbal-ai/timbal-sdk";
+
+try {
+  await timbal.integrations.catalog.enable("not_a_real_provider");
+} catch (err) {
+  if (err instanceof IntegrationNotFoundError) {
+    console.log(`unknown provider: ${err.provider}`);
+  }
+}
+```
+
+Still matches `instanceof TimbalApiError` for generic handlers.
+
+### Escape hatch
+
+```typescript
+import {
+  IntegrationsCatalog,
+  SharedConnectionsSection,
+  PersonalConnectionsSection,
+} from "@timbal-ai/timbal-sdk";
+
+const catalog  = new IntegrationsCatalog(timbal.apiClient);
+const shared   = new SharedConnectionsSection(timbal.apiClient);
+const personal = new PersonalConnectionsSection(timbal.apiClient);
+```
+
 ## Files
 
 Short-lived binary handoff for agents and workflows. Hits the stateless `POST /files` endpoint — no org scope, no DB row, signed URL expires in ~24h. For durable, parsed, searchable storage use `kb.files.upload` instead.
@@ -302,7 +428,10 @@ try {
 }
 ```
 
-KB-specific subclasses (`KbFileAlreadyExistsError`, `KbFileNotFoundError`) are thrown by `kb.files.*`; both still match `instanceof TimbalApiError`.
+Resource-specific subclasses are thrown for known failure modes — all still match `instanceof TimbalApiError`:
+
+- `KbFileAlreadyExistsError`, `KbFileNotFoundError`, `KbDirectoryConflictError` — `kb.files.*`
+- `IntegrationNotFoundError` — `timbal.integrations.catalog.{enable,disable}`
 
 The SDK retries automatically on 5xx errors, timeouts, and network errors (3 attempts by default).
 

@@ -7,6 +7,12 @@ import type {
   IntegrationCatalogPage,
   IntegrationDisableResult,
   IntegrationEnableResult,
+  PersonalConnection,
+  PersonalConnectionListOptions,
+  PersonalConnectionPage,
+  SharedConnection,
+  SharedConnectionListOptions,
+  SharedConnectionPage,
 } from '../../types';
 
 function resolveOrg(client: ApiClient, orgId?: string): string {
@@ -148,6 +154,183 @@ export async function enableIntegration(
     }
     throw err;
   }
+}
+
+// ── Connection-list helpers ────────────────────────────────────────────────
+
+/**
+ * Coerce wire `next_page_token` to `string | null | undefined`. The backend
+ * returns it as a JSON number for paginated routes (matches the row count),
+ * but the SDK exposes it as a string so callers can thread it back through
+ * `page_token` (a query string) without thinking about types.
+ */
+function coerceNextPageToken(
+  token: string | number | null | undefined,
+): string | null | undefined {
+  if (token === undefined) return undefined;
+  if (token === null) return null;
+  return String(token);
+}
+
+type RawConnectionEnvelope<T> = {
+  integrations?: T[];
+  items?: T[];
+  next_page_token?: string | number | null;
+};
+
+// ── Shared (org-wide) connections ──────────────────────────────────────────
+
+/**
+ * List org-wide connections with full pagination metadata.
+ *
+ * This endpoint paginates server-side — `next_page_token` is non-null when
+ * more pages exist. Coerced to `string` (wire returns it as a JSON number)
+ * for downstream `page_token` round-tripping.
+ */
+export async function listSharedConnectionsPage(
+  client: ApiClient,
+  options?: SharedConnectionListOptions,
+): Promise<SharedConnectionPage> {
+  const org = resolveOrg(client, options?.orgId);
+  const params: Record<string, unknown> = { connection_mode: 'org' };
+  if (options?.page_token !== undefined) params.page_token = options.page_token;
+
+  const response = await client.get<SharedConnection[] | RawConnectionEnvelope<SharedConnection>>(
+    `orgs/${org}/integrations`,
+    params,
+  );
+  const data = response.data;
+
+  if (Array.isArray(data)) return { integrations: data };
+  if (!data) return { integrations: [] };
+
+  const next = coerceNextPageToken(data.next_page_token);
+  return {
+    integrations: data.integrations ?? data.items ?? [],
+    ...(next !== undefined && { next_page_token: next }),
+  };
+}
+
+/** First page of shared connections. Drains with {@link listSharedConnectionsAll}. */
+export async function listSharedConnections(
+  client: ApiClient,
+  options?: SharedConnectionListOptions,
+): Promise<SharedConnection[]> {
+  const page = await listSharedConnectionsPage(client, options);
+  return page.integrations;
+}
+
+/** Async iterator over every shared connection, walking pages via {@link listSharedConnectionsPage}. */
+export async function* iterateSharedConnections(
+  client: ApiClient,
+  options?: SharedConnectionListOptions,
+): AsyncIterable<SharedConnection> {
+  let pageToken = options?.page_token;
+
+  for (;;) {
+    const page = await listSharedConnectionsPage(client, {
+      ...(options?.orgId !== undefined && { orgId: options.orgId }),
+      ...(pageToken !== undefined && { page_token: pageToken }),
+    });
+
+    for (const conn of page.integrations) {
+      yield conn;
+    }
+
+    const next = page.next_page_token;
+    if (next == null || next === '') break;
+    pageToken = next;
+  }
+}
+
+/** Drain every page of shared connections into one array. */
+export async function listSharedConnectionsAll(
+  client: ApiClient,
+  options?: SharedConnectionListOptions,
+): Promise<SharedConnection[]> {
+  const out: SharedConnection[] = [];
+  for await (const conn of iterateSharedConnections(client, options)) {
+    out.push(conn);
+  }
+  return out;
+}
+
+// ── Personal (per-caller-token) connections ────────────────────────────────
+
+/**
+ * List personal connections with full pagination metadata.
+ *
+ * Session-scoped — the response only includes rows the caller can see:
+ * either the provider is enabled in the catalog *or* the caller already
+ * holds a token (admin may have re-disabled the provider since). Each row
+ * always carries `user` describing the caller's connection state.
+ */
+export async function listPersonalConnectionsPage(
+  client: ApiClient,
+  options?: PersonalConnectionListOptions,
+): Promise<PersonalConnectionPage> {
+  const org = resolveOrg(client, options?.orgId);
+  const params: Record<string, unknown> = { connection_mode: 'user' };
+  if (options?.page_token !== undefined) params.page_token = options.page_token;
+
+  const response = await client.get<PersonalConnection[] | RawConnectionEnvelope<PersonalConnection>>(
+    `orgs/${org}/integrations`,
+    params,
+  );
+  const data = response.data;
+
+  if (Array.isArray(data)) return { integrations: data };
+  if (!data) return { integrations: [] };
+
+  const next = coerceNextPageToken(data.next_page_token);
+  return {
+    integrations: data.integrations ?? data.items ?? [],
+    ...(next !== undefined && { next_page_token: next }),
+  };
+}
+
+/** First page of personal connections. Drains with {@link listPersonalConnectionsAll}. */
+export async function listPersonalConnections(
+  client: ApiClient,
+  options?: PersonalConnectionListOptions,
+): Promise<PersonalConnection[]> {
+  const page = await listPersonalConnectionsPage(client, options);
+  return page.integrations;
+}
+
+/** Async iterator over every personal connection, walking pages via {@link listPersonalConnectionsPage}. */
+export async function* iteratePersonalConnections(
+  client: ApiClient,
+  options?: PersonalConnectionListOptions,
+): AsyncIterable<PersonalConnection> {
+  let pageToken = options?.page_token;
+
+  for (;;) {
+    const page = await listPersonalConnectionsPage(client, {
+      ...(options?.orgId !== undefined && { orgId: options.orgId }),
+      ...(pageToken !== undefined && { page_token: pageToken }),
+    });
+
+    for (const conn of page.integrations) {
+      yield conn;
+    }
+
+    const next = page.next_page_token;
+    if (next == null || next === '') break;
+    pageToken = next;
+  }
+}
+
+/** Drain every page of personal connections into one array. */
+export async function listPersonalConnectionsAll(
+  client: ApiClient,
+  options?: PersonalConnectionListOptions,
+): Promise<PersonalConnection[]> {
+  const out: PersonalConnection[] = [];
+  for await (const conn of iteratePersonalConnections(client, options)) {
+    out.push(conn);
+  }
+  return out;
 }
 
 /**

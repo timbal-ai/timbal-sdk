@@ -35,4 +35,12 @@ export {
   iterateIntegrationsCatalog,
   enableIntegration,
   disableIntegration,
+  listSharedConnections,
+  listSharedConnectionsPage,
+  listSharedConnectionsAll,
+  iterateSharedConnections,
+  listPersonalConnections,
+  listPersonalConnectionsPage,
+  listPersonalConnectionsAll,
+  iteratePersonalConnections,
 } from './integrations';
