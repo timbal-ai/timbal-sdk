@@ -15,6 +15,7 @@ import type {
 import { ApiClient } from './api';
 import { KbsSection } from './kb';
 import { WorkforceSection } from './workforce';
+import { IntegrationsSection } from './integrations';
 import {
   query as queryFn,
   uploadTempFile as uploadTempFileFn,
@@ -42,6 +43,7 @@ export class Timbal {
 
   private _kbs?: KbsSection;
   private _workforce?: WorkforceSection;
+  private _integrations?: IntegrationsSection;
 
   constructor(config: TimbalConfig = {}) {
     this.apiClient = new ApiClient(config);
@@ -97,6 +99,24 @@ export class Timbal {
   get workforce(): WorkforceSection {
     if (!this._workforce) this._workforce = new WorkforceSection(this.apiClient);
     return this._workforce;
+  }
+
+  // ── Integrations (Stripe-style) ──
+
+  /**
+   * Integrations accessor. Two-layer concept on the platform:
+   *
+   * - `timbal.integrations.catalog` — providers the org may use
+   *   (`list`, `listAll`, `iterate`, `listPage`, `enable`, `isEnabled`).
+   *
+   * Per-user / per-org **connections** (consent + token vending) will hang
+   * off this same accessor in a follow-up.
+   *
+   * Lazy singleton on this `Timbal` instance.
+   */
+  get integrations(): IntegrationsSection {
+    if (!this._integrations) this._integrations = new IntegrationsSection(this.apiClient);
+    return this._integrations;
   }
 
   // ── Project ──

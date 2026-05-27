@@ -381,6 +381,395 @@ export interface TokenPair {
   refresh_token: string;
 }
 
+// ── Integrations ──
+//
+// Two-layer concept on the platform:
+//   • **catalog** — providers the platform offers, with an `enabled` flag per
+//     org (admin enables what their org can use). Returned by
+//     `GET /integrations?org_id={id}` — the only piece implemented in this
+//     pass.
+//   • **connections** — actual wired-up rows (per-user OAuth tokens or shared
+//     org credentials). Not yet modeled in the SDK.
+
+export type IntegrationConnectionMode = 'user' | 'org';
+
+/**
+ * A single auth-method parameter the UI must collect from the user (for
+ * `type: 'credentials'` methods). `oauth` methods don't carry parameters.
+ *
+ * `[key: string]: unknown` keeps the type forward-compat with backend additions
+ * (e.g. new validation hints) without forcing an SDK release.
+ */
+export interface IntegrationAuthParameter {
+  name: string;
+  type: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+  readonly: boolean;
+  multiline: boolean;
+  default: unknown;
+  placeholder: string | null;
+  help?: string | null;
+  url?: string | null;
+  [key: string]: unknown;
+}
+
+export interface IntegrationAuthMethodCredentials {
+  type: 'credentials';
+  label?: string;
+  parameters: IntegrationAuthParameter[];
+}
+
+export interface IntegrationAuthMethodOAuth {
+  type: 'oauth';
+  label?: string;
+}
+
+/** Discriminated by `type`. Backend may add new variants — fall through via the string-and-extends pattern. */
+export type IntegrationAuthMethod =
+  | IntegrationAuthMethodCredentials
+  | IntegrationAuthMethodOAuth
+  | { type: string; [key: string]: unknown };
+
+/**
+ * One row from the org-scoped catalog (`GET /integrations?org_id={id}`).
+ *
+ * `enabled` reflects whether **this org** has the provider turned on. The rest
+ * is provider metadata served to every org.
+ *
+ * The `[key: string]: unknown` index signature is intentional: the platform
+ * adds catalog fields more often than the SDK ships, and we'd rather pass
+ * them through than swallow them.
+ */
+export interface IntegrationCatalogEntry {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  logo_url: string;
+  auth_methods: IntegrationAuthMethod[];
+  tags: string[];
+  /** e.g. `'free'`, `'enterprise'` — open string, backend may add tiers. */
+  min_plan: string;
+  /** e.g. `'public'`, `'private'` — open string. */
+  visibility: string;
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Pagination envelope. The current backend returns a bare `{ integrations }`
+ * object with no cursor, but the SDK threads `next_page_token` so a future
+ * paginated rollout is transparent to callers.
+ */
+export interface IntegrationCatalogPage {
+  integrations: IntegrationCatalogEntry[];
+  next_page_token?: string | null;
+}
+
+export interface IntegrationCatalogListOptions {
+  page_token?: string;
+  orgId?: string;
+}
+
+/**
+ * Response of `POST /orgs/{org}/integrations/enable`. The server returns a
+ * minimal echo (`{ provider }`); call `list()` again if you need the full
+ * catalog entry.
+ */
+export interface IntegrationEnableResult {
+  provider: string;
+}
+
+/**
+ * Response of `POST /orgs/{org}/integrations/disable`. Same `{ provider }`
+ * echo as {@link IntegrationEnableResult}. Aliased rather than reused so a
+ * future divergence in the wire shape stays a non-breaking change.
+ */
+export type IntegrationDisableResult = IntegrationEnableResult;
+
+// ── Integration connections ────────────────────────────────────────────────
+//
+// Two completely separate types, two separate accessors
+// (`timbal.integrations.shared` vs `timbal.integrations.personal`). Sharing
+// nothing structural means it's impossible to pass a shared connection
+// where a personal one is expected.
+
+export type IntegrationAuthType = 'oauth' | 'credentials' | (string & {});
+
+/**
+ * Auth status of a connection row. `'active'` is the happy path; the others
+ * appear on personal rows after a token has gone bad.
+ */
+export type IntegrationConnectionStatus =
+  | 'active'
+  | 'expired'
+  | 'revoked'
+  | (string & {});
+
+/**
+ * Shared (org-wide) connection — one row per provider the org wired up
+ * centrally (admin-owned OAuth or credentials). Every caller in the org
+ * vends the same token from this row. No `user` field — that's session-scoped
+ * state only.
+ */
+export interface SharedConnection {
+  id: string;
+  /** Catalog id this connection is bound to (FK to {@link IntegrationCatalogEntry.id}). */
+  integration_id: string;
+  auth_type: IntegrationAuthType;
+  connection_mode: 'org';
+  /** Optional admin-set label (e.g. "Acme Slack"). */
+  label: string | null;
+  status: IntegrationConnectionStatus;
+  integration_name: string;
+  integration_provider: string;
+  integration_logo_url: string;
+  /**
+   * Provider-shaped metadata (e.g. `account_name`, `team_id`, `scope`,
+   * `token_type`). Open shape because contents vary per provider.
+   */
+  metadata: Record<string, unknown>;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Personal account metadata reported on a *connected* personal row. Provider
+ * fills in whatever it knows about the authenticated account.
+ */
+export interface PersonalAccountMetadata {
+  account_email?: string;
+  account_name?: string;
+  account_picture?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Discriminated union by `connected`. Use `if (user.connected)` to narrow:
+ * the connected branch exposes `metadata` and `expires_at`; the disconnected
+ * branch optionally exposes a `status` like `'expired'` / `'revoked'` when a
+ * prior connection has gone bad (absent for never-connected rows).
+ */
+export type PersonalUserState =
+  | {
+      connected: true;
+      status: IntegrationConnectionStatus;
+      expires_at: string | null;
+      metadata: PersonalAccountMetadata;
+    }
+  | {
+      connected: false;
+      /** Present only when a prior connection went bad (`expired` / `revoked`). Absent for never-connected rows. */
+      status?: IntegrationConnectionStatus;
+      expires_at?: string | null;
+    };
+
+/**
+ * Personal (per-caller-token) connection.
+ *
+ * The row's existence is session-scoped: a user sees a personal row if either
+ * the provider is enabled in the catalog, *or* they already hold a token
+ * (e.g. admin re-disabled the provider after they connected). The `user`
+ * field always carries the caller's connection state.
+ *
+ * Top-level `metadata` / `expires_at` describe the *shell row*, not the
+ * caller's token — that lives under `user.metadata` / `user.expires_at`.
+ */
+export interface PersonalConnection {
+  id: string;
+  /** Catalog id this connection is bound to (FK to {@link IntegrationCatalogEntry.id}). */
+  integration_id: string;
+  auth_type: IntegrationAuthType;
+  connection_mode: 'user';
+  label: string | null;
+  status: IntegrationConnectionStatus;
+  integration_name: string;
+  integration_provider: string;
+  integration_logo_url: string;
+  /** Shell-row metadata. Caller's per-token metadata is under `user.metadata`. */
+  metadata: Record<string, unknown>;
+  /** Shell-row expiry. Caller's per-token expiry is under `user.expires_at`. */
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** Per-caller connection state. Always present on user-mode rows. */
+  user: PersonalUserState;
+  [key: string]: unknown;
+}
+
+export interface SharedConnectionPage {
+  integrations: SharedConnection[];
+  next_page_token?: string | null;
+}
+
+export interface PersonalConnectionPage {
+  integrations: PersonalConnection[];
+  next_page_token?: string | null;
+}
+
+export interface SharedConnectionListOptions {
+  page_token?: string;
+  orgId?: string;
+}
+
+export interface PersonalConnectionListOptions {
+  page_token?: string;
+  orgId?: string;
+}
+
+// ── Shared connect + vend ──────────────────────────────────────────────────
+
+/**
+ * Inputs for `shared.connectOAuth(opts)` — start an OAuth flow that will
+ * land back on `redirect_uri` (defaults to
+ * `https://app.timbal.ai/org/{org_id}/integrations` when omitted).
+ *
+ * `oauth_params` carries provider-specific upfront knobs. Shopify, for
+ * example, needs `{ shop_url: "acme.myshopify.com" }` to construct the
+ * provider's authorize URL.
+ */
+export interface SharedConnectOAuthOptions {
+  provider: string;
+  label?: string | null;
+  redirect_uri?: string;
+  oauth_params?: Record<string, unknown>;
+}
+
+/**
+ * Inputs for `shared.connectCredentials(opts)` — synchronously create a
+ * shared connection from a static credentials blob (api keys, etc.).
+ *
+ * `credentials` is whatever the provider's auth schema defines (commonly
+ * `{ api_key: "..." }`, but providers can require multi-field shapes).
+ */
+export interface SharedConnectCredentialsOptions {
+  provider: string;
+  label?: string | null;
+  credentials: Record<string, unknown>;
+}
+
+/**
+ * Discriminated request union accepted by the raw `connectShared()`
+ * function and the `POST /orgs/{org}/integrations/connect` endpoint.
+ *
+ * Prefer the typed sugar (`shared.connectOAuth` / `shared.connectCredentials`)
+ * over building this manually unless you're driving connect dynamically
+ * from the catalog.
+ */
+export type SharedConnectOptions =
+  | ({ auth_type: 'oauth' } & SharedConnectOAuthOptions)
+  | ({ auth_type: 'credentials' } & SharedConnectCredentialsOptions);
+
+/**
+ * OAuth `/connect` response — the provider's authorize URL. Browser → there
+ * → callback → row appears in `shared.list()`. No id is returned here
+ * because the row doesn't exist yet.
+ */
+export interface SharedConnectOAuthResult {
+  result: 'oauth_redirect';
+  redirect_url: string;
+}
+
+/**
+ * Credentials `/connect` response — synchronous create, you get the row id
+ * back and can vend immediately.
+ */
+export interface SharedConnectCredentialsResult {
+  result: 'created';
+  org_integration_id: string;
+}
+
+export type SharedConnectResult =
+  | SharedConnectOAuthResult
+  | SharedConnectCredentialsResult;
+
+/**
+ * Vended payload for a shared connection. Discriminated on `type` so
+ * TypeScript narrows:
+ *
+ * ```ts
+ * const v = await shared.get('10').token();
+ * if (v.type === 'oauth') v.token;          // ya29.…
+ * else v.api_key;                            // or whatever the schema says
+ * ```
+ *
+ * Both branches carry `[key: string]: unknown` for provider-specific
+ * extras (Shopify oauth adds `shop_url`, AWS credentials add `secret_…`,
+ * etc.).
+ */
+export type SharedTokenVend =
+  | {
+      type: 'oauth';
+      token: string;
+      expires_at: string | null;
+      [key: string]: unknown;
+    }
+  | {
+      type: 'credentials';
+      [key: string]: unknown;
+    };
+
+// ── Personal vend + consent ────────────────────────────────────────────────
+
+/**
+ * Vended token payload for a personal connection. Returned by `vend` /
+ * `personal.get(id).token()` on success.
+ *
+ * For OAuth rows: `token` is the access token, `expires_at` is the access
+ * token's expiry. Refresh is handled server-side — the SDK only sees fresh
+ * tokens (or a 401 `consent_required` when refresh is impossible).
+ *
+ * `[key: string]: unknown` carries through any provider-specific fields the
+ * backend adds later (e.g. credentials-mode auxiliary fields).
+ */
+export interface PersonalTokenVend {
+  type: IntegrationAuthType;
+  token: string;
+  expires_at: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * Input for `personal.get(id).consent(...)` /
+ * `personal.connect(provider, ...)`.
+ *
+ * `redirect_uri` must be allowlisted by the platform (typically
+ * `*.timbal.ai`, org custom domains, or `localhost`). Non-allowlisted URIs
+ * get a 400 from the backend.
+ */
+export interface PersonalConsentOptions {
+  redirect_uri: string;
+}
+
+/**
+ * Response of starting consent — the OAuth provider's authorize URL.
+ *
+ * Send the user's browser here. After the provider redirects them back
+ * through `/oauth/callback/integrations`, they land on the `redirect_uri`
+ * the caller supplied. Re-vend afterwards to pick up the token.
+ */
+export interface PersonalConsentResponse {
+  redirect_url: string;
+}
+
+/**
+ * Tagged-union result of `personal.get(id).use(...)` /
+ * `personal.connect(provider, ...)`. No exceptions for the not-connected
+ * case — the SDK catches `IntegrationConsentRequiredError` internally and
+ * surfaces it as `{ connected: false, redirect_url }`.
+ *
+ * `redirect_url` here is the same browser URL returned by
+ * `PersonalConsentResponse` — distinct from the API endpoint URL exposed on
+ * `IntegrationConsentRequiredError.consentUrl`.
+ */
+export type PersonalUseResult =
+  | { connected: true; token: PersonalTokenVend }
+  | { connected: false; redirect_url: string };
+
 // ── Messages ──
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';
