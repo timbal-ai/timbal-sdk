@@ -5,6 +5,7 @@ import {
   IntegrationNotFoundError,
 } from '../lib/integrations/errors';
 import { PersonalConnectionRef } from '../lib/integrations/personal-connection-ref';
+import { SharedConnectionRef } from '../lib/integrations/shared-connection-ref';
 import { TimbalApiError } from '../lib/api';
 
 // ─────────────────────────────────────────────────────────────
@@ -691,6 +692,153 @@ describe('Integration Tests — integrations.personal vend + consent', () => {
       }
       console.log(
         `[integrations] connect(${row.integration_provider}) → ${r!.connected ? 'connected' : 'not connected'}`,
+      );
+    },
+    15_000,
+  );
+});
+
+// ── Shared connect + vend ─────────────────────────────────────────────
+//
+// Notes:
+//   - Vend is read-only: walks shared.list(), picks the first active row,
+//     calls .token(), validates the discriminated union.
+//   - connectOAuth() is safe to call — `/connect` for OAuth just generates
+//     a URL; the row is only created on `/oauth/callback/integrations`.
+//   - connectCredentials() is NOT tested live (it would mutate state and
+//     there's no per-row disconnect endpoint to clean up). Unit-tested only.
+//
+describe('Integration Tests — integrations.shared connect + vend', () => {
+  test.skipIf(SKIP)(
+    'shared.get(id) returns a synchronous SharedConnectionRef',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const ref = ctx.timbal.integrations.shared.get('999999');
+      expect(ref).toBeInstanceOf(SharedConnectionRef);
+      expect(ref.integrationId).toBe('999999');
+      expect(ref.apiClient).toBe(ctx.timbal.apiClient);
+    },
+  );
+
+  test.skipIf(SKIP)(
+    'shared.get(id).token() vends an active row and the result narrows on type',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const rows = await ctx.timbal.integrations.shared.list();
+      const active = rows.find(r => r.status === 'active');
+      if (!active) {
+        console.warn('[integrations] no active shared rows — skipping shared vend check');
+        return;
+      }
+
+      const ref = ctx.timbal.integrations.shared.get(active.id);
+      let v: Awaited<ReturnType<typeof ref.token>>;
+      try {
+        v = await ref.token();
+      } catch (e) {
+        // Some active rows can have a refresh problem ("Integration is not
+        // active" 400) — skip gracefully rather than fail the suite.
+        if (e instanceof TimbalApiError && (e.statusCode === 400 || e.statusCode === 403)) {
+          console.warn(
+            `[integrations] shared vend(${active.integration_provider} id=${active.id}) ` +
+            `failed with ${e.statusCode} — skipping. err=${e.message}`,
+          );
+          return;
+        }
+        throw e;
+      }
+
+      expect(typeof v.type).toBe('string');
+      if (v.type === 'oauth') {
+        expect(typeof v.token).toBe('string');
+        expect(v.token.length).toBeGreaterThan(0);
+        console.log(
+          `[integrations] shared vend(${active.integration_provider} id=${active.id}) ` +
+          `→ oauth (expires_at=${v.expires_at ?? '<null>'})`,
+        );
+      } else if (v.type === 'credentials') {
+        // Credentials shape is provider-specific; just check at least one
+        // non-`type` key exists.
+        const extraKeys = Object.keys(v).filter(k => k !== 'type');
+        expect(extraKeys.length).toBeGreaterThan(0);
+        console.log(
+          `[integrations] shared vend(${active.integration_provider} id=${active.id}) ` +
+          `→ credentials (keys=${extraKeys.join(',')})`,
+        );
+      } else {
+        throw new Error(`unexpected vend type: ${(v as { type: string }).type}`);
+      }
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'shared.get(unknownId).token() throws TimbalApiError (404)',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const ref = ctx.timbal.integrations.shared.get('999999999');
+      let caught: unknown;
+      try {
+        await ref.token();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TimbalApiError);
+      expect([400, 403, 404]).toContain((caught as TimbalApiError).statusCode);
+      console.log(
+        `[integrations] shared vend(999999999) → ${(caught as TimbalApiError).statusCode} ` +
+        `${(caught as TimbalApiError).message}`,
+      );
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'shared.connectOAuth(provider) returns { result: "oauth_redirect", redirect_url } (no row created until callback)',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      // Pick any enabled OAuth provider from the catalog.
+      const catalog = await ctx.timbal.integrations.catalog.list();
+      const target = catalog.find(
+        e => e.enabled && e.auth_methods.some(m => m.type === 'oauth'),
+      );
+      if (!target) {
+        console.warn('[integrations] no enabled OAuth provider — skipping shared connectOAuth check');
+        return;
+      }
+
+      let r: Awaited<ReturnType<typeof ctx.timbal.integrations.shared.connectOAuth>>;
+      try {
+        r = await ctx.timbal.integrations.shared.connectOAuth({
+          provider: target.provider,
+          label: '__sdk_test_label__',
+          redirect_uri: 'http://localhost:3000/sdk-test-callback',
+        });
+      } catch (e) {
+        if (e instanceof TimbalApiError && e.statusCode === 400) {
+          console.warn(
+            `[integrations] shared connectOAuth(${target.provider}) rejected (400) ` +
+            `— likely allowlist or provider-specific params. Skipping. err=${e.message}`,
+          );
+          return;
+        }
+        throw e;
+      }
+
+      expect(r.result).toBe('oauth_redirect');
+      expect(typeof r.redirect_url).toBe('string');
+      expect(r.redirect_url.length).toBeGreaterThan(0);
+      console.log(
+        `[integrations] shared connectOAuth(${target.provider}) ` +
+        `→ redirect_url host=${new URL(r.redirect_url).host}`,
       );
     },
     15_000,
