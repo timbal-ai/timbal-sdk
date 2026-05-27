@@ -3,6 +3,8 @@ import type {
   PersonalConnection,
   PersonalConnectionListOptions,
   PersonalConnectionPage,
+  PersonalConsentOptions,
+  PersonalUseResult,
 } from '../../types';
 import {
   listPersonalConnections,
@@ -10,6 +12,7 @@ import {
   listPersonalConnectionsAll,
   iteratePersonalConnections,
 } from '../functions/integrations';
+import { PersonalConnectionRef } from './personal-connection-ref';
 
 /**
  * Per-caller-token ("personal") integration connections — reached via
@@ -32,8 +35,8 @@ import {
  * }
  * ```
  *
- * Stripe-style collection ops; resource views (consent, token vending,
- * disconnect) will land later.
+ * Stripe-style collection ops plus a resource view via {@link get} for
+ * token vending and consent. Disconnect will land later.
  */
 export class PersonalConnectionsSection {
   constructor(private readonly apiClient: ApiClient) {}
@@ -81,5 +84,49 @@ export class PersonalConnectionsSection {
       if (conn.integration_provider === provider) return conn;
     }
     return null;
+  }
+
+  /**
+   * Get a scoped view onto a specific personal connection row.
+   * **Synchronous, no network call** — just wraps `apiClient` +
+   * `integrationId`. Use it to vend tokens, start consent, or run the
+   * one-shot `use()` flow.
+   *
+   * ```ts
+   * const ref = timbal.integrations.personal.get('15');
+   * const r = await ref.use({ redirect_uri: 'https://my-app/cb' });
+   * if (!r.connected) return res.redirect(r.redirect_url);
+   * await callGmail(r.token.token);
+   * ```
+   */
+  get(integrationId: string): PersonalConnectionRef {
+    return new PersonalConnectionRef(this.apiClient, integrationId);
+  }
+
+  /**
+   * Provider-keyed shortcut: look up the row, then run {@link
+   * PersonalConnectionRef.use} in one call.
+   *
+   * Returns `null` when no row exists for the provider (admin disabled it
+   * and the caller never connected — caller has nothing to do here).
+   * Otherwise returns the same tagged union as
+   * {@link PersonalConnectionRef.use}.
+   *
+   * ```ts
+   * const r = await timbal.integrations.personal.connect('gmail', {
+   *   redirect_uri: 'https://my-app/cb',
+   * });
+   * if (r === null) throw new Error('Gmail is not available in this org');
+   * if (!r.connected) return res.redirect(r.redirect_url);
+   * await callGmail(r.token.token);
+   * ```
+   */
+  async connect(
+    provider: string,
+    opts: PersonalConsentOptions,
+  ): Promise<PersonalUseResult | null> {
+    const row = await this.byProvider(provider);
+    if (!row) return null;
+    return this.get(row.id).use(opts);
   }
 }

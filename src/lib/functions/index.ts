@@ -43,4 +43,6 @@ export {
   listPersonalConnectionsPage,
   listPersonalConnectionsAll,
   iteratePersonalConnections,
+  vendPersonalToken,
+  startPersonalConsent,
 } from './integrations';

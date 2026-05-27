@@ -1,6 +1,9 @@
 import type { ApiClient } from '../api';
 import { TimbalApiError } from '../api';
-import { IntegrationNotFoundError } from '../integrations/errors';
+import {
+  IntegrationConsentRequiredError,
+  IntegrationNotFoundError,
+} from '../integrations/errors';
 import type {
   IntegrationCatalogEntry,
   IntegrationCatalogListOptions,
@@ -10,6 +13,9 @@ import type {
   PersonalConnection,
   PersonalConnectionListOptions,
   PersonalConnectionPage,
+  PersonalConsentOptions,
+  PersonalConsentResponse,
+  PersonalTokenVend,
   SharedConnection,
   SharedConnectionListOptions,
   SharedConnectionPage,
@@ -369,4 +375,106 @@ export async function disableIntegration(
     }
     throw err;
   }
+}
+
+// ── Personal: vend + consent ──────────────────────────────────────────────
+
+/**
+ * Vend the caller's personal token for an integration row
+ * (`GET /orgs/{org}/integrations/{id}`).
+ *
+ * Uses {@link ApiClient.fetch} (raw escape hatch) instead of the typed `get`
+ * path because the consent_required 401 body carries a top-level
+ * `consent_url` field that the SDK's standard error parser doesn't preserve.
+ * Hand-rolling the request lets us surface it through
+ * {@link IntegrationConsentRequiredError.consentUrl}.
+ *
+ * @throws {IntegrationConsentRequiredError} on HTTP 401 with `error:
+ *   "consent_required"` — caller needs to (re)consent.
+ * @throws {TimbalApiError} for any other non-2xx response.
+ */
+export async function vendPersonalToken(
+  client: ApiClient,
+  integrationId: string,
+  orgId?: string,
+): Promise<PersonalTokenVend> {
+  const org = resolveOrg(client, orgId);
+  const path = `orgs/${org}/integrations/${integrationId}`;
+
+  const response = await client.fetch(path, { method: 'GET' });
+
+  // Parse the body once — we need it whether the call succeeded or not.
+  let body: Record<string, unknown> | null = null;
+  try {
+    body = (await response.json()) as Record<string, unknown>;
+  } catch {
+    // Empty / non-JSON body — leave null.
+  }
+
+  if (response.ok) {
+    if (!body) {
+      throw new TimbalApiError(
+        'Vend returned an empty body',
+        response.status,
+      );
+    }
+    return body as unknown as PersonalTokenVend;
+  }
+
+  // Consent-required: surface a typed error with the consent endpoint URL.
+  if (
+    response.status === 401 &&
+    body &&
+    body.error === 'consent_required' &&
+    typeof body.consent_url === 'string'
+  ) {
+    throw new IntegrationConsentRequiredError(
+      String(body.error),
+      integrationId,
+      body.consent_url,
+      response.status,
+      typeof body.code === 'string' ? body.code : undefined,
+      body as Record<string, unknown>,
+    );
+  }
+
+  // Fall back to the SDK's generic error shape for anything else.
+  const message =
+    (body && typeof body.message === 'string' && body.message) ||
+    (body && typeof body.error === 'string' && body.error) ||
+    response.statusText ||
+    'Vend failed';
+  const code = body && typeof body.code === 'string' ? body.code : undefined;
+  throw new TimbalApiError(
+    message,
+    response.status,
+    code,
+    body ? (body as Record<string, unknown>) : undefined,
+  );
+}
+
+/**
+ * Start an OAuth consent flow for a personal integration row
+ * (`POST /orgs/{org}/integrations/{id}/consent`).
+ *
+ * Returns the OAuth provider's authorize URL — send the user's browser
+ * there. After the provider redirects them back through Timbal's
+ * `/oauth/callback/integrations`, they land on `opts.redirect_uri` (must
+ * be allowlisted by the platform; `*.timbal.ai`, org custom domains, or
+ * `localhost`).
+ *
+ * Caller must be an org member for this route (`require_org_membership`).
+ */
+export async function startPersonalConsent(
+  client: ApiClient,
+  integrationId: string,
+  opts: PersonalConsentOptions,
+  orgId?: string,
+): Promise<PersonalConsentResponse> {
+  const org = resolveOrg(client, orgId);
+  const response = await client.post<PersonalConsentResponse>(
+    `orgs/${org}/integrations/${integrationId}/consent`,
+    { redirect_uri: opts.redirect_uri },
+  );
+  return response.data;
 }
