@@ -381,6 +381,114 @@ export interface TokenPair {
   refresh_token: string;
 }
 
+// ── Integrations ──
+//
+// Two-layer concept on the platform:
+//   • **catalog** — providers the platform offers, with an `enabled` flag per
+//     org (admin enables what their org can use). Returned by
+//     `GET /integrations?org_id={id}` — the only piece implemented in this
+//     pass.
+//   • **connections** — actual wired-up rows (per-user OAuth tokens or shared
+//     org credentials). Not yet modeled in the SDK.
+
+export type IntegrationConnectionMode = 'user' | 'org';
+
+/**
+ * A single auth-method parameter the UI must collect from the user (for
+ * `type: 'credentials'` methods). `oauth` methods don't carry parameters.
+ *
+ * `[key: string]: unknown` keeps the type forward-compat with backend additions
+ * (e.g. new validation hints) without forcing an SDK release.
+ */
+export interface IntegrationAuthParameter {
+  name: string;
+  type: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+  readonly: boolean;
+  multiline: boolean;
+  default: unknown;
+  placeholder: string | null;
+  help?: string | null;
+  url?: string | null;
+  [key: string]: unknown;
+}
+
+export interface IntegrationAuthMethodCredentials {
+  type: 'credentials';
+  label?: string;
+  parameters: IntegrationAuthParameter[];
+}
+
+export interface IntegrationAuthMethodOAuth {
+  type: 'oauth';
+  label?: string;
+}
+
+/** Discriminated by `type`. Backend may add new variants — fall through via the string-and-extends pattern. */
+export type IntegrationAuthMethod =
+  | IntegrationAuthMethodCredentials
+  | IntegrationAuthMethodOAuth
+  | { type: string; [key: string]: unknown };
+
+/**
+ * One row from the org-scoped catalog (`GET /integrations?org_id={id}`).
+ *
+ * `enabled` reflects whether **this org** has the provider turned on. The rest
+ * is provider metadata served to every org.
+ *
+ * The `[key: string]: unknown` index signature is intentional: the platform
+ * adds catalog fields more often than the SDK ships, and we'd rather pass
+ * them through than swallow them.
+ */
+export interface IntegrationCatalogEntry {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  logo_url: string;
+  auth_methods: IntegrationAuthMethod[];
+  tags: string[];
+  /** e.g. `'free'`, `'enterprise'` — open string, backend may add tiers. */
+  min_plan: string;
+  /** e.g. `'public'`, `'private'` — open string. */
+  visibility: string;
+  enabled: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * Pagination envelope. The current backend returns a bare `{ integrations }`
+ * object with no cursor, but the SDK threads `next_page_token` so a future
+ * paginated rollout is transparent to callers.
+ */
+export interface IntegrationCatalogPage {
+  integrations: IntegrationCatalogEntry[];
+  next_page_token?: string | null;
+}
+
+export interface IntegrationCatalogListOptions {
+  page_token?: string;
+  orgId?: string;
+}
+
+/**
+ * Response of `POST /orgs/{org}/integrations/enable`. The server returns a
+ * minimal echo (`{ provider }`); call `list()` again if you need the full
+ * catalog entry.
+ */
+export interface IntegrationEnableResult {
+  provider: string;
+}
+
+/**
+ * Response of `POST /orgs/{org}/integrations/disable`. Same `{ provider }`
+ * echo as {@link IntegrationEnableResult}. Aliased rather than reused so a
+ * future divergence in the wire shape stays a non-breaking change.
+ */
+export type IntegrationDisableResult = IntegrationEnableResult;
+
 // ── Messages ──
 
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system';

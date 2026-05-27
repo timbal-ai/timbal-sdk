@@ -28,3 +28,11 @@ export {
   getKbFile,
   deleteKbFile,
 } from './kb';
+export {
+  listIntegrationsCatalog,
+  listIntegrationsCatalogPage,
+  listIntegrationsCatalogAll,
+  iterateIntegrationsCatalog,
+  enableIntegration,
+  disableIntegration,
+} from './integrations';
