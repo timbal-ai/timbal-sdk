@@ -652,6 +652,74 @@ describe('Integration Tests — integrations.personal vend + consent', () => {
   );
 
   test.skipIf(SKIP)(
+    'personal.get(id).revoke() is idempotent — succeeds on an already-disconnected row',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      // Pick a disconnected row — revoking it is a guaranteed no-op (per
+      // spec: "works even if you were already disconnected").
+      const rows = await ctx.timbal.integrations.personal.list();
+      const disconnected = rows.find(r => !r.user.connected);
+      if (!disconnected) {
+        console.warn('[integrations] no disconnected personal rows — skipping revoke idempotency check');
+        return;
+      }
+
+      const ref = ctx.timbal.integrations.personal.get(disconnected.id);
+      await expect(ref.revoke()).resolves.toBeUndefined();
+
+      // Confirm the row still vends consent_required afterwards — the
+      // shell row stays, only the token (if any) is gone.
+      let caught: unknown;
+      try {
+        await ref.token();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(IntegrationConsentRequiredError);
+      console.log(
+        `[integrations] revoke(${disconnected.integration_provider} id=${disconnected.id}) ` +
+        `→ 204 (idempotent), still consent_required afterwards`,
+      );
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
+    'personal.get(sharedRowId).revoke() throws TimbalApiError (403 — wrong audience)',
+    async () => {
+      const ctx = ready();
+      if (!ctx) return;
+
+      const sharedRows = await ctx.timbal.integrations.shared.list();
+      const sharedRow = sharedRows[0];
+      if (!sharedRow) {
+        console.warn('[integrations] no shared rows — skipping wrong-audience revoke check');
+        return;
+      }
+
+      // Use the personal-mode revoke path against a shared-mode row id —
+      // the backend should reject with 403 ("not a valid per-user OAuth
+      // enablement row").
+      const ref = ctx.timbal.integrations.personal.get(sharedRow.id);
+      let caught: unknown;
+      try {
+        await ref.revoke();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TimbalApiError);
+      expect([400, 403, 404]).toContain((caught as TimbalApiError).statusCode);
+      console.log(
+        `[integrations] revoke(sharedRow id=${sharedRow.id}) → ` +
+        `${(caught as TimbalApiError).statusCode} ${(caught as TimbalApiError).message}`,
+      );
+    },
+    15_000,
+  );
+
+  test.skipIf(SKIP)(
     'personal.connect(provider) returns same shape as use() for an existing row, null for unknown',
     async () => {
       const ctx = ready();

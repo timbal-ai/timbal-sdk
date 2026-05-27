@@ -7,8 +7,9 @@ import type {
   PersonalUseResult,
 } from '../../types';
 import {
-  vendPersonalToken,
+  revokePersonalToken,
   startPersonalConsent,
+  vendPersonalToken,
 } from '../functions/integrations';
 
 /**
@@ -76,5 +77,19 @@ export class PersonalConnectionRef {
       }
       throw err;
     }
+  }
+
+  /**
+   * Revoke the caller's token for this connection — the "sign out" of
+   * personal integrations. Idempotent (safe to call when already
+   * disconnected). The shell row stays; next `token()` will throw
+   * `IntegrationConsentRequiredError` and a fresh `consent()` flow
+   * brings the user back online.
+   *
+   * Throws `TimbalApiError` on 403 (the id isn't a valid per-user OAuth
+   * row — e.g. a shared row id).
+   */
+  revoke(): Promise<void> {
+    return revokePersonalToken(this.apiClient, this.integrationId);
   }
 }
