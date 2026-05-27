@@ -175,6 +175,327 @@ const info = await getWorkforceItem(timbal.apiClient, "my-agent", { rev: "main" 
 
 > **Deprecated:** `timbal.listWorkforces` / `callWorkforce` / `streamWorkforce` / `clearWorkforceCache` still work and delegate to the same backing functions. New code should use the section above.
 
+## Integrations
+
+Three sub-accessors mirror the platform's mental model. Catalog is the **what your org may use** layer; shared and personal are two separate **connection** layers with two separate types — impossible to mix.
+
+```typescript
+timbal.integrations.catalog    // what providers the org may use (admin)
+timbal.integrations.shared     // org-wide connections (one token per org)
+timbal.integrations.personal   // per-caller-token connections
+```
+
+### Quick start
+
+```typescript
+// 1. Admin enables a provider for the org (once, idempotent)
+await timbal.integrations.catalog.enable("gmail");
+
+// 2a. Shared (one connection for the whole org)
+const r = await timbal.integrations.shared.connectOAuth({
+  provider: "gmail",
+  redirect_uri: "https://my-app/integrations/callback",
+});
+res.redirect(r.redirect_url);
+// …user completes OAuth → row appears in shared.list()…
+const shared = await timbal.integrations.shared.byProvider("gmail");
+const v = await timbal.integrations.shared.get(shared!.id).token();
+await callGmail(v.type === "oauth" ? v.token : v.api_key as string);
+
+// 2b. Personal (per-user; each caller has their own token)
+const p = await timbal.integrations.personal.connect("gmail", {
+  redirect_uri: "https://my-app/integrations/callback",
+});
+if (p === null) throw new Error("not enabled for this org");
+if (!p.connected) return res.redirect(p.redirect_url);
+await callGmail(p.token.token);
+```
+
+> **Prereq for both shared and personal:** an admin must `catalog.enable(provider)` first — connect / vend will 404 for providers that aren't enabled. `enable` is idempotent.
+
+### Catalog (admin)
+
+```typescript
+// Every provider the platform offers, with this org's enabled flag
+const entries = await timbal.integrations.catalog.list();
+// [{ id, provider, name, description, logo_url, enabled, auth_methods, ... }]
+
+await timbal.integrations.catalog.enable("gmail");   // { provider: "gmail" }
+await timbal.integrations.catalog.disable("gmail");  // { provider: "gmail" }
+
+// Both are idempotent — re-enabling an already-enabled provider returns 200.
+// Unknown providers throw IntegrationNotFoundError (see below).
+
+if (await timbal.integrations.catalog.isEnabled("gmail")) {
+  // ...
+}
+
+// Pagination is threaded even though the endpoint returns one page today.
+for await (const e of timbal.integrations.catalog.iterate()) {
+  console.log(e.provider, e.enabled);
+}
+```
+
+### Shared connections (org-wide)
+
+Returns `SharedConnection` rows. **No `user` field** — these are org-level credentials. Every caller in the org vends the same token from the same row.
+
+```typescript
+const shared = await timbal.integrations.shared.list();
+// [{ id, integration_id, integration_provider, label, status,
+//    metadata: { account_name?, team_id?, scope?, ... },
+//    expires_at, ... }]
+
+// Full pagination envelope (this endpoint paginates server-side)
+const page = await timbal.integrations.shared.listPage();
+// { integrations, next_page_token? }  ← coerced to string at the SDK boundary
+
+// Drain every page
+const all = await timbal.integrations.shared.listAll();
+
+// Or stream without holding everything in memory
+for await (const conn of timbal.integrations.shared.iterate()) {
+  if (conn.status !== "active") console.warn(`${conn.integration_provider} is ${conn.status}`);
+}
+
+// Look up by provider — walks pages, early-exits on hit, null if not present
+const slack = await timbal.integrations.shared.byProvider("slack");
+if (slack) console.log(slack.label, slack.metadata.account_name);
+```
+
+### Shared: connect & vend
+
+Two flavors, two methods — different inputs, different outputs.
+
+> **Prereq:** `await timbal.integrations.catalog.enable("slack")` (admin, once per org).
+
+#### OAuth (`shared.connectOAuth(opts)`)
+
+Starts an OAuth flow. Returns the provider's authorize URL. The row only appears in `shared.list()` after the user completes OAuth and Timbal's `/oauth/callback/integrations` runs.
+
+```typescript
+const r = await timbal.integrations.shared.connectOAuth({
+  provider: "slack",
+  label: "Acme Slack",
+  redirect_uri: "https://app.timbal.ai/org/42/integrations",
+});
+
+// r.result === "oauth_redirect"
+return res.redirect(r.redirect_url); // user → Slack consent → callback → row created
+```
+
+Some providers need upfront params (Shopify needs the shop):
+
+```typescript
+await timbal.integrations.shared.connectOAuth({
+  provider: "shopify",
+  oauth_params: { shop_url: "acme.myshopify.com" },
+});
+```
+
+For an OAuth reconnect (token expired, refresh dead), call `connectOAuth` again with the same provider — shared connections have **no per-row consent flow**.
+
+#### Credentials (`shared.connectCredentials(opts)`)
+
+Synchronously creates the row from a static credentials blob. Returns a `SharedConnectionRef` bound to the new id — vend immediately, no browser step.
+
+```typescript
+const ref = await timbal.integrations.shared.connectCredentials({
+  provider: "stripe",
+  label: "Prod API key",
+  credentials: { api_key: process.env.STRIPE_KEY! },
+});
+
+const v = await ref.token();
+// v.type === "credentials"; access provider-specific fields directly
+```
+
+#### Vend (`shared.get(id).token()`)
+
+Vend an existing shared row. Returns a discriminated union — narrow on `type`:
+
+```typescript
+const ref = timbal.integrations.shared.get("10");
+const v = await ref.token();
+
+if (v.type === "oauth") {
+  await callSlack(v.token); // v.expires_at is also available
+} else { // "credentials"
+  await callProvider(v.api_key as string);
+}
+```
+
+Failure modes (bubble as `TimbalApiError`):
+- `400 "Integration is not active"` — row exists but needs a reconnect (call `connectOAuth` again)
+- `404 "Integration not found"` — bad id
+
+No `consent_required` 401 here — that's personal-only.
+
+#### Delete (`shared.get(id).delete()`)
+
+**Destructive** — the row is gone for the whole org, and every caller loses access to the vended token. To re-add, call `connectOAuth` / `connectCredentials` again. For "drop the whole provider org-wide" use `catalog.disable(provider)` instead.
+
+```typescript
+await timbal.integrations.shared.get("10").delete();
+```
+
+### Personal connections (per-user)
+
+Returns `PersonalConnection` rows. Every row carries a `user` field describing the **current caller's** connection state. Use `if (row.user.connected)` to narrow.
+
+Visibility: a personal row appears if either the provider is enabled in the catalog *or* the caller already holds a token (admin may have re-disabled the provider since they connected).
+
+```typescript
+const personal = await timbal.integrations.personal.list();
+
+for (const row of personal) {
+  if (row.user.connected) {
+    // Narrowed — metadata + status + expires_at are guaranteed present
+    console.log(`${row.integration_provider}: ${row.user.metadata.account_email}`);
+  } else if (row.user.status === "expired") {
+    console.log(`${row.integration_provider}: token expired, reconnect needed`);
+  } else if (row.user.status === "revoked") {
+    console.log(`${row.integration_provider}: revoked`);
+  } else {
+    console.log(`${row.integration_provider}: not connected`);
+  }
+}
+
+// Same byProvider helper, same pagination helpers as the other two sections
+const gmail = await timbal.integrations.personal.byProvider("gmail");
+
+if (gmail?.user.connected) {
+  renderAccount(gmail.user.metadata.account_email, gmail.user.metadata.account_picture);
+} else {
+  renderConnectButton(gmail?.integration_provider);
+}
+```
+
+`PersonalUserState` is a discriminated union — TypeScript narrows automatically. The disconnected branch carries an optional `status` (`'expired'` / `'revoked'`) when a prior connection went bad; it's absent for never-connected rows.
+
+### Personal: vending tokens & consent
+
+> **Prereq:** `await timbal.integrations.catalog.enable("gmail")` (admin, once per org) — creates the shell row that callers can then connect to.
+
+Use a personal connection in three flavors, from highest to lowest level.
+
+#### One-shot: `personal.connect(provider, opts)`
+
+The 90% case. Looks up the row, tries to vend, and if the user hasn't consented yet, starts the consent flow and returns the OAuth provider's redirect URL. Returns a tagged union — no exceptions for the "not connected" case.
+
+```typescript
+const r = await timbal.integrations.personal.connect("gmail", {
+  redirect_uri: "https://my-app.projects.timbal.ai/integrations/callback",
+});
+
+if (r === null) {
+  throw new Error("Gmail isn't available in this org — admin needs to enable it");
+}
+
+if (!r.connected) {
+  // Send the browser to the OAuth provider; they'll come back to redirect_uri
+  return res.redirect(r.redirect_url);
+}
+
+await callGmail(r.token.token); // r.token: PersonalTokenVend
+```
+
+`redirect_uri` must be allowlisted by the platform — `*.timbal.ai`, your org's custom domains, or `localhost`.
+
+#### Per-row: `personal.get(id)`
+
+When you already have the row id (e.g. from `personal.list()` / `byProvider()`) and don't want a second lookup, get a sync resource view and drive it directly.
+
+```typescript
+const row = await timbal.integrations.personal.byProvider("gmail");
+if (!row) throw new Error("not available");
+
+const ref = timbal.integrations.personal.get(row.id);
+
+// Try-then-consent — the high level
+const r = await ref.use({ redirect_uri: "https://my-app/cb" });
+
+// Or split the steps yourself
+try {
+  const token = await ref.token();
+  await callGmail(token.token);
+} catch (err) {
+  if (err instanceof IntegrationConsentRequiredError) {
+    const { redirect_url } = await ref.consent({ redirect_uri: "https://my-app/cb" });
+    return res.redirect(redirect_url);
+  }
+  throw err;
+}
+```
+
+`get(id)` is synchronous and stateless — no network call, cheap to allocate per request.
+
+#### Typical loop
+
+```
+ref.token()      → IntegrationConsentRequiredError
+ref.consent({…}) → { redirect_url }   (browser → provider → callback → your redirect_uri)
+ref.token()      → { type, token, expires_at }
+```
+
+#### Revoke (`personal.get(id).revoke()`)
+
+The "sign out" of personal integrations. **Idempotent** — safe to call when already disconnected. The shell row stays; next `token()` throws `IntegrationConsentRequiredError` and a fresh `consent()` flow brings the user back online.
+
+```typescript
+await timbal.integrations.personal.get("15").revoke();
+```
+
+Throws `TimbalApiError` (403) if the id isn't a valid per-user OAuth row — e.g. you passed a shared row id by mistake.
+
+### Typed errors
+
+```typescript
+import {
+  IntegrationNotFoundError,
+  IntegrationConsentRequiredError,
+} from "@timbal-ai/timbal-sdk";
+
+try {
+  await timbal.integrations.catalog.enable("not_a_real_provider");
+} catch (err) {
+  if (err instanceof IntegrationNotFoundError) {
+    console.log(`unknown provider: ${err.provider}`);
+  }
+}
+
+try {
+  const token = await timbal.integrations.personal.get("15").token();
+  await callProvider(token.token);
+} catch (err) {
+  if (err instanceof IntegrationConsentRequiredError) {
+    // err.integrationId === "15"
+    // err.consentUrl is the API consent endpoint (call ref.consent() to use it)
+    console.log("user needs to (re)consent");
+  }
+}
+```
+
+Both still match `instanceof TimbalApiError` for generic handlers.
+
+### Escape hatch
+
+```typescript
+import {
+  IntegrationsCatalog,
+  SharedConnectionsSection,
+  SharedConnectionRef,
+  PersonalConnectionsSection,
+  PersonalConnectionRef,
+} from "@timbal-ai/timbal-sdk";
+
+const catalog  = new IntegrationsCatalog(timbal.apiClient);
+const shared   = new SharedConnectionsSection(timbal.apiClient);
+const personal = new PersonalConnectionsSection(timbal.apiClient);
+const sref     = new SharedConnectionRef(timbal.apiClient, "10");
+const pref     = new PersonalConnectionRef(timbal.apiClient, "15");
+```
+
 ## Files
 
 Short-lived binary handoff for agents and workflows. Hits the stateless `POST /files` endpoint — no org scope, no DB row, signed URL expires in ~24h. For durable, parsed, searchable storage use `kb.files.upload` instead.
@@ -302,7 +623,10 @@ try {
 }
 ```
 
-KB-specific subclasses (`KbFileAlreadyExistsError`, `KbFileNotFoundError`) are thrown by `kb.files.*`; both still match `instanceof TimbalApiError`.
+Resource-specific subclasses are thrown for known failure modes — all still match `instanceof TimbalApiError`:
+
+- `KbFileAlreadyExistsError`, `KbFileNotFoundError`, `KbDirectoryConflictError` — `kb.files.*`
+- `IntegrationNotFoundError` — `timbal.integrations.catalog.{enable,disable}`
 
 The SDK retries automatically on 5xx errors, timeouts, and network errors (3 attempts by default).
 
