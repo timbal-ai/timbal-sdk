@@ -26,7 +26,7 @@ describe('timbalAuth Elysia plugin', () => {
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('<!doctype html>');
-      expect(html).toContain('Get started');
+      expect(html).toContain('Welcome to Timbal');
     });
 
     test('GET /auth/callback returns 200 with HTML', async () => {
