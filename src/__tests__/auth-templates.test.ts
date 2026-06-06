@@ -39,9 +39,10 @@ describe('renderLoginPage', () => {
     expect(html).not.toContain('{{PREFIX}}');
   });
 
-  test('contains logo images from CDN', () => {
+  test('contains platform branding assets', () => {
     const html = renderLoginPage('');
-    expect(html).toContain('https://app.timbal.ai/logos/');
+    expect(html).toContain('Welcome to Timbal');
+    expect(html).toContain('https://app.timbal.ai/onboarding-welcome-mark.png');
   });
 });
 
