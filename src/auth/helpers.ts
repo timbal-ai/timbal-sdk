@@ -47,3 +47,26 @@ export function getCallbackUrl(request: Request, path: string): string {
 export function getPrefix(path: string): string {
   return path.startsWith('/api') ? '/api' : '';
 }
+
+/**
+ * Same-origin relative path safe for post-login redirects (blocks open redirects).
+ */
+export function isSafeRedirectPath(path: string): boolean {
+  if (!path.startsWith('/') || path.startsWith('//')) return false;
+  if (path.includes('\\')) return false;
+  const slash = path.indexOf('/');
+  const colon = path.indexOf(':');
+  if (colon !== -1 && (slash === -1 || colon < slash)) return false;
+  return true;
+}
+
+/**
+ * Pick a post-login destination: validated `return_to`, else configured fallback.
+ */
+export function resolvePostLoginRedirect(
+  returnTo: string | undefined | null,
+  fallback: string,
+): string {
+  if (returnTo && isSafeRedirectPath(returnTo)) return returnTo;
+  return fallback.startsWith('/') ? fallback : `/${fallback}`;
+}

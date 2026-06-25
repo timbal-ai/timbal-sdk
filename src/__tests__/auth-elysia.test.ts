@@ -167,6 +167,132 @@ describe('timbalAuth Elysia plugin', () => {
         global.fetch = originalFetch;
       }
     });
+
+    test('GET /auth/login redirects when already authenticated', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              session: { user_id: '1', user_email: 'test@example.com' },
+              project: { id: '248', name: 'Test' },
+            }),
+        }),
+      ) as unknown as typeof global.fetch;
+
+      try {
+        const app = new Elysia().use(timbalAuth());
+        const res = await app.handle(
+          new Request('http://localhost/auth/login', {
+            headers: { Authorization: 'Bearer test-token' },
+          }),
+        );
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe('/');
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    test('GET /auth/login redirects to return_to when authenticated', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              session: { user_id: '1', user_email: 'test@example.com' },
+              project: { id: '248', name: 'Test' },
+            }),
+        }),
+      ) as unknown as typeof global.fetch;
+
+      try {
+        const app = new Elysia().use(timbalAuth());
+        const res = await app.handle(
+          new Request(
+            'http://localhost/auth/login?return_to=%2Fdashboard',
+            { headers: { Authorization: 'Bearer test-token' } },
+          ),
+        );
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe('/dashboard');
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    test('GET /auth/login redirects via cookie when Bearer is absent', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              session: { user_id: '1', user_email: 'test@example.com' },
+              project: { id: '248', name: 'Test' },
+            }),
+        }),
+      ) as unknown as typeof global.fetch;
+
+      try {
+        const app = new Elysia().use(timbalAuth());
+        const res = await app.handle(
+          new Request('http://localhost/auth/login', {
+            headers: {
+              cookie: 'timbal_project_access_token=cookie-token',
+            },
+          }),
+        );
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe('/');
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+    test('GET /auth/login still returns HTML when not authenticated', async () => {
+      const app = new Elysia().use(timbalAuth());
+      const res = await app.handle(new Request('http://localhost/auth/login'));
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('Welcome to Timbal');
+    });
+
+    test('GET /auth/login ignores unsafe return_to and uses afterLoginRedirect', async () => {
+      const originalFetch = global.fetch;
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              session: { user_id: '1', user_email: 'test@example.com' },
+              project: { id: '248', name: 'Test' },
+            }),
+        }),
+      ) as unknown as typeof global.fetch;
+
+      try {
+        const app = new Elysia().use(
+          timbalAuth({ afterLoginRedirect: '/app' }),
+        );
+        const res = await app.handle(
+          new Request(
+            'http://localhost/auth/login?return_to=%2F%2Fevil.com',
+            { headers: { Authorization: 'Bearer test-token' } },
+          ),
+        );
+        expect(res.status).toBe(302);
+        expect(res.headers.get('location')).toBe('/app');
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
   });
 
   // ── Login page options ──
