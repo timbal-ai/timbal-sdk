@@ -25,7 +25,11 @@ export function createAuthRoutes(
     routes
       .get(
         '/login',
-        async ({ path, token, redirect, query }) => {
+        async (ctx) => {
+          const { path, redirect, query } = ctx;
+          // `token` is injected at runtime by the global auth middleware
+          // derive; it isn't visible on this standalone routes instance's type.
+          const { token } = ctx as unknown as { token: string | null };
           if (token) {
             return redirect(
               resolvePostLoginRedirect(query.return_to, afterLoginRedirect),
