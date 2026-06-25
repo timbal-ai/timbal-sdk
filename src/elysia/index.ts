@@ -28,6 +28,6 @@ export function timbalAuth(options: TimbalAuthOptions = {}): any {
   const timbal = new Timbal();
 
   return new Elysia({ name: 'timbal-auth' })
-    .use(createAuthRoutes(timbal, options))
-    .use(createAuthMiddleware(timbal, options));
+    .use(createAuthMiddleware(timbal, options))
+    .use(createAuthRoutes(timbal, options));
 }

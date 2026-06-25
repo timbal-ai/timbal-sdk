@@ -2,7 +2,11 @@ import { Elysia, t } from 'elysia';
 import type { Timbal } from '../lib/timbal';
 import type { OAuthProvider } from '../types';
 import type { TimbalAuthOptions } from '../auth/types';
-import { getCallbackUrl, getPrefix } from '../auth/helpers';
+import {
+  getCallbackUrl,
+  getPrefix,
+  resolvePostLoginRedirect,
+} from '../auth/helpers';
 import { renderLoginPage } from '../auth/templates/login';
 import { renderCallbackPage } from '../auth/templates/callback';
 import { setAuthCookie, clearAuthCookie } from './middleware';
@@ -21,7 +25,13 @@ export function createAuthRoutes(
     routes
       .get(
         '/login',
-        async ({ path }) => {
+        async ({ path, token, redirect, query }) => {
+          if (token) {
+            return redirect(
+              resolvePostLoginRedirect(query.return_to, afterLoginRedirect),
+            );
+          }
+
           const prefix = getPrefix(path);
 
           // Custom HTML file
@@ -37,7 +47,14 @@ export function createAuthRoutes(
             headers: { 'Content-Type': 'text/html' },
           });
         },
-        { detail: { hide: true } },
+        {
+          query: t.Object({
+            return_to: t.Optional(t.String()),
+            error: t.Optional(t.String()),
+            redirect_uri: t.Optional(t.String()),
+          }),
+          detail: { hide: true },
+        },
       )
       .get(
         '/callback',
