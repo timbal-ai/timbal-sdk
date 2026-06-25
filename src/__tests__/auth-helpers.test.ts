@@ -1,5 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
-import { getOrigin, getCallbackUrl, getPrefix } from '../auth/helpers';
+import {
+  getOrigin,
+  getCallbackUrl,
+  getPrefix,
+  isSafeRedirectPath,
+  resolvePostLoginRedirect,
+} from '../auth/helpers';
 
 // ── getPrefix ──
 
@@ -88,5 +94,33 @@ describe('getCallbackUrl', () => {
     const request = new Request('http://localhost:3000/api/auth/google');
     const url = getCallbackUrl(request, '/api/auth/google');
     expect(url).toBe('http://localhost:3000/api/auth/callback');
+  });
+});
+
+// ── isSafeRedirectPath / resolvePostLoginRedirect ──
+
+describe('isSafeRedirectPath', () => {
+  test('allows same-origin relative paths', () => {
+    expect(isSafeRedirectPath('/')).toBe(true);
+    expect(isSafeRedirectPath('/dashboard')).toBe(true);
+    expect(isSafeRedirectPath('/docs?tab=api')).toBe(true);
+  });
+
+  test('rejects open redirects', () => {
+    expect(isSafeRedirectPath('//evil.com')).toBe(false);
+    expect(isSafeRedirectPath('https://evil.com')).toBe(false);
+    expect(isSafeRedirectPath('javascript:alert(1)')).toBe(false);
+    expect(isSafeRedirectPath('dashboard')).toBe(false);
+  });
+});
+
+describe('resolvePostLoginRedirect', () => {
+  test('prefers validated return_to', () => {
+    expect(resolvePostLoginRedirect('/app', '/')).toBe('/app');
+  });
+
+  test('falls back when return_to is unsafe', () => {
+    expect(resolvePostLoginRedirect('//evil.com', '/home')).toBe('/home');
+    expect(resolvePostLoginRedirect(null, 'home')).toBe('/home');
   });
 });
