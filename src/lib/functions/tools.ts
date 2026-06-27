@@ -116,7 +116,9 @@ export async function executeToolProxy<T = unknown>(
   ) {
     throw new IntegrationConsentRequiredError(
       String(body.error),
-      typeof body.integration_id === 'string' ? body.integration_id : name,
+      typeof body.integration_id === 'string' || typeof body.integration_id === 'number'
+        ? String(body.integration_id)
+        : name,
       body.consent_url,
       response.status,
       typeof body.code === 'string' ? body.code : undefined,

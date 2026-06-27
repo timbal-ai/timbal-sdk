@@ -228,6 +228,26 @@ describe('ToolsSection.run error mapping', () => {
     expect(err.integrationId).toBe('5');
   });
 
+  test('401 consent_required coerces numeric integration_id (not tool name)', async () => {
+    const client = makeMockClient({
+      fetch: mock(() =>
+        Promise.resolve(
+          proxyResponse(401, {
+            error: 'consent_required',
+            consent_url: 'https://api.test/orgs/1/integrations/5/consent',
+            integration_id: 5,
+          }),
+        ),
+      ),
+    });
+    const tools = new ToolsSection(client);
+
+    const err = await tools.run('krea_generate_image', {}).catch((e) => e);
+    expect(err).toBeInstanceOf(IntegrationConsentRequiredError);
+    expect(err.integrationId).toBe('5');
+    expect(err.integrationId).not.toBe('krea_generate_image');
+  });
+
   test('other non-2xx (400) → plain TimbalApiError', async () => {
     const client = makeMockClient({
       fetch: mock(() => Promise.resolve(proxyResponse(400, { message: 'bad params' }))),
@@ -388,6 +408,136 @@ describe('RemoteTool', () => {
 
     const hydrated = RemoteTool.fromDetail(client, kreaDetail);
     expect(hydrated.toAnthropic().input_schema).toEqual(kreaDetail.params);
+  });
+});
+
+describe('RemoteTool instance methods', () => {
+  test('run() executes via the proxy under the tool name', async () => {
+    const client = makeMockClient();
+    const tool = new RemoteTool(client, { name: 'krea_generate_image', provider: 'krea' });
+
+    const out = await tool.run({ prompt: 'x' });
+
+    expect(out).toEqual({ image_url: 'https://x/y.png' });
+    expect((client.fetch as ReturnType<typeof mock>).mock.calls[0][0]).toBe(
+      'orgs/1/proxies/v1/tools/krea_generate_image',
+    );
+  });
+
+  test('load() hydrates parameters from the detail endpoint and returns this', async () => {
+    const client = makeMockClient();
+    const tool = new RemoteTool(client, { name: 'krea_generate_image', provider: 'krea' });
+    expect(tool.parameters).toBeUndefined();
+
+    const same = await tool.load();
+
+    expect(same).toBe(tool);
+    expect(tool.parameters).toEqual(kreaDetail.params);
+  });
+});
+
+describe('listToolManifest tolerance & filters', () => {
+  test('tolerates a bare-array body (no { tools } envelope)', async () => {
+    const client = makeMockClient({
+      get: mock(() =>
+        Promise.resolve({ data: listResponse.tools, success: true, statusCode: 200 }),
+      ),
+    });
+    const tools = new ToolsSection(client);
+
+    const list = await tools.list();
+
+    expect(list.map((t) => t.name)).toEqual(['firecrawl_scrape', 'krea_generate_image']);
+  });
+
+  test('list({ provider }) filters to a single provider', async () => {
+    const client = makeMockClient();
+    const tools = new ToolsSection(client);
+
+    const list = await tools.list({ provider: 'krea' });
+
+    expect(list.map((t) => t.name)).toEqual(['krea_generate_image']);
+  });
+});
+
+describe('executeToolProxy edge cases', () => {
+  test('throws when no orgId is configured or passed', async () => {
+    const client = makeMockClient({
+      getConfig: () => ({
+        orgId: '',
+        kbId: '',
+        projectId: '',
+        rev: '',
+        token: 't',
+        baseUrl: 'https://api.test',
+        timeout: 0,
+        retryAttempts: 0,
+        retryDelay: 0,
+      }),
+    });
+    const tools = new ToolsSection(client);
+
+    await expect(tools.run('krea_generate_image', {})).rejects.toThrow(/orgId is required/);
+  });
+
+  test('an ok response with a non-JSON body resolves to null', async () => {
+    const client = makeMockClient({
+      fetch: mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () => Promise.reject(new Error('no body')),
+        }),
+      ),
+    });
+    const tools = new ToolsSection(client);
+
+    expect(await tools.run('krea_generate_image', {})).toBeNull();
+  });
+});
+
+describe('ToolsSection.requirements aggregation', () => {
+  test('merges multiple tools of one provider conservatively', async () => {
+    const twoKrea = {
+      version: '1',
+      tools: [
+        {
+          name: 'krea_a',
+          provider: 'krea',
+          description: '',
+          available: true,
+          execution: 'proxy',
+          service_account_eligible: true,
+          connection: 'connected',
+        },
+        {
+          name: 'krea_b',
+          provider: 'krea',
+          description: '',
+          available: false,
+          execution: 'proxy',
+          service_account_eligible: false,
+          connection: 'service_account_unavailable',
+        },
+      ],
+    };
+    const client = makeMockClient({
+      get: mock(() => Promise.resolve({ data: twoKrea, success: true, statusCode: 200 })),
+    });
+    const tools = new ToolsSection(client);
+
+    const reqs = await tools.requirements();
+
+    expect(reqs).toEqual([
+      {
+        provider: 'krea',
+        tools: ['krea_a', 'krea_b'],
+        available: false,
+        serviceAccountEligible: false,
+        connection: 'service_account_unavailable',
+      },
+    ]);
   });
 });
 
