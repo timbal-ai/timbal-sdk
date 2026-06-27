@@ -12,6 +12,18 @@ import type {
 import { executeToolProxy, getToolDetail, listToolManifest } from '../functions/tools';
 import { RemoteTool } from './remote-tool';
 
+/** Lower = better. Unknown statuses rank as worse than known non-connected values. */
+const CONNECTION_STATUS_SEVERITY: Record<string, number> = {
+  connected: 0,
+  service_account_unavailable: 1,
+};
+
+function mergeConnectionStatus(current: string | undefined, next: string): string {
+  if (!current) return next;
+  const rank = (s: string) => CONNECTION_STATUS_SEVERITY[s] ?? 50;
+  return rank(current) >= rank(next) ? current : next;
+}
+
 interface ToolListOptions {
   orgId?: string;
   /** Filter to a single provider (join key to `integrations`). */
@@ -84,8 +96,9 @@ export class ToolsSection {
   async specs(
     opts: { format: ToolSpecFormat; tools?: string[] } & ToolListOptions,
   ): Promise<OpenAIToolSpec[] | AnthropicToolSpec[]> {
-    // Resolve the target set: explicit names > whole manifest.
-    const names = opts.tools?.length ? opts.tools : (await this.list(opts)).map((t) => t.name);
+    // Resolve the target set: explicit names (including `[]`) > whole manifest.
+    const names =
+      opts.tools !== undefined ? opts.tools : (await this.list(opts)).map((t) => t.name);
 
     const tools = await Promise.all(names.map((n) => this.get(n, opts)));
     return opts.format === 'anthropic'
@@ -116,12 +129,14 @@ export class ToolsSection {
    * to specific tool names (e.g. the list recovered from your app); omit it to
    * report every tool in the manifest.
    *
-   * `available` / `serviceAccountEligible` aggregate conservatively across a
-   * provider's tools (false if any tool is). Tools with no provider ("system"
-   * tools) need no integration and are skipped.
+   * `available` / `serviceAccountEligible` / `connection` aggregate
+   * conservatively across a provider's tools (false or worst status if any
+   * tool is). Tools with no provider ("system" tools) need no integration and
+   * are skipped. Pass `tools: []` for an empty result; omit `tools` for the
+   * whole manifest.
    */
   async requirements(opts?: { tools?: string[] } & ToolListOptions): Promise<IntegrationRequirement[]> {
-    const wanted = opts?.tools?.length ? new Set(opts.tools) : null;
+    const wanted = opts?.tools !== undefined ? new Set(opts.tools) : null;
     const manifest = await this.list(opts);
     const rows = wanted ? manifest.filter((t) => wanted.has(t.name)) : manifest;
 
@@ -137,7 +152,7 @@ export class ToolsSection {
       req.tools.push(tool.name);
       if (tool.available === false) req.available = false;
       if (tool.serviceAccountEligible === false) req.serviceAccountEligible = false;
-      if (tool.connection) req.connection = tool.connection;
+      if (tool.connection) req.connection = mergeConnectionStatus(req.connection, tool.connection);
       byProvider.set(tool.provider, req);
     }
     return [...byProvider.values()];

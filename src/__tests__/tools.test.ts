@@ -339,6 +339,16 @@ describe('ToolsSection manifest', () => {
       'krea_generate_image',
     ]);
   });
+
+  test('specs({ tools: [] }) returns an empty list without listing the manifest', async () => {
+    const client = makeMockClient();
+    const tools = new ToolsSection(client);
+
+    const openai = await tools.specs({ format: 'openai', tools: [] });
+
+    expect(openai).toEqual([]);
+    expect((client.get as ReturnType<typeof mock>).mock.calls).toHaveLength(0);
+  });
 });
 
 // ── dispatch (agent-loop glue) ────────────────────────────────────────────────
@@ -413,6 +423,13 @@ describe('ToolsSection.requirements', () => {
     const firecrawl = reqs.find((r) => r.provider === 'firecrawl')!;
     expect(firecrawl.serviceAccountEligible).toBe(false);
     expect(firecrawl.connection).toBe('service_account_unavailable');
+  });
+
+  test('tools: [] returns an empty result', async () => {
+    const client = makeMockClient();
+    const tools = new ToolsSection(client);
+
+    expect(await tools.requirements({ tools: [] })).toEqual([]);
   });
 });
 
@@ -556,6 +573,40 @@ describe('ToolsSection.requirements aggregation', () => {
         connection: 'service_account_unavailable',
       },
     ]);
+  });
+
+  test('connection merge is order-independent (worst status wins)', async () => {
+    const twoKrea = {
+      version: '1',
+      tools: [
+        {
+          name: 'krea_b',
+          provider: 'krea',
+          description: '',
+          available: false,
+          execution: 'proxy',
+          service_account_eligible: false,
+          connection: 'service_account_unavailable',
+        },
+        {
+          name: 'krea_a',
+          provider: 'krea',
+          description: '',
+          available: true,
+          execution: 'proxy',
+          service_account_eligible: true,
+          connection: 'connected',
+        },
+      ],
+    };
+    const client = makeMockClient({
+      get: mock(() => Promise.resolve({ data: twoKrea, success: true, statusCode: 200 })),
+    });
+    const tools = new ToolsSection(client);
+
+    const reqs = await tools.requirements();
+
+    expect(reqs[0]?.connection).toBe('service_account_unavailable');
   });
 });
 
