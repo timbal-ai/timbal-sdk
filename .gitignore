@@ -36,5 +36,5 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .cursor/
 CLAUDE.md
 
-# playground
-playground.*
+# playground (local scratch scripts — never commit)
+playground*
