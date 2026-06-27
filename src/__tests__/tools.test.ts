@@ -2,6 +2,7 @@ import { test, expect, describe, mock } from 'bun:test';
 import {
   IntegrationConsentRequiredError,
   RemoteTool,
+  SDK_VERSION,
   Timbal,
   TimbalApiError,
   ToolProxyUnavailableError,
@@ -151,7 +152,7 @@ describe('ToolsSection.run', () => {
     });
 
     const init = (client.fetch as ReturnType<typeof mock>).mock.calls[0][1];
-    expect(init.headers['x-timbal-version']).toBeDefined();
+    expect(init.headers['x-timbal-version']).toBe(SDK_VERSION);
     expect(init.headers['x-timbal-project-id']).toBe('proj-7');
     expect(init.headers['x-timbal-rev']).toBe('main');
     expect(init.headers['x-timbal-run-id']).toBe('run-1');
@@ -393,46 +394,6 @@ describe('ToolsSection.dispatch', () => {
   });
 });
 
-// ── requirements (recover integrations from declared usage) ───────────────────
-
-describe('ToolsSection.requirements', () => {
-  test('joins the named tools against the manifest, grouped by provider', async () => {
-    const client = makeMockClient();
-    const tools = new ToolsSection(client);
-
-    const reqs = await tools.requirements({ tools: ['krea_generate_image'] });
-
-    expect(reqs).toEqual([
-      {
-        provider: 'krea',
-        tools: ['krea_generate_image'],
-        available: true,
-        serviceAccountEligible: true,
-        connection: 'connected',
-      },
-    ]);
-  });
-
-  test('falls back to the whole manifest when no tools are given', async () => {
-    const client = makeMockClient();
-    const tools = new ToolsSection(client);
-
-    const reqs = await tools.requirements();
-
-    expect(reqs.map((r) => r.provider).sort()).toEqual(['firecrawl', 'krea']);
-    const firecrawl = reqs.find((r) => r.provider === 'firecrawl')!;
-    expect(firecrawl.serviceAccountEligible).toBe(false);
-    expect(firecrawl.connection).toBe('service_account_unavailable');
-  });
-
-  test('tools: [] returns an empty result', async () => {
-    const client = makeMockClient();
-    const tools = new ToolsSection(client);
-
-    expect(await tools.requirements({ tools: [] })).toEqual([]);
-  });
-});
-
 // ── RemoteTool + wiring ───────────────────────────────────────────────────────
 
 describe('RemoteTool', () => {
@@ -529,84 +490,6 @@ describe('executeToolProxy edge cases', () => {
     const tools = new ToolsSection(client);
 
     expect(await tools.run('krea_generate_image', {})).toBeNull();
-  });
-});
-
-describe('ToolsSection.requirements aggregation', () => {
-  test('merges multiple tools of one provider conservatively', async () => {
-    const twoKrea = {
-      version: '1',
-      tools: [
-        {
-          name: 'krea_a',
-          provider: 'krea',
-          description: '',
-          available: true,
-          execution: 'proxy',
-          service_account_eligible: true,
-          connection: 'connected',
-        },
-        {
-          name: 'krea_b',
-          provider: 'krea',
-          description: '',
-          available: false,
-          execution: 'proxy',
-          service_account_eligible: false,
-          connection: 'service_account_unavailable',
-        },
-      ],
-    };
-    const client = makeMockClient({
-      get: mock(() => Promise.resolve({ data: twoKrea, success: true, statusCode: 200 })),
-    });
-    const tools = new ToolsSection(client);
-
-    const reqs = await tools.requirements();
-
-    expect(reqs).toEqual([
-      {
-        provider: 'krea',
-        tools: ['krea_a', 'krea_b'],
-        available: false,
-        serviceAccountEligible: false,
-        connection: 'service_account_unavailable',
-      },
-    ]);
-  });
-
-  test('connection merge is order-independent (worst status wins)', async () => {
-    const twoKrea = {
-      version: '1',
-      tools: [
-        {
-          name: 'krea_b',
-          provider: 'krea',
-          description: '',
-          available: false,
-          execution: 'proxy',
-          service_account_eligible: false,
-          connection: 'service_account_unavailable',
-        },
-        {
-          name: 'krea_a',
-          provider: 'krea',
-          description: '',
-          available: true,
-          execution: 'proxy',
-          service_account_eligible: true,
-          connection: 'connected',
-        },
-      ],
-    };
-    const client = makeMockClient({
-      get: mock(() => Promise.resolve({ data: twoKrea, success: true, statusCode: 200 })),
-    });
-    const tools = new ToolsSection(client);
-
-    const reqs = await tools.requirements();
-
-    expect(reqs[0]?.connection).toBe('service_account_unavailable');
   });
 });
 

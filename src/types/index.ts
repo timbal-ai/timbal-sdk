@@ -912,17 +912,6 @@ export interface RawToolManifest {
   tools: RemoteToolSpec[];
 }
 
-/** One provider's worth of tool requirements (from {@link RemoteToolSpec}). */
-export interface IntegrationRequirement {
-  provider: string;
-  /** Tool names that need this provider. */
-  tools: string[];
-  available: boolean;
-  serviceAccountEligible: boolean;
-  /** Connection status as reported by the manifest, when known. */
-  connection?: string;
-}
-
 /** OpenAI function-tool spec (`tools: [...]` in chat completions). */
 export interface OpenAIToolSpec {
   type: 'function';

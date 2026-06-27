@@ -1,7 +1,6 @@
 import type { ApiClient } from '../api';
 import type {
   AnthropicToolSpec,
-  IntegrationRequirement,
   OpenAIToolSpec,
   RemoteToolDetail,
   ToolResultContent,
@@ -11,18 +10,6 @@ import type {
 } from '../../types';
 import { executeToolProxy, getToolDetail, listToolManifest } from '../functions/tools';
 import { RemoteTool } from './remote-tool';
-
-/** Lower = better. Unknown statuses rank as worse than known non-connected values. */
-const CONNECTION_STATUS_SEVERITY: Record<string, number> = {
-  connected: 0,
-  service_account_unavailable: 1,
-};
-
-function mergeConnectionStatus(current: string | undefined, next: string): string {
-  if (!current) return next;
-  const rank = (s: string) => CONNECTION_STATUS_SEVERITY[s] ?? 50;
-  return rank(current) >= rank(next) ? current : next;
-}
 
 interface ToolListOptions {
   orgId?: string;
@@ -42,8 +29,6 @@ interface ToolListOptions {
  * - `get(ref)` — one descriptor with its parameter schema hydrated (detail call).
  * - `specs({ format })` — manifest tools serialized to OpenAI/Anthropic specs.
  * - `dispatch(toolUse, opts?)` — model `tool_use` → proxy → `tool_result`.
- * - `requirements()` — which integrations a set of tools need + connection
- *   status (joins the named tools, or the whole manifest, against integrations).
  *
  * The manifest list is cached per `orgId`; invalidate with {@link clearCache}.
  */
@@ -121,41 +106,6 @@ export class ToolsSection {
       id: toolUse.id,
       content: [{ type: 'text', text }],
     };
-  }
-
-  /**
-   * Resolve which integrations a set of tools need — grouped by provider, with
-   * availability + connection status from the manifest. Pass `tools` to scope
-   * to specific tool names (e.g. the list recovered from your app); omit it to
-   * report every tool in the manifest.
-   *
-   * `available` / `serviceAccountEligible` / `connection` aggregate
-   * conservatively across a provider's tools (false or worst status if any
-   * tool is). Tools with no provider ("system" tools) need no integration and
-   * are skipped. Pass `tools: []` for an empty result; omit `tools` for the
-   * whole manifest.
-   */
-  async requirements(opts?: { tools?: string[] } & ToolListOptions): Promise<IntegrationRequirement[]> {
-    const wanted = opts?.tools !== undefined ? new Set(opts.tools) : null;
-    const manifest = await this.list(opts);
-    const rows = wanted ? manifest.filter((t) => wanted.has(t.name)) : manifest;
-
-    const byProvider = new Map<string, IntegrationRequirement>();
-    for (const tool of rows) {
-      if (!tool.provider) continue;
-      const req = byProvider.get(tool.provider) ?? {
-        provider: tool.provider,
-        tools: [],
-        available: true,
-        serviceAccountEligible: true,
-      };
-      req.tools.push(tool.name);
-      if (tool.available === false) req.available = false;
-      if (tool.serviceAccountEligible === false) req.serviceAccountEligible = false;
-      if (tool.connection) req.connection = mergeConnectionStatus(req.connection, tool.connection);
-      byProvider.set(tool.provider, req);
-    }
-    return [...byProvider.values()];
   }
 
   /** Invalidate the manifest cache (call after registering new tools server-side). */

@@ -1,10 +1,11 @@
 # Tool proxy: integration recovery — design notes
 
-Status: **shipped baseline + two open options.** The execution layer is done and
-tested; how we recover "what integrations does this app need" from outside is
-still undecided. This doc captures the two front-runners so we can pick later.
+Status: **execution layer shipped; recovery API undecided.** The tool proxy
+(`run`, `list`, `get`, `specs`, `dispatch`) is done and tested. How we recover
+"what integrations does this app need" from outside is still an open design
+question — captured below as Option A / Option B.
 
-## What already ships (don't block on the rest)
+## What ships today
 
 String-first execution against the proxy, matching Composio (`tools.execute`) and
 Pipedream (`actions.run`). No handles, no registry — pass the slug.
@@ -16,26 +17,48 @@ const timbal = new Timbal();
 // execute (escape hatch — no manifest round-trip)
 await timbal.tools.run('krea_generate_image', { prompt }, { connectionId });
 
-// manifest (the catalog) — name → provider → connection status
-await timbal.tools.list();                 // metadata only
+// manifest (the catalog) — name → provider → connection status per tool
+await timbal.tools.list();                      // metadata only
 await timbal.tools.get('krea_generate_image');   // + hydrated param schema
 
 // model glue
 await timbal.tools.specs({ format: 'openai', tools: ['krea_generate_image'] });
-await timbal.tools.dispatch(toolUse);      // tool_use → proxy → tool_result
-
-// recovery primitive (already exists) — join names against the manifest
-await timbal.tools.requirements({ tools: ['krea_generate_image'] });
+await timbal.tools.dispatch(toolUse);           // tool_use → proxy → tool_result
 ```
 
-`requirements()` is the join we'll reuse no matter which option wins. The only
-open question is **where the list of tool names comes from** when you want it
-"from the outside" (CI, deploy provisioning) without hand-maintaining it.
+Each `RemoteTool` from `list()` / `get()` already carries `provider`,
+`available`, `serviceAccountEligible`, and `connection` from the manifest. Group
+by provider in app code if you need a dashboard today.
 
-The old `tool()` / `toolRegistry` side-effect registry was **removed** — it
-doesn't survive tree-shaking/lazy imports, and (critically) in an Elysia backend
-the `tools.run('x')` calls live inside route closures that **don't execute at
-import time**, so nothing ever registers. Dead end.
+## Why `tools.requirements()` was dropped
+
+We briefly shipped `tools.requirements({ tools?: string[] })` — a helper that
+joined tool names against the manifest and returned integration requirements
+grouped by provider.
+
+**Removed** — not useful yet:
+
+1. **No caller.** Nothing in the SDK, playground, or a real app used it. It was
+   scaffolding for recovery flows we haven't built (CLI scan, Elysia plugin).
+2. **Wrong layer too early.** The hard problem is *where tool names come from*
+   in scattered Elysia handlers — not aggregating manifest rows once you have
+   the list. The helper pretended that problem was solved.
+3. **API churn risk.** Semantics kept shifting (empty `tools: []`, missing-name
+   handling, conservative `connection` merge). Better to ship the join once with
+   the tool that produces the name list (scan or plugin), not as a half-built
+   runtime primitive.
+4. **`list()` is enough for now.** Filter `await timbal.tools.list()` (or pass
+   `list({ provider })`) and group by `tool.provider` client-side until recovery
+   lands.
+
+**Will revisit** when Option A or B below ships — likely as part of that tool
+(e.g. `timbal tools scan ./src` or `timbalTools(...)` mount introspection), not
+as a standalone SDK method you call with a hand-maintained slug array.
+
+The old `tool()` / `toolRegistry` side-effect registry was also **removed** —
+it doesn't survive tree-shaking/lazy imports, and in an Elysia backend the
+`tools.run('x')` calls live inside route closures that **don't execute at import
+time**, so nothing ever registers. Dead end.
 
 ## How Timbal already does this (Python codegen — the reference)
 
@@ -78,14 +101,15 @@ parses the source for literal tool calls and emits the integration list, then
 joins the manifest for status.
 
 ```bash
-$ timbal tools requirements ./src
+$ timbal tools scan ./src
 elevenlabs  ✗ needs connection   (elevenlabs_text_to_speech)
 krea        ✓ connected          (krea_generate_image)
 ```
 
 Mechanics: AST (TypeScript compiler API, already a dep) over the tree, collect
 the string-literal arg of `*.tools.run(...)` / `.get(...)` / `.dispatch(...)` /
-`specs({ tools: [...] })`, dedupe, then `tools.requirements({ tools })`.
+`specs({ tools: [...] })`, dedupe, then join against `tools.list()` for
+provider + connection status.
 
 | Pros | Cons |
 | --- | --- |
