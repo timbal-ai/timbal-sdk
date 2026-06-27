@@ -362,6 +362,24 @@ describe('ToolsSection.dispatch', () => {
       type: 'text',
       text: JSON.stringify({ image_url: 'https://x/y.png' }),
     });
+    const init = (client.fetch as ReturnType<typeof mock>).mock.calls[0][1];
+    expect(init.headers['x-timbal-call-id']).toBe('c1');
+  });
+
+  test('opts.callId overrides tool_use.id for x-timbal-call-id', async () => {
+    const client = makeMockClient();
+    const tools = new ToolsSection(client);
+    const toolUse: ToolUseContent = {
+      type: 'tool_use',
+      id: 'c1',
+      name: 'krea_generate_image',
+      input: { prompt: 'a lake' },
+    };
+
+    await tools.dispatch(toolUse, { callId: 'override' });
+
+    const init = (client.fetch as ReturnType<typeof mock>).mock.calls[0][1];
+    expect(init.headers['x-timbal-call-id']).toBe('override');
   });
 });
 

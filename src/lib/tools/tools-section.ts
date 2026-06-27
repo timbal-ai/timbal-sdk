@@ -98,7 +98,10 @@ export class ToolsSection {
    * proxy and wraps the result as a `tool_result` keyed to the same id.
    */
   async dispatch(toolUse: ToolUseContent, opts?: ToolRunOptions): Promise<ToolResultContent> {
-    const result = await this.run<unknown>(toolUse.name, toolUse.input, opts);
+    const result = await this.run<unknown>(toolUse.name, toolUse.input, {
+      ...opts,
+      callId: opts?.callId ?? toolUse.id,
+    });
     const text = typeof result === 'string' ? result : JSON.stringify(result);
     return {
       type: 'tool_result',
