@@ -249,6 +249,43 @@ describe('ToolsSection.run error mapping', () => {
     expect(err.integrationId).not.toBe('krea_generate_image');
   });
 
+  test('401 consent_required parses integration_id from consent_url when body omits it', async () => {
+    const client = makeMockClient({
+      fetch: mock(() =>
+        Promise.resolve(
+          proxyResponse(401, {
+            error: 'consent_required',
+            consent_url: 'https://api.test/orgs/1/integrations/5/consent',
+          }),
+        ),
+      ),
+    });
+    const tools = new ToolsSection(client);
+
+    const err = await tools.run('krea_generate_image', {}).catch((e) => e);
+    expect(err).toBeInstanceOf(IntegrationConsentRequiredError);
+    expect(err.integrationId).toBe('5');
+    expect(err.integrationId).not.toBe('krea_generate_image');
+  });
+
+  test('401 consent_required leaves integrationId empty when unresolvable', async () => {
+    const client = makeMockClient({
+      fetch: mock(() =>
+        Promise.resolve(
+          proxyResponse(401, {
+            error: 'consent_required',
+            consent_url: 'https://api.test/consent-only',
+          }),
+        ),
+      ),
+    });
+    const tools = new ToolsSection(client);
+
+    const err = await tools.run('krea_generate_image', {}).catch((e) => e);
+    expect(err.integrationId).toBe('');
+    expect(err.integrationId).not.toBe('krea_generate_image');
+  });
+
   test('other non-2xx (400) → plain TimbalApiError', async () => {
     const client = makeMockClient({
       fetch: mock(() => Promise.resolve(proxyResponse(400, { message: 'bad params' }))),
@@ -293,6 +330,18 @@ describe('ToolsSection manifest', () => {
     tools.clearCache();
     await tools.list();
     expect((client.get as ReturnType<typeof mock>).mock.calls.length).toBe(2);
+  });
+
+  test('list() returns a fresh array on cache hits (mutations do not leak)', async () => {
+    const client = makeMockClient();
+    const tools = new ToolsSection(client);
+
+    const first = await tools.list();
+    first.pop();
+
+    const second = await tools.list();
+    expect(second.map((t) => t.name)).toEqual(['firecrawl_scrape', 'krea_generate_image']);
+    expect((client.get as ReturnType<typeof mock>).mock.calls.length).toBe(1);
   });
 
   test('get(name) hydrates the parameter schema from the detail endpoint', async () => {

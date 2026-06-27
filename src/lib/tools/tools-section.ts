@@ -54,7 +54,7 @@ export class ToolsSection {
     const org = opts?.orgId || this.apiClient.getConfig().orgId || '';
     const key = `${org}:${opts?.provider ?? ''}`;
     const cached = this.listCache.get(key);
-    if (cached) return cached;
+    if (cached) return [...cached];
 
     const specs = await listToolManifest(this.apiClient, {
       ...(opts?.orgId && { orgId: opts.orgId }),
@@ -62,7 +62,7 @@ export class ToolsSection {
     });
     const tools = specs.map((s) => new RemoteTool(this.apiClient, s));
     this.listCache.set(key, tools);
-    return tools;
+    return [...tools];
   }
 
   /**

@@ -22,6 +22,14 @@ function resolveOrg(client: ApiClient, orgId?: string): string {
   return id;
 }
 
+/** Resolve integration row id from a consent_required body (never the tool name). */
+function resolveConsentIntegrationId(body: Record<string, unknown>, consentUrl: string): string {
+  const raw = body.integration_id;
+  if (typeof raw === 'string' || typeof raw === 'number') return String(raw);
+  const match = consentUrl.match(/\/integrations\/([^/]+)\/consent\/?$/);
+  return match?.[1] ?? '';
+}
+
 /**
  * Build the per-request attribution headers for tool-proxy calls. Mirrors the
  * Python SDK's `build_tool_proxy_headers` (run/call/subject/version), adapted
@@ -116,9 +124,7 @@ export async function executeToolProxy<T = unknown>(
   ) {
     throw new IntegrationConsentRequiredError(
       String(body.error),
-      typeof body.integration_id === 'string' || typeof body.integration_id === 'number'
-        ? String(body.integration_id)
-        : name,
+      resolveConsentIntegrationId(body, body.consent_url),
       body.consent_url,
       response.status,
       typeof body.code === 'string' ? body.code : undefined,
