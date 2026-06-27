@@ -58,3 +58,35 @@ export class IntegrationConsentRequiredError extends TimbalApiError {
     this.consentUrl = consentUrl;
   }
 }
+
+/**
+ * Thrown when a tool-proxy execution can't run because the platform has no
+ * usable connection for the tool's provider (HTTP 403, or 404/501 fallbacks).
+ *
+ * This is the execution-plane counterpart to the credential-plane errors above:
+ * the recovery path lives in `timbal.integrations` — enable the provider in the
+ * catalog and connect it (`integrations.catalog.enable(provider)` then
+ * `integrations.personal.connect(provider, …)` / `integrations.shared.connect*`).
+ *
+ * Extends {@link TimbalApiError}, so `instanceof TimbalApiError` still matches.
+ */
+export class ToolProxyUnavailableError extends TimbalApiError {
+  /** Wire name of the tool that couldn't be proxied (e.g. `krea_generate_image`). */
+  public readonly toolName: string;
+  /** Provider backing the tool, when known — the thing to connect in `integrations`. */
+  public readonly provider?: string;
+
+  constructor(
+    message: string,
+    toolName: string,
+    statusCode: number,
+    provider?: string,
+    code?: string,
+    details?: Record<string, unknown>,
+  ) {
+    super(message, statusCode, code, details);
+    this.name = 'ToolProxyUnavailableError';
+    this.toolName = toolName;
+    this.provider = provider;
+  }
+}

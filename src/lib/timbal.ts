@@ -16,6 +16,7 @@ import { ApiClient } from './api';
 import { KbsSection } from './kb';
 import { WorkforceSection } from './workforce';
 import { IntegrationsSection } from './integrations';
+import { ToolsSection } from './tools';
 import {
   query as queryFn,
   uploadTempFile as uploadTempFileFn,
@@ -44,6 +45,7 @@ export class Timbal {
   private _kbs?: KbsSection;
   private _workforce?: WorkforceSection;
   private _integrations?: IntegrationsSection;
+  private _tools?: ToolsSection;
 
   constructor(config: TimbalConfig = {}) {
     this.apiClient = new ApiClient(config);
@@ -117,6 +119,26 @@ export class Timbal {
   get integrations(): IntegrationsSection {
     if (!this._integrations) this._integrations = new IntegrationsSection(this.apiClient);
     return this._integrations;
+  }
+
+  // ── Tools (execution plane) ──
+
+  /**
+   * Framework-tool execution plane — the complement to {@link integrations}
+   * (the credential plane). Tools are the *actions* an agent runs; they're
+   * executed via the platform proxy with credentials that never leave the
+   * platform. A tool's `provider` joins back to `integrations`.
+   *
+   * - `timbal.tools.run(name, input)` — fire a tool by name
+   * - `timbal.tools.list()` / `get(name)` — declarative descriptors + schemas
+   * - `timbal.tools.specs({ format })` — OpenAI/Anthropic function-tool specs
+   * - `timbal.tools.dispatch(toolUse)` — model `tool_use` → `tool_result`
+   *
+   * Lazy singleton on this `Timbal` instance.
+   */
+  get tools(): ToolsSection {
+    if (!this._tools) this._tools = new ToolsSection(this.apiClient);
+    return this._tools;
   }
 
   // ── Project ──

@@ -30,6 +30,7 @@ export default [
         RequestInit: 'readonly',
         Response: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         URLSearchParams: 'readonly',
         FormData: 'readonly',
         File: 'readonly',
@@ -37,6 +38,8 @@ export default [
         TextEncoder: 'readonly',
         TextDecoder: 'readonly',
         
+        crypto: 'readonly',
+
         // Bun globals
         Bun: 'readonly',
       },
