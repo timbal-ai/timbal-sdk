@@ -47,10 +47,18 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<ProjectAuthConfig>>();
 
+// Bumped on every clear. In-flight fetches capture the value at start and only
+// write to the cache if it still matches — so a revalidation that began before
+// a clear can't repopulate (and thus undo) a forced refresh.
+let generation = 0;
+
 function resolveCacheKey(timbal: Timbal, ctx?: PlatformContext): string {
   const cfg = timbal.apiClient.getConfig();
-  const orgId = ctx?.orgId ?? cfg.orgId ?? '';
-  const projectId = ctx?.projectId ?? cfg.projectId ?? '';
+  // Mirror getProject()'s resolution (`||`, not `??`) so an empty-string ctx
+  // field falls through to client config — otherwise the key wouldn't match the
+  // org/project actually fetched.
+  const orgId = ctx?.orgId || cfg.orgId || '';
+  const projectId = ctx?.projectId || cfg.projectId || '';
   return `${orgId}:${projectId}`;
 }
 
@@ -88,14 +96,21 @@ export async function getCachedProjectAuthConfig(
 
   let pending = inflight.get(key);
   if (!pending) {
-    pending = getProjectAuthConfig(timbal, opts.ctx)
+    const gen = generation;
+    const fetched = getProjectAuthConfig(timbal, opts.ctx)
       .then((value) => {
-        cache.set(key, { value, expiresAt: now() + ttlMs });
+        // Only persist if no clear happened while this fetch was in flight.
+        if (gen === generation) {
+          cache.set(key, { value, expiresAt: now() + ttlMs });
+        }
         return value;
       })
       .finally(() => {
-        inflight.delete(key);
+        // Don't evict a newer in-flight entry registered under this key after a
+        // clear — only remove our own.
+        if (inflight.get(key) === fetched) inflight.delete(key);
       });
+    pending = fetched;
     inflight.set(key, pending);
   }
 
@@ -109,6 +124,7 @@ export async function getCachedProjectAuthConfig(
 
 /** Clear the auth-config cache (tests, or forced refresh). */
 export function clearProjectAuthConfigCache(): void {
+  generation += 1;
   cache.clear();
   inflight.clear();
 }

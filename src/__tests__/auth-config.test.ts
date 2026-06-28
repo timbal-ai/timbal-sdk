@@ -151,6 +151,49 @@ describe('getCachedProjectAuthConfig', () => {
     await getCachedProjectAuthConfig(timbal, { now: () => 0 });
     expect(calls()).toBe(2);
   });
+
+  test('cache key mirrors getProject resolution: empty-string ctx falls through to config', async () => {
+    // Regression: key used `??` while getProject uses `||`, so an empty-string
+    // ctx field produced a key (':') that didn't match the fetched project.
+    const { timbal, calls } = makeFakeTimbal({ orgId: '10', projectId: '230' });
+    await getCachedProjectAuthConfig(timbal, { now: () => 0 }); // no ctx → key 10:230
+    await getCachedProjectAuthConfig(timbal, {
+      now: () => 0,
+      ctx: { orgId: '', projectId: '' }, // must resolve to the same 10:230
+    });
+    expect(calls()).toBe(1); // second call is a cache hit, not a refetch
+  });
+
+  test('a fetch in flight during a clear does not repopulate the cache', async () => {
+    // Regression: the in-flight .then() called cache.set unconditionally, so a
+    // revalidation that started before clear() could land after and undo the
+    // forced refresh.
+    let calls = 0;
+    let release!: (p: Project) => void;
+    let gate = new Promise<Project>((res) => {
+      release = res;
+    });
+    const timbal = {
+      apiClient: { getConfig: () => ({ orgId: '10', projectId: 'inflight' }) },
+      getProject: async () => {
+        calls += 1;
+        return gate;
+      },
+    } as unknown as Timbal;
+
+    clearProjectAuthConfigCache(); // baseline epoch
+    const p1 = getCachedProjectAuthConfig(timbal, { now: () => 0 }); // fetch #1 in flight
+    expect(calls).toBe(1);
+
+    clearProjectAuthConfigCache(); // clear while #1 is still pending
+    release(makeProject({ use_platform_iam: true }));
+    await p1; // #1 resolves — must NOT write to cache (stale epoch)
+
+    // Next call sees an empty cache and must fetch again.
+    gate = Promise.resolve(makeProject({ use_platform_iam: true }));
+    await getCachedProjectAuthConfig(timbal, { now: () => 0 });
+    expect(calls).toBe(2);
+  });
 });
 
 describe('toPublicAppConfig', () => {
