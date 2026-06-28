@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import type { Timbal } from '../lib/timbal';
 import type { Project } from '../types';
 import {
@@ -7,6 +7,8 @@ import {
   getCachedProjectAuthConfig,
   clearProjectAuthConfigCache,
   toPublicAppConfig,
+  resolveAuthMode,
+  resolveAuthConfig,
 } from '../auth/config';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -193,6 +195,64 @@ describe('getCachedProjectAuthConfig', () => {
     gate = Promise.resolve(makeProject({ use_platform_iam: true }));
     await getCachedProjectAuthConfig(timbal, { now: () => 0 });
     expect(calls).toBe(2);
+  });
+});
+
+describe('resolveAuthMode', () => {
+  const ENV_KEY = 'TIMBAL_AUTH_MODE';
+  const original = process.env[ENV_KEY];
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  test('defaults to legacy with no option and no env', () => {
+    delete process.env[ENV_KEY];
+    expect(resolveAuthMode()).toBe('legacy');
+    expect(resolveAuthMode({})).toBe('legacy');
+  });
+
+  test('explicit option wins', () => {
+    process.env[ENV_KEY] = 'legacy';
+    expect(resolveAuthMode({ authMode: 'platform' })).toBe('platform');
+    process.env[ENV_KEY] = 'platform';
+    expect(resolveAuthMode({ authMode: 'legacy' })).toBe('legacy');
+  });
+
+  test('env used when no option', () => {
+    process.env[ENV_KEY] = 'platform';
+    expect(resolveAuthMode()).toBe('platform');
+    process.env[ENV_KEY] = 'legacy';
+    expect(resolveAuthMode()).toBe('legacy');
+  });
+
+  test('unrecognized env value is ignored (falls back to legacy)', () => {
+    process.env[ENV_KEY] = 'PLATFORM'; // wrong case
+    expect(resolveAuthMode()).toBe('legacy');
+    process.env[ENV_KEY] = 'garbage';
+    expect(resolveAuthMode()).toBe('legacy');
+  });
+});
+
+describe('resolveAuthConfig', () => {
+  beforeEach(() => clearProjectAuthConfigCache());
+
+  test('authConfig override short-circuits — no fetch', async () => {
+    const { timbal, calls } = makeFakeTimbal({ projectId: 'override' });
+    const override = { enabled: false, providers: ['email'] as const };
+    const cfg = await resolveAuthConfig(timbal, { authConfig: { ...override } });
+    expect(cfg).toEqual({ enabled: false, providers: ['email'] });
+    expect(calls()).toBe(0);
+  });
+
+  test('without override, uses the cached platform fetch', async () => {
+    const { timbal, calls } = makeFakeTimbal({
+      projectId: 'fetched',
+      project: makeProject({ use_platform_iam: true, auth_providers: ['google'] }),
+    });
+    const cfg = await resolveAuthConfig(timbal, {});
+    expect(cfg).toEqual({ enabled: true, providers: ['google'] });
+    expect(calls()).toBe(1);
   });
 });
 

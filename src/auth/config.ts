@@ -1,6 +1,12 @@
 import type { Timbal } from '../lib/timbal';
 import type { PlatformContext, Project } from '../types';
-import type { AuthProvider, ProjectAuthConfig, PublicAppConfig } from './types';
+import type {
+  AuthMode,
+  AuthProvider,
+  ProjectAuthConfig,
+  PublicAppConfig,
+  TimbalAuthOptions,
+} from './types';
 
 /** Default login methods when the platform omits `auth_providers`. */
 const ALL_PROVIDERS: readonly AuthProvider[] = [
@@ -35,6 +41,41 @@ export async function getProjectAuthConfig(
 ): Promise<ProjectAuthConfig> {
   const project = await timbal.getProject(ctx);
   return authConfigFromProject(project);
+}
+
+/**
+ * Resolve the effective auth mode.
+ *
+ * Precedence: explicit `options.authMode` > `TIMBAL_AUTH_MODE` env > `'legacy'`.
+ * An unrecognized env value is ignored (falls back to legacy) so a typo can
+ * never silently flip a deployment into platform mode.
+ */
+export function resolveAuthMode(
+  options?: Pick<TimbalAuthOptions, 'authMode'>,
+): AuthMode {
+  if (options?.authMode) return options.authMode;
+  const env = process.env.TIMBAL_AUTH_MODE;
+  if (env === 'platform' || env === 'legacy') return env;
+  return 'legacy';
+}
+
+/**
+ * Resolve the project auth config for a request.
+ *
+ * - `options.authConfig` (test/local override) short-circuits — no fetch.
+ * - Otherwise the TTL-cached platform fetch is used (fail-soft on error).
+ *
+ * Does NOT swallow a hard fetch failure (no prior cached value) — the caller
+ * (middleware) is responsible for falling back to legacy behavior in that case.
+ */
+export async function resolveAuthConfig(
+  timbal: Timbal,
+  options: TimbalAuthOptions = {},
+): Promise<ProjectAuthConfig> {
+  if (options.authConfig) return options.authConfig;
+  return getCachedProjectAuthConfig(timbal, {
+    ttlMs: options.authConfigCacheTtlMs,
+  });
 }
 
 interface CacheEntry {

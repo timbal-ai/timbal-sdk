@@ -5,6 +5,9 @@ import type { AuthProvider } from '../types';
 // ergonomic imports from the auth surface.
 export type { AuthProvider };
 
+/** Auth resolution strategy for the timbalAuth() plugin. */
+export type AuthMode = 'legacy' | 'platform';
+
 /**
  * A single SSO connection (one IdP).
  *
@@ -96,7 +99,7 @@ export interface TimbalAuthOptions {
    *
    * @default 'legacy'
    */
-  authMode?: 'legacy' | 'platform';
+  authMode?: AuthMode;
 
   /**
    * Override the platform auth config (tests, local dev). When set, the plugin
