@@ -368,10 +368,12 @@ describe('timbalAuth Elysia plugin', () => {
       process.env.TIMBAL_PROJECT_ID = '248';
       process.env.TIMBAL_ORG_ID = '10';
       originalFetch = global.fetch;
+      clearProjectAuthConfigCache();
     });
 
     afterEach(() => {
       global.fetch = originalFetch;
+      clearProjectAuthConfigCache();
       if (originalProjectId !== undefined) process.env.TIMBAL_PROJECT_ID = originalProjectId;
       else delete process.env.TIMBAL_PROJECT_ID;
       if (originalOrgId !== undefined) process.env.TIMBAL_ORG_ID = originalOrgId;
@@ -449,6 +451,49 @@ describe('timbalAuth Elysia plugin', () => {
       const app = new Elysia().use(timbalAuth());
       const res = await app.handle(new Request('http://localhost/config'));
       expect(res.status).toBe(404);
+    });
+
+    test('GET /config shares the gate cache (no divergence, no second fetch)', async () => {
+      // The project flips open→authenticated between fetches. If /config did its
+      // own fresh getProject() it would advertise required:true while the gate
+      // (warmed as open) still let routes through — the exact divergence we fix.
+      let projectFetches = 0;
+      global.fetch = mock((input: unknown) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/me')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                session: { user_id: '1', user_email: 'u@x.com' },
+                project: rawProject({ auth_enabled: true }),
+              }),
+          });
+        }
+        projectFetches += 1;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          // first fetch open, any later fetch authenticated
+          json: () =>
+            Promise.resolve(rawProject({ auth_enabled: projectFetches > 1 })),
+        });
+      }) as unknown as typeof global.fetch;
+
+      const app = new Elysia()
+        .use(timbalAuth({ authMode: 'platform' }))
+        .get('/api/x', () => 'ok');
+
+      // Warm the cache via a protected route — open project → reachable.
+      const gate = await app.handle(new Request('http://localhost/api/x'));
+      expect(gate.status).toBe(200);
+
+      // /config must reflect the SAME cached snapshot the gate used.
+      const cfg = await app.handle(new Request('http://localhost/config'));
+      const body = await cfg.json();
+      expect(body.auth.required).toBe(false);
+      expect(projectFetches).toBe(1); // /config reused the cache, no refetch
     });
   });
 

@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia';
 import type { Timbal } from '../lib/timbal';
 import type { TimbalAuthOptions } from '../auth/types';
-import { authConfigFromProject, toPublicAppConfig } from '../auth/config';
+import { resolvePublicAppConfig } from '../auth/config';
 
 /** Path the public config is served at. `configRoute` string overrides `/config`. */
 export function resolveConfigPath(options: TimbalAuthOptions = {}): string {
@@ -11,12 +11,10 @@ export function resolveConfigPath(options: TimbalAuthOptions = {}): string {
 /**
  * Public `GET /config` route returning a browser-safe {@link PublicAppConfig}.
  *
- * Mounted only in platform mode (see `timbalAuth`). One `getProject()` round
- * trip; the auth config is derived from that same project (or the
- * `authConfig` override) so there's no second fetch.
- *
- * Note: no fail-soft yet — a platform/getProject failure surfaces as a 500.
- * Caching + stale-on-error for this route is a deliberate follow-up.
+ * Mounted only in platform mode (see `timbalAuth`). Reads the project from the
+ * same TTL-cached source as the ingress gate (single-flight + fail-soft), so
+ * the advertised `auth.required`/providers can't diverge from what gates API
+ * routes, and a transient platform blip serves the last-known-good config.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createConfigRoute(timbal: Timbal, options: TimbalAuthOptions = {}): any {
@@ -24,11 +22,7 @@ export function createConfigRoute(timbal: Timbal, options: TimbalAuthOptions = {
 
   return new Elysia({ name: 'timbal-config' }).get(
     path,
-    async () => {
-      const project = await timbal.getProject();
-      const authConfig = options.authConfig ?? authConfigFromProject(project);
-      return toPublicAppConfig(project, authConfig);
-    },
+    () => resolvePublicAppConfig(timbal, options),
     { detail: { hide: true } },
   );
 }

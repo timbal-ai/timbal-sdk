@@ -298,6 +298,52 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     } as any);
     expect(out.auth_providers).toBeUndefined();
   });
+
+  test('missing auth_enabled fails CLOSED (defaults to true)', () => {
+    // A wire that omits the gate flag must require auth, never silently open.
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk',
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_enabled).toBe(true);
+  });
+
+  test('maps legacy use_platform_iam when auth_enabled is absent', () => {
+    const open = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(open.auth_enabled).toBe(false);
+  });
+
+  test('auth_enabled wins over legacy use_platform_iam when both present', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true, use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_enabled).toBe(true);
+  });
+
+  test('strips deprecated use_platform_iam from the returned Project', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true, use_platform_iam: true,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect('use_platform_iam' in out).toBe(false);
+    expect(JSON.stringify(out)).not.toContain('use_platform_iam');
+  });
 });
 
 describe('coerceAuthProviders', () => {

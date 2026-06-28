@@ -79,14 +79,17 @@ export async function resolveAuthConfig(
 }
 
 interface CacheEntry {
-  value: ProjectAuthConfig;
+  value: Project;
   expiresAt: number;
 }
 
 // Module-level cache keyed by org:project. The middleware uses a single service
-// Timbal per plugin, so this is effectively per-deployment.
+// Timbal per plugin, so this is effectively per-deployment. We cache the whole
+// Project (not just the derived auth config) so the ingress gate and the public
+// `/config` route read the exact same snapshot — otherwise the two could
+// disagree on `auth.required`/providers until the TTL lapsed.
 const cache = new Map<string, CacheEntry>();
-const inflight = new Map<string, Promise<ProjectAuthConfig>>();
+const inflight = new Map<string, Promise<Project>>();
 
 // Bumped on every clear. In-flight fetches capture the value at start and only
 // write to the cache if it still matches — so a revalidation that began before
@@ -113,21 +116,21 @@ export interface CachedAuthConfigOptions {
 }
 
 /**
- * TTL-cached auth config with single-flight and fail-soft semantics:
+ * TTL-cached project fetch with single-flight and fail-soft semantics:
  *
  * - **Fresh hit** → cached value, no network.
  * - **Stale/miss** → revalidate once (concurrent callers share one fetch).
  * - **Revalidation error** → serve last-known-good if we have it; only throw
- *   when there is no prior value. This keeps an *open* project reachable during
- *   a platform blip instead of failing closed.
+ *   when there is no prior value. This keeps a reachable project reachable
+ *   during a platform blip instead of hard-failing every request.
  *
  * Stale entries are retained (not evicted on expiry) precisely so they can back
  * the fail-soft path.
  */
-export async function getCachedProjectAuthConfig(
+export async function getCachedProject(
   timbal: Timbal,
   opts: CachedAuthConfigOptions = {},
-): Promise<ProjectAuthConfig> {
+): Promise<Project> {
   const ttlMs = opts.ttlMs ?? 60_000;
   const now = opts.now ?? Date.now;
   const key = resolveCacheKey(timbal, opts.ctx);
@@ -138,7 +141,8 @@ export async function getCachedProjectAuthConfig(
   let pending = inflight.get(key);
   if (!pending) {
     const gen = generation;
-    const fetched = getProjectAuthConfig(timbal, opts.ctx)
+    const fetched = timbal
+      .getProject(opts.ctx)
       .then((value) => {
         // Only persist if no clear happened while this fetch was in flight.
         if (gen === generation) {
@@ -161,6 +165,14 @@ export async function getCachedProjectAuthConfig(
     if (entry) return entry.value; // fail-soft: stale-on-error
     throw err;
   }
+}
+
+/** TTL-cached {@link ProjectAuthConfig}, derived from {@link getCachedProject}. */
+export async function getCachedProjectAuthConfig(
+  timbal: Timbal,
+  opts: CachedAuthConfigOptions = {},
+): Promise<ProjectAuthConfig> {
+  return authConfigFromProject(await getCachedProject(timbal, opts));
 }
 
 /** Clear the auth-config cache (tests, or forced refresh). */
@@ -193,4 +205,22 @@ export function toPublicAppConfig(
     out.auth.sso = { enabled: true };
   }
   return out;
+}
+
+/**
+ * Resolve the public `/config` payload from the **same TTL-cached project** the
+ * ingress gate uses, so the advertised `auth.required`/providers can never
+ * drift from what actually gates API routes. The `authConfig` override (when
+ * set) wins for the auth section, mirroring `resolveAuthConfig`; the project is
+ * still read from cache for `id`/`name`. Inherits single-flight + fail-soft.
+ */
+export async function resolvePublicAppConfig(
+  timbal: Timbal,
+  options: TimbalAuthOptions = {},
+): Promise<PublicAppConfig> {
+  const project = await getCachedProject(timbal, {
+    ttlMs: options.authConfigCacheTtlMs,
+  });
+  const auth = options.authConfig ?? authConfigFromProject(project);
+  return toPublicAppConfig(project, auth);
 }

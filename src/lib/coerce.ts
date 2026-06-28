@@ -85,11 +85,36 @@ export function coerceWorkforcePreview(raw: RawWorkforcePreview): WorkforcePrevi
   return { ...raw, id: toStringId(raw.id), uid: toStringIdOpt(raw.uid) ?? null };
 }
 
+/**
+ * Resolve the project's auth gate into a definite boolean.
+ *
+ * Fails CLOSED: when the platform omits `auth_enabled` (and the legacy
+ * `use_platform_iam` is also absent), default to `true`. Requiring login is
+ * the safe failure — a missing or renamed flag must never silently leave a
+ * project's routes reachable without authentication. Also maps the legacy
+ * `use_platform_iam` field for responses still on the old contract.
+ */
+function coerceAuthEnabled(
+  authEnabled: unknown,
+  legacyUsePlatformIam: unknown,
+): boolean {
+  if (typeof authEnabled === 'boolean') return authEnabled;
+  if (typeof legacyUsePlatformIam === 'boolean') return legacyUsePlatformIam;
+  return true;
+}
+
 export function coerceProject(raw: RawProject): Project {
+  // Strip the deprecated `use_platform_iam` from the spread so it can't ride
+  // through as a stray runtime field; its value still feeds the fail-closed
+  // fallback below.
+  const { use_platform_iam, ...rest } = raw as RawProject & {
+    use_platform_iam?: unknown;
+  };
   return {
-    ...raw,
+    ...rest,
     id: toStringId(raw.id),
     workforce: (raw.workforce ?? []).map(coerceWorkforcePreview),
+    auth_enabled: coerceAuthEnabled(raw.auth_enabled, use_platform_iam),
     auth_providers: coerceAuthProviders(raw.auth_providers),
   };
 }
