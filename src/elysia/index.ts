@@ -4,7 +4,13 @@ import { createAuthRoutes } from './routes';
 import { createAuthMiddleware } from './middleware';
 import type { TimbalAuthOptions } from '../auth/types';
 
-export type { TimbalAuthOptions } from '../auth/types';
+export type {
+  TimbalAuthOptions,
+  AuthProvider,
+  ProjectAuthConfig,
+  PublicAppConfig,
+  SsoConnection,
+} from '../auth/types';
 
 /**
  * Elysia plugin that adds Timbal authentication.

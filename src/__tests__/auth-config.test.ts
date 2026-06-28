@@ -6,6 +6,7 @@ import {
   getProjectAuthConfig,
   getCachedProjectAuthConfig,
   clearProjectAuthConfigCache,
+  toPublicAppConfig,
 } from '../auth/config';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
@@ -149,5 +150,63 @@ describe('getCachedProjectAuthConfig', () => {
     clearProjectAuthConfigCache();
     await getCachedProjectAuthConfig(timbal, { now: () => 0 });
     expect(calls()).toBe(2);
+  });
+});
+
+describe('toPublicAppConfig', () => {
+  test('maps project id/name and required flag', () => {
+    const pub = toPublicAppConfig(
+      makeProject({ id: '230', name: 'My App' }),
+      { enabled: true, providers: ['google'] },
+    );
+    expect(pub).toEqual({
+      project: { id: '230', name: 'My App' },
+      auth: { required: true, providers: ['google'] },
+    });
+  });
+
+  test('required reflects auth.enabled', () => {
+    const pub = toPublicAppConfig(makeProject(), {
+      enabled: false,
+      providers: [],
+    });
+    expect(pub.auth.required).toBe(false);
+  });
+
+  test('omits sso when there are no connections', () => {
+    const pub = toPublicAppConfig(makeProject(), {
+      enabled: true,
+      providers: ['email'],
+    });
+    expect(pub.auth.sso).toBeUndefined();
+  });
+
+  test('exposes sso availability only — never the connection list', () => {
+    const pub = toPublicAppConfig(makeProject(), {
+      enabled: true,
+      providers: ['email'],
+      sso: [
+        { id: 'acme', label: 'Acme Corp', url: 'https://idp.acme/start' },
+        { id: 'globex', label: 'Globex', protocol: 'saml' },
+      ],
+    });
+    expect(pub.auth.sso).toEqual({ enabled: true });
+    // tenant identity must not leak into the public payload
+    const json = JSON.stringify(pub);
+    expect(json).not.toContain('Acme');
+    expect(json).not.toContain('Globex');
+    expect(json).not.toContain('idp.acme');
+  });
+
+  test('does not leak secret/internal project fields', () => {
+    const pub = toPublicAppConfig(
+      makeProject({ publishable_api_key: 'pk_SECRET', repository_url: 'git@x' }),
+      { enabled: true, providers: ['google'] },
+    );
+    const json = JSON.stringify(pub);
+    expect(json).not.toContain('pk_SECRET');
+    expect(json).not.toContain('publishable_api_key');
+    expect(json).not.toContain('repository_url');
+    expect(json).not.toContain('use_platform_iam');
   });
 });

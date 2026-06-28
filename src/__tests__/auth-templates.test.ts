@@ -44,6 +44,78 @@ describe('renderLoginPage', () => {
     expect(html).toContain('Welcome to Timbal');
     expect(html).toContain('https://app.timbal.ai/onboarding-welcome-mark.png');
   });
+
+  // ── provider filtering (additive; default = all = today) ──
+
+  test('default (no opts) renders all providers — unchanged behavior', () => {
+    const html = renderLoginPage('');
+    expect(html).toContain('Continue with Google');
+    expect(html).toContain('Continue with Microsoft');
+    expect(html).toContain('Continue with GitHub');
+    expect(html).toContain('magic-link-form');
+    expect(html).toContain('class="divider"');
+  });
+
+  test('explicit all providers equals default', () => {
+    expect(
+      renderLoginPage('', {
+        providers: ['email', 'google', 'microsoft', 'github'],
+      }),
+    ).toBe(renderLoginPage(''));
+  });
+
+  // Email form sentinel: the input placeholder appears only in the <form>
+  // element markup, never in the bottom <script> (which still references
+  // "magic-link-form" by id but is harmlessly guarded when the form is absent).
+  const EMAIL_FORM_MARKER = 'placeholder="name@company.com"';
+
+  test('single OAuth provider: only that button, no email form, no divider', () => {
+    const html = renderLoginPage('', { providers: ['google'] });
+    expect(html).toContain('Continue with Google');
+    expect(html).not.toContain('Continue with Microsoft');
+    expect(html).not.toContain('Continue with GitHub');
+    expect(html).not.toContain(EMAIL_FORM_MARKER);
+    expect(html).not.toContain('class="divider"');
+    // OAuth stack wrapper stays (still has a button)
+    expect(html).toContain('class="oauth-stack"');
+  });
+
+  test('email only: form kept, no OAuth buttons, no divider, no oauth-stack', () => {
+    const html = renderLoginPage('', { providers: ['email'] });
+    expect(html).toContain(EMAIL_FORM_MARKER);
+    expect(html).not.toContain('Continue with Google');
+    expect(html).not.toContain('Continue with Microsoft');
+    expect(html).not.toContain('Continue with GitHub');
+    expect(html).not.toContain('class="divider"');
+    expect(html).not.toContain('class="oauth-stack"');
+  });
+
+  test('one OAuth + email: that button, email form, and divider between them', () => {
+    const html = renderLoginPage('', { providers: ['google', 'email'] });
+    expect(html).toContain('Continue with Google');
+    expect(html).not.toContain('Continue with Microsoft');
+    expect(html).toContain(EMAIL_FORM_MARKER);
+    expect(html).toContain('class="divider"');
+  });
+
+  test('empty providers: no buttons, no form, no divider, no stack', () => {
+    const html = renderLoginPage('', { providers: [] });
+    expect(html).not.toContain('Continue with Google');
+    expect(html).not.toContain('Continue with Microsoft');
+    expect(html).not.toContain('Continue with GitHub');
+    expect(html).not.toContain(EMAIL_FORM_MARKER);
+    expect(html).not.toContain('class="divider"');
+    expect(html).not.toContain('class="oauth-stack"');
+    // still a valid document
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('Welcome to Timbal');
+  });
+
+  test('filtering never leaves unresolved placeholders', () => {
+    const html = renderLoginPage('/api', { providers: ['github'] });
+    expect(html).not.toContain('{{PREFIX}}');
+    expect(html).toContain('window.location.origin + "/api"');
+  });
 });
 
 // ── renderCallbackPage ──

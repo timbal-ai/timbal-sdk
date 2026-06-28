@@ -1,6 +1,6 @@
 import type { Timbal } from '../lib/timbal';
 import type { PlatformContext, Project } from '../types';
-import type { AuthProvider, ProjectAuthConfig } from './types';
+import type { AuthProvider, ProjectAuthConfig, PublicAppConfig } from './types';
 
 /** Default login methods when the platform omits `auth_providers`. */
 const ALL_PROVIDERS: readonly AuthProvider[] = [
@@ -111,4 +111,29 @@ export async function getCachedProjectAuthConfig(
 export function clearProjectAuthConfigCache(): void {
   cache.clear();
   inflight.clear();
+}
+
+/**
+ * Build the browser-safe `PublicAppConfig` served by `GET /config`.
+ *
+ * Whitelist-only: constructs a fresh object and copies just the public fields.
+ * Never spreads `project` (which carries `publishable_api_key`,
+ * `repository_url`, etc.) and never enumerates SSO connections — only whether
+ * SSO is available — so the endpoint can't leak secrets or tenant identity.
+ */
+export function toPublicAppConfig(
+  project: Project,
+  auth: ProjectAuthConfig,
+): PublicAppConfig {
+  const out: PublicAppConfig = {
+    project: { id: project.id, name: project.name },
+    auth: {
+      required: auth.enabled,
+      providers: auth.providers,
+    },
+  };
+  if (auth.sso && auth.sso.length > 0) {
+    out.auth.sso = { enabled: true };
+  }
+  return out;
 }
