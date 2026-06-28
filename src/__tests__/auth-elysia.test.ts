@@ -453,6 +453,22 @@ describe('timbalAuth Elysia plugin', () => {
       expect(res.status).toBe(404);
     });
 
+    test('GET /config returns 503 (not 500) on cold-cache platform failure', async () => {
+      // No prior cached value → nothing to fail-soft to. Must degrade like the
+      // middleware (retryable 503), not throw an unhandled 500.
+      global.fetch = mock(() =>
+        Promise.reject(new Error('platform down')),
+      ) as unknown as typeof global.fetch;
+
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform' }));
+      const res = await app.handle(new Request('http://localhost/config'));
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error).toBe('config_unavailable');
+      // never leak a fabricated auth payload
+      expect(body.auth).toBeUndefined();
+    });
+
     test('GET /config shares the gate cache (no divergence, no second fetch)', async () => {
       // The project flips open→authenticated between fetches. If /config did its
       // own fresh getProject() it would advertise required:true while the gate
