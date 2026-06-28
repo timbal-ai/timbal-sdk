@@ -50,3 +50,4 @@ export {
   vendSharedToken,
   deleteSharedConnection,
 } from './integrations';
+export { executeToolProxy, listToolManifest, getToolDetail } from './tools';

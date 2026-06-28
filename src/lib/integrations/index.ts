@@ -7,4 +7,5 @@ export { PersonalConnectionRef } from './personal-connection-ref';
 export {
   IntegrationNotFoundError,
   IntegrationConsentRequiredError,
+  ToolProxyUnavailableError,
 } from './errors';

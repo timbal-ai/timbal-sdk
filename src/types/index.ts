@@ -817,3 +817,116 @@ export interface Message {
   role: MessageRole;
   content: MessageContent[];
 }
+
+// ── Tool proxy ──
+//
+// The execution plane that complements `integrations` (the credential plane).
+// Framework tools (`krea_generate_image`, `firecrawl_scrape`, …) are registered
+// server-side and executed via `POST /orgs/{org}/proxies/v1/tools/{name}` — the
+// platform resolves the provider connection and injects credentials, so they
+// never leave the platform. `provider` is the join key back to `integrations`.
+
+/**
+ * A JSON Schema object (Draft 2020-12 subset). Deliberately loose — it's the
+ * provider/handler's parameter schema as emitted server-side (from the Python
+ * pydantic model), forwarded verbatim to LLM function-calling specs.
+ */
+export interface JSONSchema {
+  type?: string;
+  properties?: Record<string, JSONSchema>;
+  items?: JSONSchema | JSONSchema[];
+  required?: string[];
+  enum?: unknown[];
+  description?: string;
+  default?: unknown;
+  [key: string]: unknown;
+}
+
+/** Per-call options for tool-proxy execution. */
+export interface ToolRunOptions {
+  /** Override the org (defaults to client config / `TIMBAL_ORG_ID`). */
+  orgId?: string;
+  /**
+   * Pin execution to a specific integration connection row. Opaque to the
+   * SDK — forwarded to the backend, which owns connection-resolution policy.
+   * Agents never set this; UI/admin flows can to disambiguate when both a
+   * shared and personal connection exist for the provider.
+   */
+  connectionId?: string;
+  /** Abort signal — proxy calls have no client-side timeout (tools can be long-running). */
+  signal?: AbortSignal;
+  /** Trace-correlation id forwarded as `x-timbal-run-id`. */
+  runId?: string;
+  /** Trace-correlation id forwarded as `x-timbal-call-id`. */
+  callId?: string;
+}
+
+/**
+ * One entry in the tool manifest **list**
+ * (`GET /orgs/{org}/proxies/v1/tools` → `{ version, tools: RemoteToolSpec[] }`).
+ *
+ * This is the lightweight registry row — rich metadata but **no parameter
+ * schema** (that lives in the per-tool detail, {@link RemoteToolDetail}).
+ */
+export interface RemoteToolSpec {
+  /** Snake_case wire name the model calls (e.g. `krea_generate_image`). */
+  name: string;
+  /** Provider this tool is backed by — join key to `integrations`. */
+  provider?: string | null;
+  description?: string;
+  provider_logo?: string | null;
+  /** PascalCase class name of the backing framework tool (e.g. `KreaGenerateImage`). */
+  class_name?: string;
+  /** Python module the tool lives in (e.g. `timbal.tools`). */
+  module?: string;
+  /** Whether the tool is currently usable for this org/caller. */
+  available?: boolean;
+  /** How the tool runs — `"proxy"` for platform-executed framework tools. */
+  execution?: string;
+  /** Whether the tool can run on an org service account (no per-user connection). */
+  service_account_eligible?: boolean;
+  /** Connection status string, e.g. `"service_account_unavailable"`, `"connected"`. */
+  connection?: string;
+}
+
+/**
+ * Per-tool detail (`GET /orgs/{org}/proxies/v1/tools/{name}`) — adds the
+ * parameter JSON Schema (`params`) and output schema that the list omits.
+ */
+export interface RemoteToolDetail {
+  tool: string;
+  provider?: string | null;
+  version?: string;
+  class_name?: string;
+  module?: string;
+  description?: string;
+  /** Handler input JSON Schema. */
+  params: JSONSchema;
+  /** Handler output schema (may be empty `{}` today). */
+  output?: JSONSchema;
+}
+
+/** Manifest list envelope (`{ version, tools }`). */
+export interface RawToolManifest {
+  version?: string;
+  tools: RemoteToolSpec[];
+}
+
+/** OpenAI function-tool spec (`tools: [...]` in chat completions). */
+export interface OpenAIToolSpec {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: JSONSchema;
+  };
+}
+
+/** Anthropic tool spec (`tools: [...]` in the Messages API). */
+export interface AnthropicToolSpec {
+  name: string;
+  description: string;
+  input_schema: JSONSchema;
+}
+
+export type ToolSpecFormat = 'openai' | 'anthropic';
