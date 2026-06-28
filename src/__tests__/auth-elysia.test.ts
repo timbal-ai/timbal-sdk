@@ -328,6 +328,129 @@ describe('timbalAuth Elysia plugin', () => {
     });
   });
 
+  // ── Platform mode: GET /config ──
+
+  describe('platform mode /config', () => {
+    const originalOrgId = process.env.TIMBAL_ORG_ID;
+    let originalFetch: typeof global.fetch;
+
+    const rawProject = (overrides: Record<string, unknown> = {}) => ({
+      id: '248',
+      name: 'Test Project',
+      description: null,
+      has_ui: false,
+      role: 'admin',
+      default_role: null,
+      is_public_template: false,
+      template_uses: 0,
+      publishable_api_key: 'pk_SECRET',
+      use_platform_iam: false,
+      repository_url: 'git@secret',
+      screenshot_url: null,
+      created_at: 0,
+      updated_at: 0,
+      workforce: [],
+      ...overrides,
+    });
+
+    function mockProjectFetch(overrides: Record<string, unknown> = {}) {
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(rawProject(overrides)),
+        }),
+      ) as unknown as typeof global.fetch;
+    }
+
+    beforeEach(() => {
+      process.env.TIMBAL_PROJECT_ID = '248';
+      process.env.TIMBAL_ORG_ID = '10';
+      originalFetch = global.fetch;
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      if (originalProjectId !== undefined) process.env.TIMBAL_PROJECT_ID = originalProjectId;
+      else delete process.env.TIMBAL_PROJECT_ID;
+      if (originalOrgId !== undefined) process.env.TIMBAL_ORG_ID = originalOrgId;
+      else delete process.env.TIMBAL_ORG_ID;
+    });
+
+    test('GET /config is public (no token) and returns PublicAppConfig', async () => {
+      mockProjectFetch({ use_platform_iam: true, auth_providers: ['google', 'email'] });
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform' }));
+      const res = await app.handle(new Request('http://localhost/config'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({
+        project: { id: '248', name: 'Test Project' },
+        auth: { required: true, providers: ['google', 'email'] },
+      });
+    });
+
+    test('open project: required=false', async () => {
+      mockProjectFetch({ use_platform_iam: false, auth_providers: ['google'] });
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform' }));
+      const res = await app.handle(new Request('http://localhost/config'));
+      const body = await res.json();
+      expect(body.auth.required).toBe(false);
+      expect(body.auth.providers).toEqual(['google']);
+    });
+
+    test('/config never leaks secret project fields', async () => {
+      mockProjectFetch({ use_platform_iam: true });
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform' }));
+      const res = await app.handle(new Request('http://localhost/config'));
+      const text = await res.text();
+      expect(text).not.toContain('pk_SECRET');
+      expect(text).not.toContain('git@secret');
+      expect(text).not.toContain('publishable_api_key');
+    });
+
+    test('authConfig override is used without altering project id/name', async () => {
+      mockProjectFetch({ use_platform_iam: true, auth_providers: ['github'] });
+      const app = new Elysia().use(
+        timbalAuth({
+          authMode: 'platform',
+          authConfig: { enabled: false, providers: ['email'] },
+        }),
+      );
+      const res = await app.handle(new Request('http://localhost/config'));
+      const body = await res.json();
+      expect(body.auth).toEqual({ required: false, providers: ['email'] });
+      expect(body.project.id).toBe('248');
+    });
+
+    test('custom configRoute path', async () => {
+      mockProjectFetch({ use_platform_iam: true });
+      const app = new Elysia().use(
+        timbalAuth({ authMode: 'platform', configRoute: '/app-config' }),
+      );
+      const res = await app.handle(new Request('http://localhost/app-config'));
+      expect(res.status).toBe(200);
+    });
+
+    test('configRoute: false does not mount /config', async () => {
+      const app = new Elysia().use(
+        timbalAuth({ authMode: 'platform', configRoute: false }),
+      );
+      // Route absent → 404 (the global gate only runs for matched routes, so an
+      // unmounted path is 404 rather than a gated 401).
+      const res = await app.handle(new Request('http://localhost/config'));
+      expect(res.status).toBe(404);
+    });
+
+    test('legacy mode (default) does not mount /config', async () => {
+      // local dev (no project id) so the gate is bypassed — a 404 proves the
+      // route simply is not mounted, rather than being gated.
+      delete process.env.TIMBAL_PROJECT_ID;
+      const app = new Elysia().use(timbalAuth());
+      const res = await app.handle(new Request('http://localhost/config'));
+      expect(res.status).toBe(404);
+    });
+  });
+
   // ── Public paths ──
 
   describe('custom publicPaths', () => {

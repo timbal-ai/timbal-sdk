@@ -2,6 +2,8 @@ import { Elysia } from 'elysia';
 import { Timbal } from '../lib/timbal';
 import { createAuthRoutes } from './routes';
 import { createAuthMiddleware } from './middleware';
+import { createConfigRoute, resolveConfigPath } from './config-route';
+import { resolveAuthMode } from '../auth/config';
 import type { TimbalAuthOptions } from '../auth/types';
 
 export type {
@@ -33,7 +35,22 @@ export type {
 export function timbalAuth(options: TimbalAuthOptions = {}): any {
   const timbal = new Timbal();
 
-  return new Elysia({ name: 'timbal-auth' })
-    .use(createAuthMiddleware(timbal, options))
-    .use(createAuthRoutes(timbal, options));
+  // `/config` is platform-mode only and opt-out via `configRoute: false`.
+  const mountConfig =
+    resolveAuthMode(options) === 'platform' && options.configRoute !== false;
+
+  // Make `/config` public so the ingress gate never blocks it. Done here (not in
+  // the shared default list) so legacy apps are completely unaffected.
+  const effectiveOptions: TimbalAuthOptions = mountConfig
+    ? {
+        ...options,
+        publicPaths: [...(options.publicPaths ?? []), resolveConfigPath(options)],
+      }
+    : options;
+
+  const app = new Elysia({ name: 'timbal-auth' })
+    .use(createAuthMiddleware(timbal, effectiveOptions))
+    .use(createAuthRoutes(timbal, effectiveOptions));
+
+  return mountConfig ? app.use(createConfigRoute(timbal, options)) : app;
 }
