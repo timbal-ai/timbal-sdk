@@ -19,14 +19,14 @@ const ALL_PROVIDERS: readonly AuthProvider[] = [
 /**
  * Pure mapper: platform `Project` → `ProjectAuthConfig`.
  *
- * - `enabled` ← `use_platform_iam` (the user-auth gate)
+ * - `enabled` ← `auth_enabled` (the user-auth gate)
  * - `providers` ← `auth_providers`, defaulting to all when absent (preserves
  *   today's "show every provider" login page for older platform responses)
  * - `sso` is intentionally omitted until the platform ships SSO connections
  */
 export function authConfigFromProject(project: Project): ProjectAuthConfig {
   return {
-    enabled: project.use_platform_iam,
+    enabled: project.auth_enabled,
     providers: project.auth_providers ?? [...ALL_PROVIDERS],
   };
 }

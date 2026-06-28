@@ -364,7 +364,8 @@ export interface Project {
   is_public_template: boolean;
   template_uses: number;
   publishable_api_key: string;
-  use_platform_iam: boolean;
+  /** Whether end users must authenticate to access this project. */
+  auth_enabled: boolean;
   /**
    * Enabled sign-in methods (subset of {@link AuthProvider}).
    * Optional: older/cached platform responses may omit it — consumers should

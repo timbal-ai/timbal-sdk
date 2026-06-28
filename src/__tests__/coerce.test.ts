@@ -190,7 +190,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
       is_public_template: false,
       template_uses: 0,
       publishable_api_key: 'pk',
-      use_platform_iam: false,
+      auth_enabled: false,
       repository_url: null,
       screenshot_url: null,
       created_at: 0,
@@ -208,7 +208,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
       apps: [
@@ -227,7 +227,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
       apps: [{ id: 7, name: 'legacy', type: 'agent', description: null, uid: 88 }],
@@ -243,7 +243,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
       workforce: [{ id: 1, name: 'wf-new', type: 'agent', description: null, uid: 11 }],
@@ -257,7 +257,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProject({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
     } as any);
@@ -268,7 +268,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProject({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: true,
+      publishable_api_key: 'pk', auth_enabled: true,
       auth_providers: ['google', 'email'],
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
@@ -280,7 +280,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProject({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: true,
+      publishable_api_key: 'pk', auth_enabled: true,
       auth_providers: ['google', 'wat', 'sso'],
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
@@ -292,7 +292,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProject({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
     } as any);

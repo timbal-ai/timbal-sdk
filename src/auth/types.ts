@@ -30,11 +30,11 @@ export interface SsoConnection {
 /**
  * Resolved auth configuration for a project.
  *
- * Source of truth is the platform (`use_platform_iam` + provider settings).
+ * Source of truth is the platform (`auth_enabled` + provider settings).
  * Maps from `Project` via `authConfigFromProject()`.
  */
 export interface ProjectAuthConfig {
-  /** Whether end users must log in. Maps to `Project.use_platform_iam`. */
+  /** Whether end users must log in. Maps to `Project.auth_enabled`. */
   enabled: boolean;
   /** Login options to surface. Defaults to all when the platform omits them. */
   providers: AuthProvider[];
@@ -94,7 +94,7 @@ export interface TimbalAuthOptions {
    * Auth resolution strategy.
    * - `'legacy'` (default): preserves today's `isLocalDev()` + project-id
    *   semantics exactly. No platform auth-config fetch.
-   * - `'platform'`: platform config (`use_platform_iam` + providers) is the
+   * - `'platform'`: platform config (`auth_enabled` + providers) is the
    *   source of truth; enables open + authenticated modes.
    *
    * @default 'legacy'

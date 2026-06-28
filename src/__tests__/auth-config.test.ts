@@ -22,7 +22,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     is_public_template: false,
     template_uses: 0,
     publishable_api_key: 'pk',
-    use_platform_iam: false,
+    auth_enabled: false,
     repository_url: null,
     screenshot_url: null,
     created_at: 0,
@@ -57,9 +57,9 @@ function makeFakeTimbal(opts: {
 }
 
 describe('authConfigFromProject', () => {
-  test('enabled maps from use_platform_iam', () => {
-    expect(authConfigFromProject(makeProject({ use_platform_iam: true })).enabled).toBe(true);
-    expect(authConfigFromProject(makeProject({ use_platform_iam: false })).enabled).toBe(false);
+  test('enabled maps from auth_enabled', () => {
+    expect(authConfigFromProject(makeProject({ auth_enabled: true })).enabled).toBe(true);
+    expect(authConfigFromProject(makeProject({ auth_enabled: false })).enabled).toBe(false);
   });
 
   test('providers passthrough when present', () => {
@@ -87,7 +87,7 @@ describe('authConfigFromProject', () => {
 describe('getProjectAuthConfig', () => {
   test('fetches project and maps', async () => {
     const { timbal, calls } = makeFakeTimbal({
-      project: makeProject({ use_platform_iam: true, auth_providers: ['github'] }),
+      project: makeProject({ auth_enabled: true, auth_providers: ['github'] }),
     });
     const cfg = await getProjectAuthConfig(timbal);
     expect(cfg).toEqual({ enabled: true, providers: ['github'] });
@@ -127,7 +127,7 @@ describe('getCachedProjectAuthConfig', () => {
     let down = false;
     const { timbal, calls } = makeFakeTimbal({
       projectId: 'failsoft',
-      project: makeProject({ use_platform_iam: true }),
+      project: makeProject({ auth_enabled: true }),
       fail: () => down,
     });
     const first = await getCachedProjectAuthConfig(timbal, { ttlMs: 1_000, now: () => 0 });
@@ -188,11 +188,11 @@ describe('getCachedProjectAuthConfig', () => {
     expect(calls).toBe(1);
 
     clearProjectAuthConfigCache(); // clear while #1 is still pending
-    release(makeProject({ use_platform_iam: true }));
+    release(makeProject({ auth_enabled: true }));
     await p1; // #1 resolves — must NOT write to cache (stale epoch)
 
     // Next call sees an empty cache and must fetch again.
-    gate = Promise.resolve(makeProject({ use_platform_iam: true }));
+    gate = Promise.resolve(makeProject({ auth_enabled: true }));
     await getCachedProjectAuthConfig(timbal, { now: () => 0 });
     expect(calls).toBe(2);
   });
@@ -248,7 +248,7 @@ describe('resolveAuthConfig', () => {
   test('without override, uses the cached platform fetch', async () => {
     const { timbal, calls } = makeFakeTimbal({
       projectId: 'fetched',
-      project: makeProject({ use_platform_iam: true, auth_providers: ['google'] }),
+      project: makeProject({ auth_enabled: true, auth_providers: ['google'] }),
     });
     const cfg = await resolveAuthConfig(timbal, {});
     expect(cfg).toEqual({ enabled: true, providers: ['google'] });
@@ -310,6 +310,6 @@ describe('toPublicAppConfig', () => {
     expect(json).not.toContain('pk_SECRET');
     expect(json).not.toContain('publishable_api_key');
     expect(json).not.toContain('repository_url');
-    expect(json).not.toContain('use_platform_iam');
+    expect(json).not.toContain('auth_enabled');
   });
 });
