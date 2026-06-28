@@ -9,6 +9,7 @@ import {
   coerceWorkforcePreview,
   coerceProject,
   coerceProjectResponse,
+  coerceAuthProviders,
 } from '../lib/coerce';
 
 describe('coerceKbInfo', () => {
@@ -261,5 +262,62 @@ describe('coerceWorkforcePreview / coerceProject', () => {
       created_at: 0, updated_at: 0,
     } as any);
     expect(out.workforce).toEqual([]);
+  });
+
+  test('project preserves a valid auth_providers subset', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: true,
+      auth_providers: ['google', 'email'],
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_providers).toEqual(['google', 'email']);
+  });
+
+  test('project drops unknown auth_providers entries', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: true,
+      auth_providers: ['google', 'wat', 'sso'],
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_providers).toEqual(['google']);
+  });
+
+  test('project missing auth_providers stays undefined (default-to-all signal)', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_providers).toBeUndefined();
+  });
+});
+
+describe('coerceAuthProviders', () => {
+  test('undefined → undefined (absence preserved)', () => {
+    expect(coerceAuthProviders(undefined)).toBeUndefined();
+  });
+
+  test('empty array → empty array (explicit no providers, distinct from absence)', () => {
+    expect(coerceAuthProviders([])).toEqual([]);
+  });
+
+  test('filters unknown values, keeps order', () => {
+    expect(
+      coerceAuthProviders(['github', 'nope', 'email', 'oidc']),
+    ).toEqual(['github', 'email']);
+  });
+
+  test('keeps all four known providers', () => {
+    expect(
+      coerceAuthProviders(['email', 'google', 'microsoft', 'github']),
+    ).toEqual(['email', 'google', 'microsoft', 'github']);
   });
 });

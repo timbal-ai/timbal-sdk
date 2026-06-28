@@ -18,6 +18,7 @@
  */
 
 import type {
+  AuthProvider,
   KbInfo,
   K2File,
   K2FileDetail,
@@ -46,8 +47,30 @@ export type RawWorkforcePreview =
   & { id: string | number; uid: string | number | null };
 
 export type RawProject =
-  & Omit<Project, 'id' | 'workforce'>
-  & { id: string | number; workforce?: RawWorkforcePreview[] };
+  & Omit<Project, 'id' | 'workforce' | 'auth_providers'>
+  & {
+      id: string | number;
+      workforce?: RawWorkforcePreview[];
+      // Wire is loose: any string[]. Sanitized to AuthProvider[] in coerce.
+      auth_providers?: string[];
+    };
+
+const KNOWN_AUTH_PROVIDERS = ['email', 'google', 'microsoft', 'github'] as const;
+
+/**
+ * Sanitize a wire `auth_providers` value into the known {@link AuthProvider}
+ * union. Drops unknown entries; preserves absence as `undefined` so callers can
+ * distinguish "platform didn't send it" (→ default to all) from "explicitly
+ * empty" (→ no providers).
+ */
+export function coerceAuthProviders(
+  raw: string[] | undefined,
+): AuthProvider[] | undefined {
+  if (raw == null) return undefined;
+  return raw.filter((p): p is AuthProvider =>
+    (KNOWN_AUTH_PROVIDERS as readonly string[]).includes(p),
+  );
+}
 
 /**
  * Wire shape for `GET /orgs/{org}/projects/{id}` and `GET /me?project_id=...`.
@@ -67,6 +90,7 @@ export function coerceProject(raw: RawProject): Project {
     ...raw,
     id: toStringId(raw.id),
     workforce: (raw.workforce ?? []).map(coerceWorkforcePreview),
+    auth_providers: coerceAuthProviders(raw.auth_providers),
   };
 }
 

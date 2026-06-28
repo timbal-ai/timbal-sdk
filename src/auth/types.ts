@@ -1,13 +1,9 @@
-/**
- * Auth providers supported on the login page.
- *
- * Note: `google` | `microsoft` | `github` are OAuth providers (handled by the
- * `/auth/:provider` route, see `OAuthProvider` in `../types`). `email` is the
- * magic-link flow (`/auth/magic-link`) — it is intentionally part of this union
- * because it is a user-visible login option, but it is gated separately from the
- * OAuth `:provider` route at runtime.
- */
-export type AuthProvider = 'google' | 'microsoft' | 'github' | 'email';
+import type { AuthProvider } from '../types';
+
+// Canonical definition lives in core `../types` (so `Project.auth_providers` can
+// reference it without depending on the auth submodule). Re-exported here for
+// ergonomic imports from the auth surface.
+export type { AuthProvider };
 
 /**
  * A single SSO connection (one IdP).

@@ -365,6 +365,12 @@ export interface Project {
   template_uses: number;
   publishable_api_key: string;
   use_platform_iam: boolean;
+  /**
+   * Enabled sign-in methods (subset of {@link AuthProvider}).
+   * Optional: older/cached platform responses may omit it — consumers should
+   * default to all providers when `undefined`.
+   */
+  auth_providers?: AuthProvider[];
   repository_url: string | null;
   screenshot_url: string | null;
   created_at: number;
@@ -373,6 +379,15 @@ export interface Project {
 }
 
 // ── Auth ──
+
+/**
+ * Sign-in methods surfaced on the login page.
+ *
+ * `google` | `microsoft` | `github` are OAuth providers (see {@link OAuthProvider},
+ * handled by `/auth/:provider`). `email` is the magic-link flow — a user-visible
+ * login option gated separately from the OAuth `:provider` route.
+ */
+export type AuthProvider = 'email' | 'google' | 'microsoft' | 'github';
 
 export type OAuthProvider = 'github' | 'google' | 'microsoft';
 
