@@ -1,4 +1,76 @@
 /**
+ * Auth providers supported on the login page.
+ *
+ * Note: `google` | `microsoft` | `github` are OAuth providers (handled by the
+ * `/auth/:provider` route, see `OAuthProvider` in `../types`). `email` is the
+ * magic-link flow (`/auth/magic-link`) — it is intentionally part of this union
+ * because it is a user-visible login option, but it is gated separately from the
+ * OAuth `:provider` route at runtime.
+ */
+export type AuthProvider = 'google' | 'microsoft' | 'github' | 'email';
+
+/**
+ * A single SSO connection (one IdP).
+ *
+ * Intentionally protocol-agnostic: SAML vs OIDC is the platform's concern,
+ * hidden behind the initiation `url`. The SDK/UI only ever redirects the
+ * browser to `url` (or `/auth/sso/:id`) and lets the platform run the dance;
+ * the user returns to `/auth/callback` with a token regardless of protocol.
+ */
+export interface SsoConnection {
+  /** Stable slug — routes via `/auth/sso/:id`. */
+  id: string;
+  /** Human label, e.g. "Acme Corp". */
+  label: string;
+  /** Metadata only (icons/debug). MUST NOT branch auth behavior. */
+  protocol?: 'oidc' | 'saml';
+  /** Initiation endpoint. Omit for IdP-initiated SAML (fixed ACS callback). */
+  url?: string;
+}
+
+/**
+ * Resolved auth configuration for a project.
+ *
+ * Source of truth is the platform (`use_platform_iam` + provider settings).
+ * Maps from `Project` via `authConfigFromProject()`.
+ */
+export interface ProjectAuthConfig {
+  /** Whether end users must log in. Maps to `Project.use_platform_iam`. */
+  enabled: boolean;
+  /** Login options to surface. Defaults to all when the platform omits them. */
+  providers: AuthProvider[];
+  /**
+   * SSO connections (zero or more IdPs). Server-side only — see
+   * `PublicAppConfig` for why this list is NOT exposed to the browser.
+   */
+  sso?: SsoConnection[];
+}
+
+/**
+ * Public, browser-safe app configuration served by `GET /config`.
+ *
+ * MUST NOT contain secrets, API keys, platform credentials, or anything that
+ * leaks tenant identity (e.g. the list of enterprise SSO connections — that
+ * would expose customer names to anyone hitting the endpoint).
+ */
+export interface PublicAppConfig {
+  project: { id: string; name?: string };
+  auth: {
+    required: boolean;
+    providers: AuthProvider[];
+    /**
+     * SSO availability only — never the connection list. When `discovery` is
+     * `'email'`, the UI shows an email box and POSTs it; the server resolves
+     * the matching IdP (home-realm discovery) without leaking the full list.
+     */
+    sso?: {
+      enabled: boolean;
+      discovery?: 'email';
+    };
+  };
+}
+
+/**
  * Configuration options for the timbalAuth() plugin.
  */
 export interface TimbalAuthOptions {
@@ -16,4 +88,39 @@ export interface TimbalAuthOptions {
 
   /** Additional paths that skip authentication (merged with defaults). */
   publicPaths?: string[];
+
+  // ── New (additive, all optional). Inert until platform mode ships. ──
+
+  /**
+   * Auth resolution strategy.
+   * - `'legacy'` (default): preserves today's `isLocalDev()` + project-id
+   *   semantics exactly. No platform auth-config fetch.
+   * - `'platform'`: platform config (`use_platform_iam` + providers) is the
+   *   source of truth; enables open + authenticated modes.
+   *
+   * @default 'legacy'
+   */
+  authMode?: 'legacy' | 'platform';
+
+  /**
+   * Override the platform auth config (tests, local dev). When set, the plugin
+   * does not fetch from the platform.
+   */
+  authConfig?: ProjectAuthConfig;
+
+  /**
+   * TTL for the cached platform auth config, in milliseconds.
+   * @default 60000
+   */
+  authConfigCacheTtlMs?: number;
+
+  /**
+   * Mount `GET /config` (public `PublicAppConfig`).
+   * - `true` → mount at `/config`
+   * - `string` → mount at the given path
+   * - `false` → do not mount
+   *
+   * @default true when `authMode === 'platform'`
+   */
+  configRoute?: boolean | string;
 }
