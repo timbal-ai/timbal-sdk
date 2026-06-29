@@ -629,6 +629,47 @@ describe('timbalAuth Elysia plugin', () => {
       expect(capturedToken).toBe('test-token');
     });
 
+    test('authenticated project WITHOUT TIMBAL_PROJECT_ID still validates a token (regression: isLocalDev bypass)', async () => {
+      // The bug: isLocalDev() (no TIMBAL_PROJECT_ID) short-circuited
+      // resolveTokenFromRequest → valid tokens never validated → always 401.
+      delete process.env.TIMBAL_PROJECT_ID;
+      // Identity-only validation: GET /me with no project_id → bare session.
+      global.fetch = mock(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              session: { user_id: '1', user_email: 'u@x.com' },
+            }),
+        }),
+      ) as unknown as typeof global.fetch;
+
+      let capturedToken: unknown = 'unset';
+      const app = new Elysia()
+        .use(timbalAuth({ authMode: 'platform', authConfig: { ...authCfg } }))
+        .get('/api/workforce', ({ token }) => {
+          capturedToken = token;
+          return 'ok';
+        });
+      const res = await app.handle(
+        new Request('http://localhost/api/workforce', {
+          headers: { Authorization: 'Bearer u-tok' },
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(capturedToken).toBe('u-tok');
+    });
+
+    test('authenticated project WITHOUT TIMBAL_PROJECT_ID still 401s with no token', async () => {
+      delete process.env.TIMBAL_PROJECT_ID;
+      const app = new Elysia()
+        .use(timbalAuth({ authMode: 'platform', authConfig: { ...authCfg } }))
+        .get('/api/workforce', () => 'ok');
+      const res = await app.handle(new Request('http://localhost/api/workforce'));
+      expect(res.status).toBe(401);
+    });
+
     test('config fetch failure falls back to legacy (401 when project id set)', async () => {
       // No authConfig override → real fetch path; reject it.
       global.fetch = mock(() =>

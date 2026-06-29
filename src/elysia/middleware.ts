@@ -98,8 +98,13 @@ export function createAuthMiddleware(timbal: Timbal, options: TimbalAuthOptions 
       }
 
       // LEGACY, platform-fallback (authConfig null), or AUTHENTICATED platform:
-      // resolve the user token exactly as today.
-      const auth = await resolveTokenFromRequest(timbal, request, cookieValue);
+      // resolve the user token. In platform-authenticated mode the platform
+      // config is authoritative, so we must validate even without
+      // TIMBAL_PROJECT_ID — bypass the legacy isLocalDev() short-circuit.
+      const enforce = mode === 'platform' && !!authConfig && authConfig.enabled;
+      const auth = await resolveTokenFromRequest(timbal, request, cookieValue, {
+        skipLocalDevBypass: enforce,
+      });
       const scopedTimbal = auth ? timbal.as(auth.token) : timbal;
       return {
         token: auth?.token ?? null,
