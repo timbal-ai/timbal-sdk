@@ -222,37 +222,60 @@ describe('getCachedProjectAuthConfig', () => {
 
 describe('resolveAuthMode', () => {
   const ENV_KEY = 'TIMBAL_AUTH_MODE';
-  const original = process.env[ENV_KEY];
-  afterEach(() => {
-    if (original === undefined) delete process.env[ENV_KEY];
-    else process.env[ENV_KEY] = original;
+  const PID_KEY = 'TIMBAL_PROJECT_ID';
+  const originalMode = process.env[ENV_KEY];
+  const originalPid = process.env[PID_KEY];
+
+  beforeEach(() => {
+    // Default to "unlinked" so each test controls linkage explicitly.
+    delete process.env[ENV_KEY];
+    delete process.env[PID_KEY];
   });
 
-  test('defaults to legacy with no option and no env', () => {
-    delete process.env[ENV_KEY];
+  afterEach(() => {
+    if (originalMode === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = originalMode;
+    if (originalPid === undefined) delete process.env[PID_KEY];
+    else process.env[PID_KEY] = originalPid;
+  });
+
+  test('unlinked (no project id, no env) → legacy', () => {
     expect(resolveAuthMode()).toBe('legacy');
     expect(resolveAuthMode({})).toBe('legacy');
   });
 
-  test('explicit option wins', () => {
+  test('linked (TIMBAL_PROJECT_ID set) infers platform', () => {
+    process.env[PID_KEY] = '248';
+    expect(resolveAuthMode()).toBe('platform');
+    expect(resolveAuthMode({})).toBe('platform');
+  });
+
+  test('explicit option wins over env and linkage', () => {
     process.env[ENV_KEY] = 'legacy';
+    process.env[PID_KEY] = '248';
     expect(resolveAuthMode({ authMode: 'platform' })).toBe('platform');
     process.env[ENV_KEY] = 'platform';
+    delete process.env[PID_KEY];
     expect(resolveAuthMode({ authMode: 'legacy' })).toBe('legacy');
   });
 
-  test('env used when no option', () => {
-    process.env[ENV_KEY] = 'platform';
-    expect(resolveAuthMode()).toBe('platform');
+  test('env overrides linkage inference (escape hatch)', () => {
+    // Linked, but env forces legacy.
+    process.env[PID_KEY] = '248';
     process.env[ENV_KEY] = 'legacy';
     expect(resolveAuthMode()).toBe('legacy');
+    // Unlinked, but env forces platform.
+    delete process.env[PID_KEY];
+    process.env[ENV_KEY] = 'platform';
+    expect(resolveAuthMode()).toBe('platform');
   });
 
-  test('unrecognized env value is ignored (falls back to legacy)', () => {
+  test('unrecognized env value is ignored (falls through to linkage)', () => {
     process.env[ENV_KEY] = 'PLATFORM'; // wrong case
-    expect(resolveAuthMode()).toBe('legacy');
+    expect(resolveAuthMode()).toBe('legacy'); // unlinked
+    process.env[PID_KEY] = '248';
     process.env[ENV_KEY] = 'garbage';
-    expect(resolveAuthMode()).toBe('legacy');
+    expect(resolveAuthMode()).toBe('platform'); // linked
   });
 });
 

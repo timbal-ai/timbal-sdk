@@ -600,9 +600,9 @@ When `TIMBAL_PROJECT_ID` is not set, auth is bypassed entirely — all routes ar
 
 ### Auth modes
 
-The plugin runs in one of two modes. **`legacy` is the default and unchanged** — existing apps need to do nothing.
+The plugin runs in one of two modes.
 
-| | `legacy` (default) | `platform` |
+| | `legacy` | `platform` |
 | --- | --- | --- |
 | What gates routes | `TIMBAL_PROJECT_ID` presence | the project's `auth_enabled` flag, fetched from the platform |
 | Local-dev bypass | yes (no `TIMBAL_PROJECT_ID`) | no — the platform config is authoritative |
@@ -610,10 +610,16 @@ The plugin runs in one of two modes. **`legacy` is the default and unchanged** �
 | Enabled providers | all four, always | driven by the project's `auth_providers` |
 | `GET /config` route | not mounted | mounted (public) |
 
-Opt in explicitly or via `TIMBAL_AUTH_MODE=platform`:
+**Mode is inferred from platform linkage**, so deployed apps need no extra wiring:
+
+- no `TIMBAL_PROJECT_ID` (unlinked / local dev) → `legacy`
+- `TIMBAL_PROJECT_ID` set (linked deployment) → `platform`
+
+Resolution precedence: `authMode` option → `TIMBAL_AUTH_MODE` env → linkage inference. The env var and option are escape hatches that force a mode; an unrecognized `TIMBAL_AUTH_MODE` is ignored. Force a mode explicitly with either:
 
 ```typescript
-app.use(timbalAuth({ authMode: "platform" }));
+app.use(timbalAuth({ authMode: "legacy" }));   // pin legacy even when linked
+app.use(timbalAuth({ authMode: "platform" })); // pin platform
 ```
 
 In platform mode the plugin fetches the project once (TTL-cached, single-flight, fail-soft) and decides per request:
@@ -712,7 +718,7 @@ If you've run `timbal configure`, the SDK picks up your credentials automaticall
 | `TIMBAL_BASE_URL`    | API base URL                                         |
 | `TIMBAL_ORG_ID`      | Organization ID                                      |
 | `TIMBAL_PROJECT_ID`  | Project ID                                           |
-| `TIMBAL_AUTH_MODE`   | Elysia plugin auth mode: `legacy` (default) / `platform` |
+| `TIMBAL_AUTH_MODE`   | Force Elysia plugin auth mode: `legacy` / `platform` (default: inferred from `TIMBAL_PROJECT_ID`) |
 | `TIMBAL_PROJECT_REV` | Git branch (default: `main`)                         |
 | `TIMBAL_KB_ID`       | Knowledge base ID                                    |
 | `TIMBAL_PROFILE`     | Profile to load from `~/.timbal/` files              |

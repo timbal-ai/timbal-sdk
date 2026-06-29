@@ -46,9 +46,16 @@ export async function getProjectAuthConfig(
 /**
  * Resolve the effective auth mode.
  *
- * Precedence: explicit `options.authMode` > `TIMBAL_AUTH_MODE` env > `'legacy'`.
- * An unrecognized env value is ignored (falls back to legacy) so a typo can
- * never silently flip a deployment into platform mode.
+ * Precedence:
+ *   1. explicit `options.authMode`
+ *   2. `TIMBAL_AUTH_MODE` env (escape hatch / forced override)
+ *   3. inferred from platform linkage: `TIMBAL_PROJECT_ID` set → `'platform'`,
+ *      otherwise `'legacy'` (local dev).
+ *
+ * Inferring from linkage means a deployed/linked project gets platform mode
+ * without any extra env ritual, while unlinked local dev stays legacy/open.
+ * An unrecognized `TIMBAL_AUTH_MODE` value is ignored (falls through to the
+ * inference) so a typo can't silently force a mode.
  */
 export function resolveAuthMode(
   options?: Pick<TimbalAuthOptions, 'authMode'>,
@@ -56,7 +63,7 @@ export function resolveAuthMode(
   if (options?.authMode) return options.authMode;
   const env = process.env.TIMBAL_AUTH_MODE;
   if (env === 'platform' || env === 'legacy') return env;
-  return 'legacy';
+  return process.env.TIMBAL_PROJECT_ID ? 'platform' : 'legacy';
 }
 
 /**
