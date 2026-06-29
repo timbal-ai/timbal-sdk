@@ -10,6 +10,7 @@ import {
   resolveAuthMode,
   resolveAuthConfig,
 } from '../auth/config';
+import { coerceProject } from '../lib/coerce';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -77,6 +78,27 @@ describe('authConfigFromProject', () => {
   test('explicit empty providers is preserved (not defaulted)', () => {
     const cfg = authConfigFromProject(makeProject({ auth_providers: [] }));
     expect(cfg.providers).toEqual([]);
+  });
+
+  test('all-unknown providers coerce to undefined → defaults to all (no lockout)', () => {
+    // The wire sent providers, but none the SDK knows. After coercion that
+    // surfaces as undefined, so the derived config shows every known provider
+    // rather than an unusable empty login.
+    const project = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true,
+      auth_providers: ['oidc', 'saml'],
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    expect(authConfigFromProject(project).providers).toEqual([
+      'email',
+      'google',
+      'microsoft',
+      'github',
+    ]);
   });
 
   test('sso omitted until platform ships it', () => {

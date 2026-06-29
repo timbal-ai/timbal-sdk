@@ -67,9 +67,16 @@ export function coerceAuthProviders(
   raw: string[] | undefined,
 ): AuthProvider[] | undefined {
   if (raw == null) return undefined;
-  return raw.filter((p): p is AuthProvider =>
+  const known = raw.filter((p): p is AuthProvider =>
     (KNOWN_AUTH_PROVIDERS as readonly string[]).includes(p),
   );
+  // A non-empty wire list we couldn't recognize at all (e.g. a newer provider
+  // or SSO-only slugs an older SDK doesn't know) must NOT collapse to "no
+  // providers" — that would lock an auth-required project out with zero sign-in
+  // options. Fall back to the default-to-all signal (undefined). An explicitly
+  // empty [] is preserved as an intentional "no providers".
+  if (known.length === 0 && raw.length > 0) return undefined;
+  return known;
 }
 
 /**

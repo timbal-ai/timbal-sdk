@@ -361,6 +361,13 @@ describe('coerceAuthProviders', () => {
     ).toEqual(['github', 'email']);
   });
 
+  test('non-empty list of all-unknown values → undefined (default-to-all, not lockout)', () => {
+    // Regression: previously returned [], which authConfigFromProject treats as
+    // "no providers" — locking an auth-required project out with no sign-in.
+    expect(coerceAuthProviders(['oidc', 'saml'])).toBeUndefined();
+    expect(coerceAuthProviders(['apple'])).toBeUndefined();
+  });
+
   test('keeps all four known providers', () => {
     expect(
       coerceAuthProviders(['email', 'google', 'microsoft', 'github']),
