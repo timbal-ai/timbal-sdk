@@ -9,6 +9,7 @@ import {
   coerceWorkforcePreview,
   coerceProject,
   coerceProjectResponse,
+  coerceAuthProviders,
 } from '../lib/coerce';
 
 describe('coerceKbInfo', () => {
@@ -189,7 +190,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
       is_public_template: false,
       template_uses: 0,
       publishable_api_key: 'pk',
-      use_platform_iam: false,
+      auth_enabled: false,
       repository_url: null,
       screenshot_url: null,
       created_at: 0,
@@ -207,7 +208,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
       apps: [
@@ -226,7 +227,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
       apps: [{ id: 7, name: 'legacy', type: 'agent', description: null, uid: 88 }],
@@ -242,7 +243,7 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProjectResponse({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
       workforce: [{ id: 1, name: 'wf-new', type: 'agent', description: null, uid: 11 }],
@@ -256,10 +257,120 @@ describe('coerceWorkforcePreview / coerceProject', () => {
     const out = coerceProject({
       id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
       default_role: null, is_public_template: false, template_uses: 0,
-      publishable_api_key: 'pk', use_platform_iam: false,
+      publishable_api_key: 'pk', auth_enabled: false,
       repository_url: null, screenshot_url: null,
       created_at: 0, updated_at: 0,
     } as any);
     expect(out.workforce).toEqual([]);
+  });
+
+  test('project preserves a valid auth_providers subset', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true,
+      auth_providers: ['google', 'email'],
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_providers).toEqual(['google', 'email']);
+  });
+
+  test('project drops unknown auth_providers entries', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true,
+      auth_providers: ['google', 'wat', 'sso'],
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_providers).toEqual(['google']);
+  });
+
+  test('project missing auth_providers stays undefined (default-to-all signal)', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_providers).toBeUndefined();
+  });
+
+  test('missing auth_enabled fails CLOSED (defaults to true)', () => {
+    // A wire that omits the gate flag must require auth, never silently open.
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk',
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_enabled).toBe(true);
+  });
+
+  test('maps legacy use_platform_iam when auth_enabled is absent', () => {
+    const open = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(open.auth_enabled).toBe(false);
+  });
+
+  test('auth_enabled wins over legacy use_platform_iam when both present', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true, use_platform_iam: false,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect(out.auth_enabled).toBe(true);
+  });
+
+  test('strips deprecated use_platform_iam from the returned Project', () => {
+    const out = coerceProject({
+      id: 230, name: 'p', description: null, has_ui: false, role: 'owner',
+      default_role: null, is_public_template: false, template_uses: 0,
+      publishable_api_key: 'pk', auth_enabled: true, use_platform_iam: true,
+      repository_url: null, screenshot_url: null,
+      created_at: 0, updated_at: 0,
+    } as any);
+    expect('use_platform_iam' in out).toBe(false);
+    expect(JSON.stringify(out)).not.toContain('use_platform_iam');
+  });
+});
+
+describe('coerceAuthProviders', () => {
+  test('undefined → undefined (absence preserved)', () => {
+    expect(coerceAuthProviders(undefined)).toBeUndefined();
+  });
+
+  test('empty array → empty array (explicit no providers, distinct from absence)', () => {
+    expect(coerceAuthProviders([])).toEqual([]);
+  });
+
+  test('filters unknown values, keeps order', () => {
+    expect(
+      coerceAuthProviders(['github', 'nope', 'email', 'oidc']),
+    ).toEqual(['github', 'email']);
+  });
+
+  test('non-empty list of all-unknown values → undefined (default-to-all, not lockout)', () => {
+    // Regression: previously returned [], which authConfigFromProject treats as
+    // "no providers" — locking an auth-required project out with no sign-in.
+    expect(coerceAuthProviders(['oidc', 'saml'])).toBeUndefined();
+    expect(coerceAuthProviders(['apple'])).toBeUndefined();
+  });
+
+  test('keeps all four known providers', () => {
+    expect(
+      coerceAuthProviders(['email', 'google', 'microsoft', 'github']),
+    ).toEqual(['email', 'google', 'microsoft', 'github']);
   });
 });

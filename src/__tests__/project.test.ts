@@ -18,7 +18,7 @@ const mockProjectData = {
   is_public_template: false,
   template_uses: 0,
   publishable_api_key: 'pk-123',
-  use_platform_iam: true,
+  auth_enabled: true,
   repository_url: null,
   screenshot_url: null,
   created_at: 1700000000000,

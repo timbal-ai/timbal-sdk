@@ -598,6 +598,65 @@ app.use(timbalAuth({ loginPage: false }));
 
 When `TIMBAL_PROJECT_ID` is not set, auth is bypassed entirely — all routes are accessible without login.
 
+### Auth modes
+
+The plugin runs in one of two modes. **`legacy` is the default and unchanged** — existing apps need to do nothing.
+
+| | `legacy` (default) | `platform` |
+| --- | --- | --- |
+| What gates routes | `TIMBAL_PROJECT_ID` presence | the project's `auth_enabled` flag, fetched from the platform |
+| Local-dev bypass | yes (no `TIMBAL_PROJECT_ID`) | no — the platform config is authoritative |
+| Open projects | n/a | reachable with **no** user token (service identity) |
+| Enabled providers | all four, always | driven by the project's `auth_providers` |
+| `GET /config` route | not mounted | mounted (public) |
+
+Opt in explicitly or via `TIMBAL_AUTH_MODE=platform`:
+
+```typescript
+app.use(timbalAuth({ authMode: "platform" }));
+```
+
+In platform mode the plugin fetches the project once (TTL-cached, single-flight, fail-soft) and decides per request:
+
+- **Open project** (`auth_enabled: false`) — every route is reachable without a token. Stray `Authorization` headers/cookies are ignored; handlers run as the service identity (`token: null`). `GET /auth/login` returns 404, and OAuth/magic-link routes 400.
+- **Authenticated project** (`auth_enabled: true`) — protected routes require a user token (401 otherwise), exactly like legacy. The login page and `/auth/:provider` only expose providers in `auth_providers`; disabled providers are rejected server-side, not just hidden.
+
+If the config fetch fails (platform unreachable, no cached value), the request **falls back to legacy behavior** rather than failing closed.
+
+#### Service identity (`TIMBAL_PROJECT_SECRET`)
+
+Open projects don't need a manually-set `TIMBAL_API_KEY`. The platform mints a per-project, project-scoped service key (`t3_proj_sk_…`) and injects it as `TIMBAL_PROJECT_SECRET` into the deployment. The SDK prefers it over `TIMBAL_API_KEY` automatically (precedence: explicit config token → `TIMBAL_PROJECT_SECRET` → `TIMBAL_API_KEY` → profile file), so the plugin's service client — used to fetch the auth config and to run open-mode handlers — authenticates as the project's own identity with no extra wiring. It's absent locally and for closed projects, so existing setups are unaffected.
+
+#### `GET /config`
+
+Platform mode mounts a public, browser-safe config endpoint — let your frontend discover whether login is required and which providers to render, with no secrets:
+
+```jsonc
+// GET /config
+{
+  "project": { "id": "248", "name": "My Project" },
+  "auth": { "required": true, "providers": ["email", "google"] }
+}
+```
+
+It is whitelist-built — `publishable_api_key`, `repository_url`, and SSO connection details are never exposed. Rename or disable it:
+
+```typescript
+app.use(timbalAuth({ authMode: "platform", configRoute: "/app-config" })); // rename
+app.use(timbalAuth({ authMode: "platform", configRoute: false }));         // off
+```
+
+#### Platform-mode options
+
+```typescript
+app.use(timbalAuth({
+  authMode: "platform",
+  authConfig: { enabled: true, providers: ["email", "google"] }, // override; skips the fetch (tests/local)
+  authConfigCacheTtlMs: 60_000,                                  // config cache TTL (default 60s)
+  configRoute: "/config",                                        // path, or false to disable
+}));
+```
+
 Requires `elysia` as a peer dependency.
 
 ## Error Handling
@@ -649,9 +708,11 @@ If you've run `timbal configure`, the SDK picks up your credentials automaticall
 | Variable             | Description                                          |
 | -------------------- | ---------------------------------------------------- |
 | `TIMBAL_API_KEY`     | API key / token                                      |
+| `TIMBAL_PROJECT_SECRET` | Platform-minted, project-scoped service key (auto-injected into deployed open projects; preferred over `TIMBAL_API_KEY`) |
 | `TIMBAL_BASE_URL`    | API base URL                                         |
 | `TIMBAL_ORG_ID`      | Organization ID                                      |
 | `TIMBAL_PROJECT_ID`  | Project ID                                           |
+| `TIMBAL_AUTH_MODE`   | Elysia plugin auth mode: `legacy` (default) / `platform` |
 | `TIMBAL_PROJECT_REV` | Git branch (default: `main`)                         |
 | `TIMBAL_KB_ID`       | Knowledge base ID                                    |
 | `TIMBAL_PROFILE`     | Profile to load from `~/.timbal/` files              |

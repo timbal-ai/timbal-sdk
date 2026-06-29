@@ -18,6 +18,7 @@
  */
 
 import type {
+  AuthProvider,
   KbInfo,
   K2File,
   K2FileDetail,
@@ -46,8 +47,37 @@ export type RawWorkforcePreview =
   & { id: string | number; uid: string | number | null };
 
 export type RawProject =
-  & Omit<Project, 'id' | 'workforce'>
-  & { id: string | number; workforce?: RawWorkforcePreview[] };
+  & Omit<Project, 'id' | 'workforce' | 'auth_providers'>
+  & {
+      id: string | number;
+      workforce?: RawWorkforcePreview[];
+      // Wire is loose: any string[]. Sanitized to AuthProvider[] in coerce.
+      auth_providers?: string[];
+    };
+
+const KNOWN_AUTH_PROVIDERS = ['email', 'google', 'microsoft', 'github'] as const;
+
+/**
+ * Sanitize a wire `auth_providers` value into the known {@link AuthProvider}
+ * union. Drops unknown entries; preserves absence as `undefined` so callers can
+ * distinguish "platform didn't send it" (→ default to all) from "explicitly
+ * empty" (→ no providers).
+ */
+export function coerceAuthProviders(
+  raw: string[] | undefined,
+): AuthProvider[] | undefined {
+  if (raw == null) return undefined;
+  const known = raw.filter((p): p is AuthProvider =>
+    (KNOWN_AUTH_PROVIDERS as readonly string[]).includes(p),
+  );
+  // A non-empty wire list we couldn't recognize at all (e.g. a newer provider
+  // or SSO-only slugs an older SDK doesn't know) must NOT collapse to "no
+  // providers" — that would lock an auth-required project out with zero sign-in
+  // options. Fall back to the default-to-all signal (undefined). An explicitly
+  // empty [] is preserved as an intentional "no providers".
+  if (known.length === 0 && raw.length > 0) return undefined;
+  return known;
+}
 
 /**
  * Wire shape for `GET /orgs/{org}/projects/{id}` and `GET /me?project_id=...`.
@@ -62,11 +92,37 @@ export function coerceWorkforcePreview(raw: RawWorkforcePreview): WorkforcePrevi
   return { ...raw, id: toStringId(raw.id), uid: toStringIdOpt(raw.uid) ?? null };
 }
 
+/**
+ * Resolve the project's auth gate into a definite boolean.
+ *
+ * Fails CLOSED: when the platform omits `auth_enabled` (and the legacy
+ * `use_platform_iam` is also absent), default to `true`. Requiring login is
+ * the safe failure — a missing or renamed flag must never silently leave a
+ * project's routes reachable without authentication. Also maps the legacy
+ * `use_platform_iam` field for responses still on the old contract.
+ */
+function coerceAuthEnabled(
+  authEnabled: unknown,
+  legacyUsePlatformIam: unknown,
+): boolean {
+  if (typeof authEnabled === 'boolean') return authEnabled;
+  if (typeof legacyUsePlatformIam === 'boolean') return legacyUsePlatformIam;
+  return true;
+}
+
 export function coerceProject(raw: RawProject): Project {
+  // Strip the deprecated `use_platform_iam` from the spread so it can't ride
+  // through as a stray runtime field; its value still feeds the fail-closed
+  // fallback below.
+  const { use_platform_iam, ...rest } = raw as RawProject & {
+    use_platform_iam?: unknown;
+  };
   return {
-    ...raw,
+    ...rest,
     id: toStringId(raw.id),
     workforce: (raw.workforce ?? []).map(coerceWorkforcePreview),
+    auth_enabled: coerceAuthEnabled(raw.auth_enabled, use_platform_iam),
+    auth_providers: coerceAuthProviders(raw.auth_providers),
   };
 }
 

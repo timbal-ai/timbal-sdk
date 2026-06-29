@@ -34,7 +34,35 @@ export function isPublicPath(
 export interface ResolvedAuth {
   token: string;
   session: Session;
-  project: Project;
+  /** Null when validated without a project scope (no project id available). */
+  project: Project | null;
+}
+
+export interface ResolveTokenOptions {
+  /**
+   * Skip the `isLocalDev()` (no `TIMBAL_PROJECT_ID`) early-return. The platform
+   * gate sets this for authenticated projects: the platform config is
+   * authoritative, so tokens MUST be validated even when `TIMBAL_PROJECT_ID`
+   * isn't set (e.g. an `authConfig` override). The legacy gate leaves it off so
+   * local dev keeps bypassing auth.
+   */
+  skipLocalDevBypass?: boolean;
+}
+
+/** Validate a single token, scoping to the project when one is available. */
+async function validateToken(
+  timbal: Timbal,
+  token: string,
+  projectId: string,
+): Promise<ResolvedAuth> {
+  if (projectId) {
+    const { session, project } = await timbal.as(token).getSession({ projectId });
+    return { token, session, project };
+  }
+  // No project scope (e.g. authConfig override without TIMBAL_PROJECT_ID):
+  // validate the token's identity only. A throw here = invalid token.
+  const session = await timbal.as(token).getSession();
+  return { token, session, project: null };
 }
 
 /**
@@ -48,10 +76,13 @@ export async function resolveTokenFromRequest(
   timbal: Timbal,
   request: Request,
   cookieValue?: string | null,
+  options?: ResolveTokenOptions,
 ): Promise<ResolvedAuth | null> {
-  if (isLocalDev()) return null;
+  // Legacy local-dev bypass — overridden by platform-authenticated mode, where
+  // the platform config (not env-var presence) decides that auth is required.
+  if (!options?.skipLocalDevBypass && isLocalDev()) return null;
 
-  const projectId = process.env.TIMBAL_PROJECT_ID as string;;
+  const projectId = process.env.TIMBAL_PROJECT_ID || '';
   const { method } = request;
   const path = new URL(request.url).pathname;
 
@@ -60,8 +91,7 @@ export async function resolveTokenFromRequest(
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
     try {
-      const { session, project } = await timbal.as(token).getSession({ projectId });
-      return { token, session, project };
+      return await validateToken(timbal, token, projectId);
     } catch (err) {
       console.warn(
         `[auth] ${method} ${path} — bearer token rejected:`,
@@ -73,8 +103,7 @@ export async function resolveTokenFromRequest(
   // Fall back to cookie (browser navigations, or stale Bearer + fresh cookie).
   if (cookieValue) {
     try {
-      const { session, project } = await timbal.as(cookieValue).getSession({ projectId });
-      return { token: cookieValue, session, project };
+      return await validateToken(timbal, cookieValue, projectId);
     } catch (err) {
       console.warn(
         `[auth] ${method} ${path} — cookie token rejected:`,

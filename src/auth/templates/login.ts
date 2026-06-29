@@ -1,9 +1,83 @@
+import type { AuthProvider } from '../../types';
+
+const DEFAULT_PROVIDERS: AuthProvider[] = [
+  'email',
+  'google',
+  'microsoft',
+  'github',
+];
+
+const OAUTH_PROVIDERS = ['google', 'microsoft', 'github'] as const;
+type OAuthLoginProvider = (typeof OAUTH_PROVIDERS)[number];
+
+export interface RenderLoginPageOptions {
+  /**
+   * Login methods to render. Defaults to all four (identical to the historical
+   * page). Disabled providers are removed from the markup server-side — not
+   * just hidden — so the buttons can't be re-enabled client-side.
+   */
+  providers?: AuthProvider[];
+}
+
+/**
+ * Remove disabled login options from the rendered markup. Operates on the
+ * stable `data-provider-wrap` / `data-provider` markers. Each OAuth wrap and
+ * the email form/alert/divider contain no nested `<div>`/`<form>` of their own,
+ * so a single non-greedy match to the next close tag is exact.
+ */
+function applyProviderFilter(
+  html: string,
+  providers: AuthProvider[],
+): string {
+  let out = html;
+
+  for (const p of OAUTH_PROVIDERS) {
+    if (!providers.includes(p)) {
+      out = out.replace(
+        new RegExp(
+          `\\s*<div class="oauth-btn-wrap" data-provider-wrap="${p}">[\\s\\S]*?</div>`,
+        ),
+        '',
+      );
+    }
+  }
+
+  const hasOauth = OAUTH_PROVIDERS.some((p: OAuthLoginProvider) =>
+    providers.includes(p),
+  );
+  const hasEmail = providers.includes('email');
+
+  if (!hasEmail) {
+    out = out.replace(
+      /\s*<form[\s\S]*?id="magic-link-form"[\s\S]*?<\/form>/,
+      '',
+    );
+    out = out.replace(/\s*<div\s+id="email-sent"[\s\S]*?<\/div>/, '');
+  }
+
+  // The "or" divider only makes sense between OAuth buttons and the email form.
+  if (!(hasOauth && hasEmail)) {
+    out = out.replace(/\s*<div class="divider">[\s\S]*?<\/div>/, '');
+  }
+
+  // Drop the now-empty OAuth stack wrapper when no OAuth providers remain.
+  if (!hasOauth) {
+    out = out.replace(/\s*<div class="oauth-stack">[\s\S]*?<\/div>/, '');
+  }
+
+  return out;
+}
+
 /**
  * Renders the default Timbal login page.
  * @param prefix - Route prefix ("" or "/api")
+ * @param opts - Optional provider filtering. Default: all providers (= today).
  */
-export function renderLoginPage(prefix: string): string {
-  return `
+export function renderLoginPage(
+  prefix: string,
+  opts: RenderLoginPageOptions = {},
+): string {
+  const html = `
 <!doctype html>
 <html lang="en" data-theme="light">
     <head>
@@ -1096,4 +1170,6 @@ export function renderLoginPage(prefix: string): string {
     </body>
 </html>
 `;
+
+  return applyProviderFilter(html, opts.providers ?? DEFAULT_PROVIDERS);
 }

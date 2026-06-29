@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import type { Timbal } from '../lib/timbal';
 import type { OAuthProvider } from '../types';
-import type { TimbalAuthOptions } from '../auth/types';
+import type { ProjectAuthConfig, TimbalAuthOptions } from '../auth/types';
 import {
   getCallbackUrl,
   getPrefix,
@@ -26,30 +26,43 @@ export function createAuthRoutes(
       .get(
         '/login',
         async (ctx) => {
-          const { path, redirect, query } = ctx;
-          // `token` is injected at runtime by the global auth middleware
-          // derive; it isn't visible on this standalone routes instance's type.
-          const { token } = ctx as unknown as { token: string | null };
-          if (token) {
-            return redirect(
-              resolvePostLoginRedirect(query.return_to, afterLoginRedirect),
-            );
-          }
+        const { path, redirect, query } = ctx;
+        // `token` and `authConfig` are injected at runtime by the global auth
+        // middleware derive; not visible on this standalone instance's type.
+        const { token, authConfig } = ctx as unknown as {
+          token: string | null;
+          authConfig: ProjectAuthConfig | null;
+        };
+        if (token) {
+          return redirect(
+            resolvePostLoginRedirect(query.return_to, afterLoginRedirect),
+          );
+        }
 
-          const prefix = getPrefix(path);
+        // Open project (platform mode): there is no login page.
+        if (authConfig && !authConfig.enabled) {
+          return new Response('Not Found', { status: 404 });
+        }
 
-          // Custom HTML file
-          if (typeof options.loginPage === 'string') {
-            const html = await Bun.file(options.loginPage).text();
-            return new Response(html.replaceAll('{{PREFIX}}', prefix), {
-              headers: { 'Content-Type': 'text/html' },
-            });
-          }
+        const prefix = getPrefix(path);
 
-          // Default built-in page
-          return new Response(renderLoginPage(prefix), {
+        // Custom HTML file (cannot be provider-filtered — passed through as-is)
+        if (typeof options.loginPage === 'string') {
+          const html = await Bun.file(options.loginPage).text();
+          return new Response(html.replaceAll('{{PREFIX}}', prefix), {
             headers: { 'Content-Type': 'text/html' },
           });
+        }
+
+        // Default built-in page. In platform mode, hide disabled providers;
+        // legacy/fallback (authConfig null) renders all (= today).
+        return new Response(
+          renderLoginPage(
+            prefix,
+            authConfig ? { providers: authConfig.providers } : undefined,
+          ),
+          { headers: { 'Content-Type': 'text/html' } },
+        );
         },
         {
           query: t.Object({
@@ -85,11 +98,25 @@ export function createAuthRoutes(
   routes
     .get(
       '/:provider',
-      ({ params, redirect, request, path, query }) => {
+      (ctx) => {
+        const { params, redirect, request, path, query } = ctx;
+        const { authConfig } = ctx as unknown as {
+          authConfig: ProjectAuthConfig | null;
+        };
         const { provider } = params;
         const validProviders: OAuthProvider[] = ['github', 'google', 'microsoft'];
         if (!validProviders.includes(provider as OAuthProvider)) {
           return new Response('Invalid provider', { status: 400 });
+        }
+        // Platform mode: reject providers disabled in the project config
+        // (server-side, not just hidden on the login page). An open project
+        // has no login at all, so every provider is rejected.
+        if (
+          authConfig &&
+          (!authConfig.enabled ||
+            !authConfig.providers.includes(provider as OAuthProvider))
+        ) {
+          return new Response('Provider not enabled', { status: 400 });
         }
         const callbackUrl = query.redirect_uri || getCallbackUrl(request, path);
         return redirect(
@@ -124,7 +151,21 @@ export function createAuthRoutes(
     )
     .post(
       '/magic-link',
-      async ({ body, request, path }) => {
+      async (ctx) => {
+        const { body, request, path } = ctx;
+        const { authConfig } = ctx as unknown as {
+          authConfig: ProjectAuthConfig | null;
+        };
+        // Platform mode: reject email login when disabled (or open project).
+        if (
+          authConfig &&
+          (!authConfig.enabled || !authConfig.providers.includes('email'))
+        ) {
+          return new Response(
+            JSON.stringify({ error: 'Email login not enabled' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
         try {
           await timbal.sendMagicLink(body.email, getCallbackUrl(request, path));
           return {

@@ -29,8 +29,10 @@ describe('ApiClient', () => {
   describe('authentication', () => {
     test('should throw AUTH_ERROR when no credentials provided', async () => {
       const orig = process.env.TIMBAL_API_KEY;
+      const origSecret = process.env.TIMBAL_PROJECT_SECRET;
       const origConfigDir = process.env.TIMBAL_CONFIG_DIR;
       delete process.env.TIMBAL_API_KEY;
+      delete process.env.TIMBAL_PROJECT_SECRET;
       process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
       const client = new ApiClient({ baseUrl: 'https://api.test.com' });
 
@@ -42,6 +44,7 @@ describe('ApiClient', () => {
         expect((error as TimbalApiError).code).toBe('AUTH_ERROR');
       } finally {
         if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        if (origSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = origSecret;
         if (origConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = origConfigDir;
         else delete process.env.TIMBAL_CONFIG_DIR;
       }
@@ -53,6 +56,55 @@ describe('ApiClient', () => {
 
       const headers = mockFetch.mock.calls[0][1].headers as Headers;
       expect(headers.get('Authorization')).toBe('Bearer my-key');
+    });
+
+    test('TIMBAL_PROJECT_SECRET is used as the token when set', async () => {
+      const origKey = process.env.TIMBAL_API_KEY;
+      const origSecret = process.env.TIMBAL_PROJECT_SECRET;
+      delete process.env.TIMBAL_API_KEY;
+      process.env.TIMBAL_PROJECT_SECRET = 't3_proj_sk_abc';
+      try {
+        const client = new ApiClient({ baseUrl: 'https://api.test.com' });
+        await client.get('/test');
+        const headers = mockFetch.mock.calls[0][1].headers as Headers;
+        expect(headers.get('Authorization')).toBe('Bearer t3_proj_sk_abc');
+      } finally {
+        if (origKey !== undefined) process.env.TIMBAL_API_KEY = origKey;
+        if (origSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = origSecret;
+        else delete process.env.TIMBAL_PROJECT_SECRET;
+      }
+    });
+
+    test('TIMBAL_PROJECT_SECRET takes precedence over TIMBAL_API_KEY', async () => {
+      const origKey = process.env.TIMBAL_API_KEY;
+      const origSecret = process.env.TIMBAL_PROJECT_SECRET;
+      process.env.TIMBAL_API_KEY = 'manual-key';
+      process.env.TIMBAL_PROJECT_SECRET = 't3_proj_sk_xyz';
+      try {
+        const client = new ApiClient({ baseUrl: 'https://api.test.com' });
+        await client.get('/test');
+        const headers = mockFetch.mock.calls[0][1].headers as Headers;
+        expect(headers.get('Authorization')).toBe('Bearer t3_proj_sk_xyz');
+      } finally {
+        if (origKey !== undefined) process.env.TIMBAL_API_KEY = origKey;
+        else delete process.env.TIMBAL_API_KEY;
+        if (origSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = origSecret;
+        else delete process.env.TIMBAL_PROJECT_SECRET;
+      }
+    });
+
+    test('explicit config token still wins over TIMBAL_PROJECT_SECRET', async () => {
+      const origSecret = process.env.TIMBAL_PROJECT_SECRET;
+      process.env.TIMBAL_PROJECT_SECRET = 't3_proj_sk_xyz';
+      try {
+        const client = new ApiClient({ token: 'explicit', baseUrl: 'https://api.test.com' });
+        await client.get('/test');
+        const headers = mockFetch.mock.calls[0][1].headers as Headers;
+        expect(headers.get('Authorization')).toBe('Bearer explicit');
+      } finally {
+        if (origSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = origSecret;
+        else delete process.env.TIMBAL_PROJECT_SECRET;
+      }
     });
   });
 
@@ -540,8 +592,10 @@ describe('ApiClient', () => {
 
     test('throws AUTH_ERROR when no token configured', async () => {
       const orig = process.env.TIMBAL_API_KEY;
+      const origSecret = process.env.TIMBAL_PROJECT_SECRET;
       const origConfigDir = process.env.TIMBAL_CONFIG_DIR;
       delete process.env.TIMBAL_API_KEY;
+      delete process.env.TIMBAL_PROJECT_SECRET;
       process.env.TIMBAL_CONFIG_DIR = '/nonexistent';
       const client = new ApiClient({ baseUrl: 'https://api.test.com' });
 
@@ -553,6 +607,7 @@ describe('ApiClient', () => {
         expect((error as TimbalApiError).code).toBe('AUTH_ERROR');
       } finally {
         if (orig !== undefined) process.env.TIMBAL_API_KEY = orig;
+        if (origSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = origSecret;
         if (origConfigDir !== undefined) process.env.TIMBAL_CONFIG_DIR = origConfigDir;
         else delete process.env.TIMBAL_CONFIG_DIR;
       }
