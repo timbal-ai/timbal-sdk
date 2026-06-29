@@ -65,8 +65,15 @@ describe('timbalAuth Elysia plugin', () => {
   // ── Auth enabled ──
 
   describe('auth enabled (TIMBAL_PROJECT_ID set)', () => {
+    const originalOrgId = process.env.TIMBAL_ORG_ID;
+
     beforeEach(() => {
       process.env.TIMBAL_PROJECT_ID = '248';
+      // Mode infers from linkage now: with only PROJECT_ID set (no ORG_ID),
+      // getProject() can't resolve → platform falls back to legacy. Clear
+      // ORG_ID so this is deterministic regardless of the dev's ambient env
+      // (otherwise the platform fetch would fire and these would hang).
+      delete process.env.TIMBAL_ORG_ID;
     });
 
     afterEach(() => {
@@ -75,6 +82,8 @@ describe('timbalAuth Elysia plugin', () => {
       } else {
         delete process.env.TIMBAL_PROJECT_ID;
       }
+      if (originalOrgId !== undefined) process.env.TIMBAL_ORG_ID = originalOrgId;
+      else delete process.env.TIMBAL_ORG_ID;
     });
 
     test('auth routes are public (no 401)', async () => {
@@ -786,7 +795,9 @@ describe('timbalAuth Elysia plugin', () => {
     });
 
     test('legacy mode is unaffected: /auth/microsoft still redirects', async () => {
-      const app = new Elysia().use(timbalAuth());
+      // Both TIMBAL_PROJECT_ID and TIMBAL_ORG_ID are set here, so mode now
+      // infers 'platform'. Pin legacy explicitly to assert legacy behavior.
+      const app = new Elysia().use(timbalAuth({ authMode: 'legacy' }));
       const res = await app.handle(
         new Request('http://localhost/auth/microsoft'),
       );
