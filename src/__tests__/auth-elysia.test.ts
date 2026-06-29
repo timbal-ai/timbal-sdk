@@ -425,6 +425,27 @@ describe('timbalAuth Elysia plugin', () => {
       expect(body.project.id).toBe('248');
     });
 
+    test('authConfig override: /config serves it even when the platform is unreachable', async () => {
+      // The gate runs on the override without the platform; /config must too —
+      // an unreachable platform should not 503 a setup that overrides authConfig.
+      global.fetch = mock(() =>
+        Promise.reject(new Error('platform down')),
+      ) as unknown as typeof global.fetch;
+
+      const app = new Elysia().use(
+        timbalAuth({
+          authMode: 'platform',
+          authConfig: { enabled: true, providers: ['email'] },
+        }),
+      );
+      const res = await app.handle(new Request('http://localhost/config'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.auth).toEqual({ required: true, providers: ['email'] });
+      // project id falls back to client config (TIMBAL_PROJECT_ID)
+      expect(body.project.id).toBe('248');
+    });
+
     test('custom configRoute path', async () => {
       mockProjectFetch({ auth_enabled: true });
       const app = new Elysia().use(

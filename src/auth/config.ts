@@ -218,9 +218,30 @@ export async function resolvePublicAppConfig(
   timbal: Timbal,
   options: TimbalAuthOptions = {},
 ): Promise<PublicAppConfig> {
-  const project = await getCachedProject(timbal, {
-    ttlMs: options.authConfigCacheTtlMs,
-  });
-  const auth = options.authConfig ?? authConfigFromProject(project);
-  return toPublicAppConfig(project, auth);
+  const override = options.authConfig;
+
+  // Try the shared cached project for a real id/name (and, absent an override,
+  // the auth config). With an override present the gate runs without the
+  // platform, so /config must not hard-fail either: tolerate an unreachable
+  // platform and fall back to the client-config project id. Without an
+  // override the project IS the source of truth, so a failure propagates and
+  // the route degrades to 503.
+  let project: Project | undefined;
+  try {
+    project = await getCachedProject(timbal, {
+      ttlMs: options.authConfigCacheTtlMs,
+    });
+  } catch (err) {
+    if (!override) throw err;
+  }
+
+  if (project) {
+    return toPublicAppConfig(project, override ?? authConfigFromProject(project));
+  }
+
+  // Override set but platform unreachable (local/test/offline). Synthesize the
+  // minimal project block from client config; the auth section is the override.
+  const { projectId } = timbal.apiClient.getConfig();
+  const synthetic = { id: projectId, name: projectId } as unknown as Project;
+  return toPublicAppConfig(synthetic, override as ProjectAuthConfig);
 }
