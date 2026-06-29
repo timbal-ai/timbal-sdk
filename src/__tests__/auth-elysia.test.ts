@@ -868,6 +868,86 @@ describe('timbalAuth Elysia plugin', () => {
       expect(meCalls).toBe(0); // open mode short-circuits before session validation
     });
 
+    test('open project: service handler is scoped to TIMBAL_PROJECT_SECRET', async () => {
+      // The feature's point: in an open project the handler's `timbal` acts as
+      // the project service identity (the secret), not an unauthenticated/blank
+      // client.
+      const savedSecret = process.env.TIMBAL_PROJECT_SECRET;
+      process.env.TIMBAL_PROJECT_SECRET = 't3_proj_sk_service';
+      mockFetch({ auth_enabled: false });
+      let scopedToken: unknown = 'unset';
+      try {
+        const app = new Elysia()
+          .use(timbalAuth({ authMode: 'platform' }))
+          .get('/api/x', ({ timbal }) => {
+            scopedToken = (
+              timbal as unknown as {
+                apiClient: { getConfig: () => { token: string } };
+              }
+            ).apiClient.getConfig().token;
+            return 'ok';
+          });
+        const res = await app.handle(new Request('http://localhost/api/x'));
+        expect(res.status).toBe(200);
+        expect(scopedToken).toBe('t3_proj_sk_service');
+      } finally {
+        if (savedSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = savedSecret;
+        else delete process.env.TIMBAL_PROJECT_SECRET;
+      }
+    });
+
+    test('user token takes precedence over TIMBAL_PROJECT_SECRET', async () => {
+      // CRITICAL invariant: in an authenticated project the per-user token must
+      // scope the request — the project service secret is only the fallback
+      // identity (used here just to fetch the config), never for the user op.
+      const savedSecret = process.env.TIMBAL_PROJECT_SECRET;
+      process.env.TIMBAL_PROJECT_SECRET = 't3_proj_sk_service';
+      let meAuth: string | null = null;
+      let projectAuth: string | null = null;
+      global.fetch = mock((input: unknown, init: unknown) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        const headers = (init as { headers?: Headers } | undefined)?.headers;
+        const auth = headers?.get?.('authorization') ?? null;
+        if (url.includes('/me')) {
+          meAuth = auth;
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () =>
+              Promise.resolve({
+                session: { user_id: '1', user_email: 'u@x.com' },
+                project: rawProject({ auth_enabled: true }),
+              }),
+          });
+        }
+        projectAuth = auth;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(rawProject({ auth_enabled: true })),
+        });
+      }) as unknown as typeof global.fetch;
+
+      try {
+        const app = new Elysia()
+          .use(timbalAuth({ authMode: 'platform' }))
+          .get('/api/x', ({ token }) => token ?? 'none');
+        const res = await app.handle(
+          new Request('http://localhost/api/x', {
+            headers: { Authorization: 'Bearer user-token' },
+          }),
+        );
+        expect(res.status).toBe(200);
+        // User op validated AS THE USER, not the service secret.
+        expect(meAuth).toBe('Bearer user-token');
+        // Config fetch used the service secret (service identity), as expected.
+        expect(projectAuth).toBe('Bearer t3_proj_sk_service');
+      } finally {
+        if (savedSecret !== undefined) process.env.TIMBAL_PROJECT_SECRET = savedSecret;
+        else delete process.env.TIMBAL_PROJECT_SECRET;
+      }
+    });
+
     test('config TTL: project fetched once, reused across requests', async () => {
       mockFetch({ auth_enabled: false });
       const app = new Elysia()

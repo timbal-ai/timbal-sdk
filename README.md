@@ -623,6 +623,10 @@ In platform mode the plugin fetches the project once (TTL-cached, single-flight,
 
 If the config fetch fails (platform unreachable, no cached value), the request **falls back to legacy behavior** rather than failing closed.
 
+#### Service identity (`TIMBAL_PROJECT_SECRET`)
+
+Open projects don't need a manually-set `TIMBAL_API_KEY`. The platform mints a per-project, project-scoped service key (`t3_proj_sk_…`) and injects it as `TIMBAL_PROJECT_SECRET` into the deployment. The SDK prefers it over `TIMBAL_API_KEY` automatically (precedence: explicit config token → `TIMBAL_PROJECT_SECRET` → `TIMBAL_API_KEY` → profile file), so the plugin's service client — used to fetch the auth config and to run open-mode handlers — authenticates as the project's own identity with no extra wiring. It's absent locally and for closed projects, so existing setups are unaffected.
+
 #### `GET /config`
 
 Platform mode mounts a public, browser-safe config endpoint — let your frontend discover whether login is required and which providers to render, with no secrets:
@@ -704,6 +708,7 @@ If you've run `timbal configure`, the SDK picks up your credentials automaticall
 | Variable             | Description                                          |
 | -------------------- | ---------------------------------------------------- |
 | `TIMBAL_API_KEY`     | API key / token                                      |
+| `TIMBAL_PROJECT_SECRET` | Platform-minted, project-scoped service key (auto-injected into deployed open projects; preferred over `TIMBAL_API_KEY`) |
 | `TIMBAL_BASE_URL`    | API base URL                                         |
 | `TIMBAL_ORG_ID`      | Organization ID                                      |
 | `TIMBAL_PROJECT_ID`  | Project ID                                           |

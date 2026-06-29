@@ -151,7 +151,18 @@ export class ApiClient {
       timeout: config.timeout ?? DEFAULT_CONFIG.timeout,
       retryAttempts: config.retryAttempts ?? DEFAULT_CONFIG.retryAttempts,
       retryDelay: config.retryDelay ?? DEFAULT_CONFIG.retryDelay,
-      token: config.token ?? process.env.TIMBAL_API_KEY ?? file.token ?? '',
+      // Credential precedence: explicit config > TIMBAL_PROJECT_SECRET >
+      // TIMBAL_API_KEY > profile file. TIMBAL_PROJECT_SECRET is the platform-
+      // minted, project-scoped service identity auto-injected into deployed
+      // open projects; preferring it means deployments no longer need a manual
+      // TIMBAL_API_KEY. It's absent locally and for closed projects, so this is
+      // purely additive — existing setups fall through to TIMBAL_API_KEY/file.
+      token:
+        config.token ??
+        process.env.TIMBAL_PROJECT_SECRET ??
+        process.env.TIMBAL_API_KEY ??
+        file.token ??
+        '',
       orgId: config.orgId ?? process.env.TIMBAL_ORG_ID ?? file.orgId ?? '',
       projectId: config.projectId ?? process.env.TIMBAL_PROJECT_ID ?? '',
       rev: config.rev ?? process.env.TIMBAL_PROJECT_REV ?? 'main',
