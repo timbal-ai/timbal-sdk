@@ -374,9 +374,27 @@ export interface Project {
   auth_providers?: AuthProvider[];
   repository_url: string | null;
   screenshot_url: string | null;
+  /**
+   * Messaging-channel bindings configured on the platform ("add Slack to
+   * this component" in the UI). Optional: platform responses predating the
+   * channels feature omit it — consumers fall back to env conventions.
+   * Topology only (which channel → which component); credentials never
+   * travel through project config.
+   */
+  channels?: ProjectChannelSpec[];
   created_at: number;
   updated_at: number;
   workforce: WorkforcePreview[];
+}
+
+/** One platform-configured channel binding (topology only, no secrets). */
+export interface ProjectChannelSpec {
+  /** Channel provider id: 'telegram', 'slack', ... */
+  provider: string;
+  /** Workforce component the channel talks to (id, uid, or name). */
+  workforce: string;
+  /** Soft toggle from the platform UI. @default true */
+  enabled?: boolean;
 }
 
 // ── Auth ──

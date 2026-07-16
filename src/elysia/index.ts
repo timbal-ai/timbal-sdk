@@ -14,6 +14,19 @@ export type {
   SsoConnection,
 } from '../auth/types';
 
+export {
+  timbalChannels,
+  registerChannelWebhooks,
+  resolveBindingPath,
+  resolveChannelBindings,
+  type TimbalChannelsOptions,
+  type RegisterChannelWebhooksOptions,
+  type ResolveChannelBindingsOptions,
+  type WebhookRegistration,
+  type ChannelProvisionResult,
+} from './channels';
+export * from '../channels';
+
 /**
  * Elysia plugin that adds Timbal authentication.
  *
