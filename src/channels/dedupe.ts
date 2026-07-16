@@ -23,7 +23,8 @@ export class DedupeCache {
   /**
    * Returns `true` if `key` was already seen (within TTL); otherwise records
    * it and returns `false`. One call does both — check and mark — so there's
-   * no race window between them.
+   * no race window between them. Call {@link forget} if processing fails so
+   * provider redelivery can retry.
    */
   seen(key: string): boolean {
     const t = this.now();
@@ -33,6 +34,11 @@ export class DedupeCache {
     this.entries.set(key, t + this.ttlMs);
     this.evict(t);
     return false;
+  }
+
+  /** Drop a claim so a later redelivery of the same key is processed again. */
+  forget(key: string): void {
+    this.entries.delete(key);
   }
 
   /** Drop expired entries; if still over capacity, drop oldest-inserted. */

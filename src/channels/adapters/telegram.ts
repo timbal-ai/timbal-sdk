@@ -127,7 +127,10 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
     },
 
     delivery(event: ChannelEvent): ChannelDelivery {
-      const chatId = Number(event.conversationId);
+      // Keep chat_id as a string — Telegram accepts string or number, and
+      // Number() silently corrupts IDs past Number.MAX_SAFE_INTEGER (some
+      // supergroup/channel ids).
+      const chatId = event.conversationId;
       return {
         // Telegram rejects messages over 4096 chars (MESSAGE_TOO_LONG).
         // Slightly under the wire limit for safety margin.

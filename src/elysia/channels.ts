@@ -243,11 +243,20 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         const updated = collector.push(ev);
         if (updated !== null) reply.update(updated);
       }
-      await reply.finalize(collector.text);
-      // Only successful runs advance the thread — a failed run would chain
-      // the next message onto a run the user never saw a reply to.
-      if (sessions && runId) sessions.set(sessionKey, runId);
+      const delivered = await reply.finalize(collector.text);
+      // Only advance the thread when the user actually got a reply — chaining
+      // onto a silent/empty run would make the next message inherit a parent
+      // the user never saw.
+      if (sessions && runId && delivered) sessions.set(sessionKey, runId);
     } catch (err) {
+      // Drain in-flight stream sends before inspecting didDeliver — update()
+      // enqueues asynchronously, so a throw right after the first delta can
+      // race the postMessage.
+      await reply.settle();
+      // Release the dedupe claim only when nothing reached the channel yet —
+      // otherwise Slack/Telegram redelivery would re-run the workforce and
+      // post a duplicate on top of a partial reply. User can resend.
+      if (event.dedupeKey && !reply.didDeliver) dedupe.forget(event.dedupeKey);
       try {
         options.onError?.(err, event);
       } catch {
@@ -313,12 +322,20 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
   app.post(
     `${prefix}/:provider`,
     async ({ request, params }: { request: Request; params: { provider: string } }) => {
-      const bindings = await resolveChannelBindings(timbal, {
-        channelSpecs: options.channelSpecs,
-        configCacheTtlMs: options.configCacheTtlMs,
-        env: options.env,
-        onSkippedSpec,
-      });
+      let bindings: ChannelBinding[];
+      try {
+        bindings = await resolveChannelBindings(timbal, {
+          channelSpecs: options.channelSpecs,
+          configCacheTtlMs: options.configCacheTtlMs,
+          env: options.env,
+          onSkippedSpec,
+        });
+      } catch {
+        // Env conventions throw when credentials exist without
+        // CHANNELS_WORKFORCE — loud at startup, but a per-request resolve
+        // must not 500 Slack/Telegram (they'd retry forever).
+        return new Response('Channel configuration error', { status: 503 });
+      }
       const binding = bindings.find(
         (b) => b.adapter.provider === params.provider,
       );

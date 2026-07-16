@@ -29,6 +29,14 @@ describe('DedupeCache', () => {
     expect(cache.seen('a')).toBe(false);
     expect(cache.seen('c')).toBe(true);
   });
+
+  test('forget releases a claim so redelivery can retry', () => {
+    const cache = new DedupeCache();
+    expect(cache.seen('a')).toBe(false);
+    expect(cache.seen('a')).toBe(true);
+    cache.forget('a');
+    expect(cache.seen('a')).toBe(false);
+  });
 });
 
 /** Delivery double that records calls and lets tests control edit support. */
@@ -99,6 +107,16 @@ describe('splitText', () => {
     for (const chunk of splitText(text, 100)) {
       expect(chunk.length).toBeLessThanOrEqual(100);
     }
+  });
+
+  test('skips empty chunks from whitespace-only windows', () => {
+    expect(splitText('  \n  x', 4)).toEqual(['x']);
+    expect(splitText('    y', 3)).toEqual(['y']);
+  });
+
+  test('max<=0 is a no-op (does not hang)', () => {
+    expect(splitText('hello', 0)).toEqual(['hello']);
+    expect(splitText('hello', -1)).toEqual(['hello']);
   });
 });
 
@@ -253,6 +271,31 @@ describe('StreamingReply', () => {
       { op: 'send', text: 'aaaaabbbbb' },
       { op: 'send', text: 'cccccddd' },
     ]);
+  });
+
+  test('failed initial send is recovered by finalize (answer still delivered)', async () => {
+    const calls: string[] = [];
+    let sendCount = 0;
+    const delivery: ChannelDelivery = {
+      async send(text: string) {
+        sendCount += 1;
+        if (sendCount === 1) throw new Error('network blip');
+        calls.push(`send:${text}`);
+        return 'ref';
+      },
+      async edit(_ref: unknown, text: string) {
+        calls.push(`edit:${text}`);
+      },
+    };
+    const reply = new StreamingReply(delivery, { streaming: true });
+
+    reply.update('partial');
+    await tick(); // first send throws, swallowed on the chain
+    await reply.finalize('final answer');
+
+    // Must send fresh — not skip because sent was claimed, and not try to
+    // edit a null ref.
+    expect(calls).toEqual(['send:final answer']);
   });
 
   test('mid-stream edit failures are swallowed; finalize re-asserts state', async () => {

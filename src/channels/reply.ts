@@ -65,6 +65,27 @@ export class StreamingReply {
   private capped = false;
   private chain: Promise<void> = Promise.resolve();
 
+  /**
+   * True once any message has been successfully posted/edited on the channel.
+   * Used by the webhook pipeline to decide whether a failed run is safe to
+   * retry via provider redelivery (retrying after a partial post would
+   * duplicate user-visible messages). Call {@link settle} first so in-flight
+   * sends are reflected.
+   */
+  get didDeliver(): boolean {
+    return this.ref !== null || this.deliveredText !== null;
+  }
+
+  /**
+   * Stop streaming and drain in-flight send/edit ops. Safe to call from an
+   * error path before reading {@link didDeliver}.
+   */
+  async settle(): Promise<void> {
+    this.done = true;
+    this.disarmTimer();
+    await this.chain.catch(() => {});
+  }
+
   constructor(
     private readonly delivery: ChannelDelivery,
     options: StreamingReplyOptions = {},
@@ -88,14 +109,22 @@ export class StreamingReply {
     if (this.capped) return;
 
     if (!this.sent) {
+      // Claim the send slot synchronously so a burst of deltas doesn't
+      // fire N parallel sends. Cleared if the send itself fails so
+      // finalize (and a later update) can still deliver.
       this.sent = true;
       this.lastEditAt = this.now();
       this.enqueue(async () => {
         // Reads latestText at execution time (a microtask later), so a burst
         // of synchronous deltas coalesces into the send itself.
         const text = this.streamableText();
-        this.ref = await this.delivery.send(text);
-        this.deliveredText = text;
+        try {
+          this.ref = await this.delivery.send(text);
+          this.deliveredText = text;
+        } catch (err) {
+          this.sent = false;
+          throw err;
+        }
       });
       return;
     }
@@ -105,9 +134,11 @@ export class StreamingReply {
   /**
    * Deliver the definitive text and settle all in-flight traffic. Always call
    * this exactly once, even when no deltas arrived (empty final text is
-   * skipped). Throws if the final delivery itself fails.
+   * skipped). Returns whether anything was (or had already been) delivered —
+   * callers use this to decide whether to advance session state. Throws if
+   * the final delivery itself fails.
    */
-  async finalize(text?: string): Promise<void> {
+  async finalize(text?: string): Promise<boolean> {
     if (text !== undefined) this.latestText = text;
     const finalText = this.latestText;
 
@@ -119,20 +150,27 @@ export class StreamingReply {
 
     await this.chain.catch(() => {}); // drain in-flight sends/edits
 
-    if (!finalText || finalText === this.deliveredText) return;
+    if (!finalText) return this.didDeliver;
+    if (finalText === this.deliveredText) return true;
+
     const chunks = splitText(finalText, this.delivery.maxTextLength);
     const first = chunks[0] ?? finalText;
     const rest = chunks.slice(1);
 
-    if (!this.sent) {
-      await this.delivery.send(first);
-    } else if (this.delivery.edit && this.ref !== null && first !== this.deliveredText) {
+    // Key off `ref`, not `sent`: a failed initial send leaves sent=true
+    // briefly (or historically forever) with ref still null — without an
+    // edit target we must send fresh, or the answer never reaches the channel.
+    if (this.ref === null) {
+      this.ref = await this.delivery.send(first);
+    } else if (this.delivery.edit && first !== this.deliveredText) {
       await this.delivery.edit(this.ref, first);
     }
     this.deliveredText = first;
+    this.sent = true;
     for (const chunk of rest) {
       await this.delivery.send(chunk);
     }
+    return true;
   }
 
   /** Latest text truncated to what the channel accepts in one message. */
@@ -186,7 +224,8 @@ export class StreamingReply {
  * trimmed. `max` undefined → single chunk.
  */
 export function splitText(text: string, max?: number): string[] {
-  if (max === undefined || text.length <= max) return [text];
+  // max<=0 would never advance `rest` (breakAt=0) and hang the event loop.
+  if (max === undefined || max <= 0 || text.length <= max) return [text];
 
   const chunks: string[] = [];
   let rest = text;
@@ -197,9 +236,15 @@ export function splitText(text: string, max?: number): string[] {
     const space = window.lastIndexOf(' ');
     const breakAt =
       newline >= minBreak ? newline : space >= minBreak ? space : max;
-    chunks.push(rest.slice(0, breakAt).trimEnd());
-    rest = rest.slice(breakAt).trimStart();
+    // trimEnd can wipe a whitespace-only window (e.g. "  \n ") into "" —
+    // skip those so finalize never posts an empty message the channel API
+    // would reject, aborting the remaining chunks.
+    const chunk = rest.slice(0, breakAt).trimEnd();
+    if (chunk) chunks.push(chunk);
+    const next = rest.slice(breakAt).trimStart();
+    // Hard-cut progress if trimming made no progress (pathological whitespace).
+    rest = next.length < rest.length ? next : rest.slice(max);
   }
   if (rest) chunks.push(rest);
-  return chunks;
+  return chunks.length > 0 ? chunks : [text];
 }

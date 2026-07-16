@@ -177,6 +177,117 @@ describe('timbalChannels plugin', () => {
     expect(invocations.map((i) => i.input.prompt)).toEqual(['first', 'new']);
   });
 
+  test('failed processing releases dedupe so provider redelivery can retry', async () => {
+    const { adapter, sent } = makeAdapter();
+    let attempts = 0;
+    const invocations: string[] = [];
+    const timbal = {
+      workforce: {
+        get() {
+          return {
+            // eslint-disable-next-line require-yield
+            async *events(
+              input: Record<string, unknown>,
+            ): AsyncGenerator<Record<string, unknown>> {
+              attempts += 1;
+              invocations.push(String(input.prompt));
+              if (attempts === 1) throw new Error('boom');
+              yield { type: 'delta', delta: 'recovered' };
+            },
+          };
+        },
+      },
+    } as unknown as Timbal;
+    const app = new Elysia().use(
+      timbalChannels({
+        timbal,
+        bindings: [{ adapter, workforce: 'a' }],
+        errorMessage: 'temporary failure',
+      }),
+    );
+
+    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await settle();
+    expect(sent).toEqual(['temporary failure']);
+
+    // Same dedupeKey — must not be dropped; claim was released on failure.
+    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await settle();
+
+    expect(invocations).toEqual(['hi', 'hi']);
+    expect(sent).toContain('recovered');
+  });
+
+  test('partial delivery keeps the dedupe claim (no duplicate on retry)', async () => {
+    const { adapter, sent } = makeAdapter();
+    let attempts = 0;
+    const timbal = {
+      workforce: {
+        get() {
+          return {
+            async *events(): AsyncGenerator<Record<string, unknown>> {
+              attempts += 1;
+              yield { type: 'delta', delta: 'partial answer' };
+              throw new Error('stream died after first token');
+            },
+          };
+        },
+      },
+    } as unknown as Timbal;
+    const app = new Elysia().use(
+      timbalChannels({
+        timbal,
+        streaming: true,
+        editIntervalMs: 0,
+        bindings: [{ adapter, workforce: 'a' }],
+        errorMessage: 'failed mid-stream',
+      }),
+    );
+
+    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await settle();
+    expect(sent).toContain('partial answer');
+    expect(sent).toContain('failed mid-stream');
+    expect(attempts).toBe(1);
+
+    // Redelivery must NOT re-invoke — something already reached the user.
+    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await settle();
+    expect(attempts).toBe(1);
+  });
+
+  test('empty workforce reply does not advance session continuity', async () => {
+    const { adapter } = makeAdapter();
+    const parentIds: Array<string | undefined> = [];
+    const timbal = {
+      workforce: {
+        get() {
+          return {
+            async *events(
+              _input: Record<string, unknown>,
+              ctx?: { parentId?: string },
+            ): AsyncGenerator<Record<string, unknown>> {
+              parentIds.push(ctx?.parentId);
+              yield { type: 'START', run_id: `run-${parentIds.length}` };
+              // No textual output — finalize delivers nothing.
+            },
+          };
+        },
+      },
+    } as unknown as Timbal;
+    const app = new Elysia().use(
+      timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+    );
+
+    await post(app, '/channels/fake', { id: 'e1', text: 'first' });
+    await settle();
+    await post(app, '/channels/fake', { id: 'e2', text: 'second' });
+    await settle();
+
+    // Second message must not chain onto the silent first run.
+    expect(parentIds).toEqual([undefined, undefined]);
+  });
+
   test('buildInput overrides the default workforce input', async () => {
     const { adapter } = makeAdapter();
     const { timbal, invocations } = makeTimbal(() => []);

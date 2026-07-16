@@ -120,14 +120,14 @@ describe('telegram delivery + registerWebhook (mocked API)', () => {
     const ref = await delivery.send('hello');
     expect(ref).toBe(88);
     expect(requests[0]!.url).toBe('https://tg.test/bot123:abc/sendMessage');
-    expect(requests[0]!.body).toEqual({ chat_id: 555, text: 'hello' });
+    expect(requests[0]!.body).toEqual({ chat_id: '555', text: 'hello' });
   });
 
   test('edit posts editMessageText and tolerates "message is not modified"', async () => {
     const delivery = adapter.delivery(event);
     await delivery.edit!(88, 'updated');
     expect(requests[0]!.url).toBe('https://tg.test/bot123:abc/editMessageText');
-    expect(requests[0]!.body).toEqual({ chat_id: 555, message_id: 88, text: 'updated' });
+    expect(requests[0]!.body).toEqual({ chat_id: '555', message_id: 88, text: 'updated' });
 
     nextResponses.push({ ok: false, description: 'Bad Request: message is not modified' });
     await delivery.edit!(88, 'updated'); // must not throw
