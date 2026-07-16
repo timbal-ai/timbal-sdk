@@ -83,7 +83,7 @@ export interface ChannelDelivery {
  * `timbalChannels({ bindings: [{ adapter: telegram({...}), workforce: 'my-agent' }] })`.
  */
 export interface ChannelAdapter {
-  /** Provider id — used for the default webhook path (`/channels/{provider}`). */
+  /** Provider id — used in the default webhook path (`/channels/{workforce}/{provider}`). */
   readonly provider: string;
 
   /**
@@ -129,9 +129,10 @@ export interface ChannelBinding {
    */
   workforce: string;
   /**
-   * Webhook path under the plugin prefix. Defaults to `/{adapter.provider}`.
-   * Set explicitly when binding the same provider to multiple components
-   * (e.g. `/slack/support`, `/slack/sales`).
+   * Webhook path under the plugin prefix. Defaults to
+   * `/{workforce}/{adapter.provider}` (e.g. `/joi/telegram`). Override only
+   * for non-standard mounts; the product rule is one binding per
+   * `(workforce, provider)`.
    */
   path?: string;
   /**

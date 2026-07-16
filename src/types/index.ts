@@ -387,11 +387,16 @@ export interface Project {
   workforce: WorkforcePreview[];
 }
 
-/** One platform-configured channel binding (topology only, no secrets). */
+/**
+ * One platform-configured channel binding (topology only, no secrets).
+ * Webhook URL is derived as `/channels/{workforce}/{provider}` — prefer a
+ * stable workforce uid so renaming the component doesn't move the webhook.
+ * Product rule: at most one enabled binding per `(workforce, provider)`.
+ */
 export interface ProjectChannelSpec {
   /** Channel provider id: 'telegram', 'slack', ... */
   provider: string;
-  /** Workforce component the channel talks to (id, uid, or name). */
+  /** Workforce component the channel talks to (prefer uid). */
   workforce: string;
   /** Soft toggle from the platform UI. @default true */
   enabled?: boolean;

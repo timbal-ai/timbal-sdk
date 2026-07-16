@@ -18,6 +18,10 @@ import type {
 /** Let detached (void-ed) processing settle. */
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
+/** Default webhook path: /channels/{workforce}/{provider}. */
+const channelPath = (workforce: string, provider = 'fake') =>
+  `/channels/${workforce}/${provider}`;
+
 /**
  * Fake adapter: authenticates with an `x-test-auth` header, treats the body
  * as `{ id, text }`, and records everything sent back.
@@ -100,6 +104,22 @@ function post(app: Elysia, path: string, body: unknown, auth = true) {
   );
 }
 
+describe('resolveBindingPath', () => {
+  test('defaults to /{workforce}/{provider}', () => {
+    const { adapter } = makeAdapter('telegram');
+    expect(resolveBindingPath({ adapter, workforce: 'joi' })).toBe(
+      '/channels/joi/telegram',
+    );
+  });
+
+  test('explicit path overrides the default', () => {
+    const { adapter } = makeAdapter('telegram');
+    expect(
+      resolveBindingPath({ adapter, workforce: 'joi', path: '/custom' }, '/hooks'),
+    ).toBe('/hooks/custom');
+  });
+});
+
 describe('timbalChannels plugin', () => {
   test('happy path: acks 200, invokes the workforce, posts the reply once', async () => {
     const { adapter, sent, edits } = makeAdapter();
@@ -114,7 +134,7 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    const res = await post(app, '/channels/fake', { id: 'e1', text: 'hi agent' });
+    const res = await post(app, channelPath('my-agent'), { id: 'e1', text: 'hi agent' });
     expect(res.status).toBe(200);
     await settle();
 
@@ -141,7 +161,7 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    await post(app, '/channels/fake', { id: 'e1', text: 'hi agent' });
+    await post(app, channelPath('my-agent'), { id: 'e1', text: 'hi agent' });
     await settle();
 
     // First delta sends, final state lands via finalize (send or edit).
@@ -156,7 +176,7 @@ describe('timbalChannels plugin', () => {
       timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
     );
 
-    const res = await post(app, '/channels/fake', { text: 'x' }, false);
+    const res = await post(app, channelPath('a'), { text: 'x' }, false);
     expect(res.status).toBe(401);
     await settle();
     expect(invocations).toHaveLength(0);
@@ -169,9 +189,9 @@ describe('timbalChannels plugin', () => {
       timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
     );
 
-    await post(app, '/channels/fake', { id: 'same', text: 'first' });
-    await post(app, '/channels/fake', { id: 'same', text: 'retry' });
-    await post(app, '/channels/fake', { id: 'other', text: 'new' });
+    await post(app, channelPath('a'), { id: 'same', text: 'first' });
+    await post(app, channelPath('a'), { id: 'same', text: 'retry' });
+    await post(app, channelPath('a'), { id: 'other', text: 'new' });
     await settle();
 
     expect(invocations.map((i) => i.input.prompt)).toEqual(['first', 'new']);
@@ -206,12 +226,12 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await post(app, channelPath('a'), { id: 'same', text: 'hi' });
     await settle();
     expect(sent).toEqual(['temporary failure']);
 
     // Same dedupeKey — must not be dropped; claim was released on failure.
-    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await post(app, channelPath('a'), { id: 'same', text: 'hi' });
     await settle();
 
     expect(invocations).toEqual(['hi', 'hi']);
@@ -244,14 +264,14 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await post(app, channelPath('a'), { id: 'same', text: 'hi' });
     await settle();
     expect(sent).toContain('partial answer');
     expect(sent).toContain('failed mid-stream');
     expect(attempts).toBe(1);
 
     // Redelivery must NOT re-invoke — something already reached the user.
-    await post(app, '/channels/fake', { id: 'same', text: 'hi' });
+    await post(app, channelPath('a'), { id: 'same', text: 'hi' });
     await settle();
     expect(attempts).toBe(1);
   });
@@ -279,9 +299,9 @@ describe('timbalChannels plugin', () => {
       timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
     );
 
-    await post(app, '/channels/fake', { id: 'e1', text: 'first' });
+    await post(app, channelPath('a'), { id: 'e1', text: 'first' });
     await settle();
-    await post(app, '/channels/fake', { id: 'e2', text: 'second' });
+    await post(app, channelPath('a'), { id: 'e2', text: 'second' });
     await settle();
 
     // Second message must not chain onto the silent first run.
@@ -298,7 +318,7 @@ describe('timbalChannels plugin', () => {
     };
     const app = new Elysia().use(timbalChannels({ timbal, bindings: [binding] }));
 
-    await post(app, '/channels/fake', { id: 'e1', text: 'yo' });
+    await post(app, channelPath('a'), { id: 'e1', text: 'yo' });
     await settle();
 
     expect(invocations[0]!.input).toEqual({ message: 'yo', session: 'conv-1' });
@@ -325,7 +345,7 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    await post(app, '/channels/fake', { id: 'e1', text: 'what time is it?' });
+    await post(app, channelPath('joi'), { id: 'e1', text: 'what time is it?' });
     await settle();
 
     expect([...sent, ...edits]).toContain('The time is 13:37.');
@@ -342,9 +362,9 @@ describe('timbalChannels plugin', () => {
       timbalChannels({ timbal, bindings: [{ adapter, workforce: 'joi' }] }),
     );
 
-    await post(app, '/channels/fake', { id: 'm1', text: 'first' });
+    await post(app, channelPath('joi'), { id: 'm1', text: 'first' });
     await settle();
-    await post(app, '/channels/fake', { id: 'm2', text: 'second' });
+    await post(app, channelPath('joi'), { id: 'm2', text: 'second' });
     await settle();
 
     expect(invocations[0]!.ctx).toBeUndefined(); // fresh conversation
@@ -364,9 +384,9 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    await post(app, '/channels/fake', { id: 'm1', text: 'first' });
+    await post(app, channelPath('joi'), { id: 'm1', text: 'first' });
     await settle();
-    await post(app, '/channels/fake', { id: 'm2', text: 'second' });
+    await post(app, channelPath('joi'), { id: 'm2', text: 'second' });
     await settle();
 
     expect(invocations[1]!.ctx).toBeUndefined();
@@ -386,7 +406,7 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    await post(app, '/channels/fake', { id: 'e1', text: 'q' });
+    await post(app, channelPath('a'), { id: 'e1', text: 'q' });
     await settle();
 
     expect([...sent, ...edits]).toContain('the real final answer');
@@ -416,7 +436,7 @@ describe('timbalChannels plugin', () => {
       }),
     );
 
-    const res = await post(app, '/channels/fake', { id: 'e1', text: 'q' });
+    const res = await post(app, channelPath('a'), { id: 'e1', text: 'q' });
     expect(res.status).toBe(200); // webhook still acks — errors are out-of-band
     await settle();
 
@@ -455,7 +475,7 @@ describe('timbalChannels plugin', () => {
     );
 
     expect(withHook.registered).toEqual([
-      'https://app.example.com/channels/telegramish',
+      'https://app.example.com/channels/a/telegramish',
     ]);
     expect(withoutHook.registered).toHaveLength(0);
 
@@ -464,13 +484,13 @@ describe('timbalChannels plugin', () => {
       {
         provider: 'telegramish',
         workforce: 'a',
-        url: 'https://app.example.com/channels/telegramish',
+        url: 'https://app.example.com/channels/a/telegramish',
         registered: true,
       },
       {
         provider: 'slackish',
         workforce: 'b',
-        url: 'https://app.example.com/channels/slackish',
+        url: 'https://app.example.com/channels/b/slackish',
         registered: false,
         reason: 'manual-registration',
       },
@@ -484,7 +504,7 @@ describe('timbalChannels plugin', () => {
       env: { PUBLIC_ORIGIN: 'https://from-env.example.com' },
     });
 
-    expect(registered).toEqual(['https://from-env.example.com/channels/tg']);
+    expect(registered).toEqual(['https://from-env.example.com/channels/a/tg']);
     expect(result.origin).toBe('https://from-env.example.com');
   });
 
@@ -683,7 +703,7 @@ describe('timbalChannels dynamic mode', () => {
 
     // Telegram is bound: bad secret → 401 from the adapter (route exists).
     const unauthorized = await app.handle(
-      new Request('http://localhost/channels/telegram', {
+      new Request('http://localhost/channels/joi/telegram', {
         method: 'POST',
         body: '{}',
       }),
@@ -692,7 +712,7 @@ describe('timbalChannels dynamic mode', () => {
 
     // Good secret → acked.
     const ok = await app.handle(
-      new Request('http://localhost/channels/telegram', {
+      new Request('http://localhost/channels/joi/telegram', {
         method: 'POST',
         headers: { 'x-telegram-bot-api-secret-token': 'shh' },
         body: JSON.stringify({ update_id: 1 }),
@@ -702,12 +722,22 @@ describe('timbalChannels dynamic mode', () => {
 
     // Slack is NOT in the platform config → 404.
     const unknown = await app.handle(
-      new Request('http://localhost/channels/slack', {
+      new Request('http://localhost/channels/joi/slack', {
         method: 'POST',
         body: '{}',
       }),
     );
     expect(unknown.status).toBe(404);
+
+    // Wrong workforce for a known provider → 404 (one binding per pair).
+    const wrongWf = await app.handle(
+      new Request('http://localhost/channels/other-agent/telegram', {
+        method: 'POST',
+        headers: { 'x-telegram-bot-api-secret-token': 'shh' },
+        body: JSON.stringify({ update_id: 3 }),
+      }),
+    );
+    expect(wrongWf.status).toBe(404);
   });
 
   test('channelSpecs override skips the platform entirely', async () => {
@@ -723,7 +753,7 @@ describe('timbalChannels dynamic mode', () => {
     );
 
     const res = await app.handle(
-      new Request('http://localhost/channels/telegram', {
+      new Request('http://localhost/channels/joi/telegram', {
         method: 'POST',
         headers: { 'x-telegram-bot-api-secret-token': 'shh' },
         body: JSON.stringify({ update_id: 2 }),

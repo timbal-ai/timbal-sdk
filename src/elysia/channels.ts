@@ -103,12 +103,19 @@ class SessionStore {
   }
 }
 
-/** Webhook path for a binding: `{prefix}{binding.path ?? '/' + provider}`. */
+/**
+ * Webhook path for a binding:
+ * `{prefix}{binding.path ?? '/' + workforce + '/' + provider}`.
+ *
+ * Product rule today: one binding per `(workforce, provider)`. The workforce
+ * segment (prefer uid) keeps multi-agent Telegram/Slack URLs distinct. A
+ * future binding-id segment can extend this without breaking the prefix.
+ */
 export function resolveBindingPath(
   binding: ChannelBinding,
   prefix = '/channels',
 ): string {
-  return `${prefix}${binding.path ?? `/${binding.adapter.provider}`}`;
+  return `${prefix}${binding.path ?? `/${binding.workforce}/${binding.adapter.provider}`}`;
 }
 
 export interface ResolveChannelBindingsOptions {
@@ -183,7 +190,7 @@ export async function resolveChannelBindings(
  *   .use(timbalChannels())
  *   .listen(3000);
  *
- * // ...or hand-written bindings for per-provider routing:
+ * // ...or hand-written bindings (URLs: /channels/{workforce}/{provider}):
  * timbalChannels({
  *   bindings: [
  *     { adapter: telegram({ botToken }), workforce: "support-agent" },
@@ -301,8 +308,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
   const app = new Elysia({ name: 'timbal-channels' });
 
   if (options.bindings) {
-    // STATIC mode: fixed routes known at mount time. Supports custom paths
-    // and multiple bindings per provider.
+    // STATIC mode: fixed routes known at mount time. Supports custom `path`s.
     for (const binding of options.bindings) {
       const path = resolveBindingPath(binding, prefix);
       app.post(
@@ -314,14 +320,22 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     return app;
   }
 
-  // DYNAMIC mode: one wildcard route; the binding set is resolved per
-  // request from platform project settings (TTL-cached — same freshness
-  // model as the auth ingress gate), so channels added in the platform UI
-  // go live within the cache TTL, no redeploy. Routes are keyed by
-  // provider; custom `path`s require static mode.
+  // DYNAMIC mode: one wildcard route keyed by workforce + provider
+  // (`/channels/{uid}/telegram`). Binding set is resolved per request from
+  // platform project settings (TTL-cached — same freshness model as the auth
+  // ingress gate), so channels added in the platform UI go live within the
+  // cache TTL, no redeploy. Product rule: one binding per
+  // (workforce, provider); a future `:bindingId` segment can relax that.
+  // Custom `path`s require static mode.
   app.post(
-    `${prefix}/:provider`,
-    async ({ request, params }: { request: Request; params: { provider: string } }) => {
+    `${prefix}/:workforce/:provider`,
+    async ({
+      request,
+      params,
+    }: {
+      request: Request;
+      params: { workforce: string; provider: string };
+    }) => {
       let bindings: ChannelBinding[];
       try {
         bindings = await resolveChannelBindings(timbal, {
@@ -337,7 +351,9 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         return new Response('Channel configuration error', { status: 503 });
       }
       const binding = bindings.find(
-        (b) => b.adapter.provider === params.provider,
+        (b) =>
+          b.workforce === params.workforce &&
+          b.adapter.provider === params.provider,
       );
       if (!binding) return new Response('Unknown channel', { status: 404 });
       return handleWebhook(binding, request);

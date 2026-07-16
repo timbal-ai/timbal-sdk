@@ -53,7 +53,7 @@ interface TelegramUpdate {
  * timbalChannels({
  *   bindings: [{
  *     adapter: telegram({ botToken: process.env.TELEGRAM_BOT_TOKEN! }),
- *     workforce: "my-agent",
+ *     workforce: "my-agent", // webhook: /channels/my-agent/telegram
  *   }],
  * })
  * ```
