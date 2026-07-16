@@ -18,6 +18,8 @@ export interface StreamingReplyOptions {
   now?: () => number;
   /** Injectable timer (tests). @default setTimeout */
   schedule?: (fn: () => void, ms: number) => unknown;
+  /** Cancel a handle from {@link schedule}. @default clearTimeout */
+  cancel?: (handle: unknown) => void;
 }
 
 /**
@@ -50,6 +52,7 @@ export class StreamingReply {
   private readonly editIntervalMs: number;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => unknown;
+  private readonly cancel: (handle: unknown) => void;
 
   private ref: unknown = null;
   private sent = false;
@@ -57,6 +60,8 @@ export class StreamingReply {
   private deliveredText: string | null = null;
   private lastEditAt = 0;
   private timerArmed = false;
+  private timerHandle: unknown = null;
+  private done = false;
   private capped = false;
   private chain: Promise<void> = Promise.resolve();
 
@@ -68,6 +73,7 @@ export class StreamingReply {
     this.editIntervalMs = options.editIntervalMs ?? 1000;
     this.now = options.now ?? Date.now;
     this.schedule = options.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+    this.cancel = options.cancel ?? ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
   }
 
   /** Push the latest accumulated text. Non-blocking; safe to call per delta. */
@@ -104,6 +110,13 @@ export class StreamingReply {
   async finalize(text?: string): Promise<void> {
     if (text !== undefined) this.latestText = text;
     const finalText = this.latestText;
+
+    // Kill any trailing-edge edit timer first — otherwise it can fire after
+    // we write the definitive text and overwrite it with stale/capped stream
+    // text. The done flag also no-ops a callback already in the event queue.
+    this.done = true;
+    this.disarmTimer();
+
     await this.chain.catch(() => {}); // drain in-flight sends/edits
 
     if (!finalText || finalText === this.deliveredText) return;
@@ -116,6 +129,7 @@ export class StreamingReply {
     } else if (this.delivery.edit && this.ref !== null && first !== this.deliveredText) {
       await this.delivery.edit(this.ref, first);
     }
+    this.deliveredText = first;
     for (const chunk of rest) {
       await this.delivery.send(chunk);
     }
@@ -131,13 +145,16 @@ export class StreamingReply {
 
   /** Arm (at most) one trailing-edge edit carrying whatever text is latest. */
   private scheduleEdit(): void {
-    if (this.timerArmed) return;
+    if (this.timerArmed || this.done) return;
     const wait = Math.max(0, this.lastEditAt + this.editIntervalMs - this.now());
     this.timerArmed = true;
-    this.schedule(() => {
+    this.timerHandle = this.schedule(() => {
       this.timerArmed = false;
+      this.timerHandle = null;
+      if (this.done) return;
       this.lastEditAt = this.now();
       this.enqueue(async () => {
+        if (this.done) return;
         const text = this.streamableText();
         // Skip no-op edits (the send may already carry this text).
         if (this.ref === null || !this.delivery.edit || text === this.deliveredText) return;
@@ -145,6 +162,13 @@ export class StreamingReply {
         this.deliveredText = text;
       });
     }, wait);
+  }
+
+  private disarmTimer(): void {
+    if (!this.timerArmed) return;
+    if (this.timerHandle !== null) this.cancel(this.timerHandle);
+    this.timerHandle = null;
+    this.timerArmed = false;
   }
 
   /** Serialize sends/edits so they can't reorder (edit racing ahead of send). */

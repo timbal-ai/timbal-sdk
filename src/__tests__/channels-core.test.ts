@@ -53,17 +53,26 @@ function makeDelivery(withEdit = true, maxTextLength?: number) {
 
 /** Manual timer: collects scheduled callbacks so tests fire them explicitly. */
 function makeTimer() {
-  const pending: (() => void)[] = [];
+  const pending = new Map<number, () => void>();
+  let nextId = 1;
   return {
     schedule: (fn: () => void, _ms: number) => {
-      pending.push(fn);
-      return 0;
+      const id = nextId++;
+      pending.set(id, fn);
+      return id;
+    },
+    cancel: (handle: unknown) => {
+      pending.delete(handle as number);
     },
     fire: async () => {
-      const fns = pending.splice(0);
+      const fns = [...pending.values()];
+      pending.clear();
       for (const fn of fns) fn();
       // Let the enqueued async ops settle.
       await new Promise((r) => setTimeout(r, 0));
+    },
+    get armed() {
+      return pending.size;
     },
   };
 }
@@ -102,6 +111,7 @@ describe('StreamingReply', () => {
       editIntervalMs: 1000,
       now: () => t,
       schedule: timer.schedule,
+      cancel: timer.cancel,
     });
 
     reply.update('Hel');
@@ -120,10 +130,43 @@ describe('StreamingReply', () => {
     expect(calls).toHaveLength(3);
   });
 
+  test('finalize cancels a pending trailing-edge edit (no stale overwrite)', async () => {
+    const { delivery, calls } = makeDelivery();
+    let t = 0;
+    const timer = makeTimer();
+    const reply = new StreamingReply(delivery, {
+      editIntervalMs: 1000,
+      now: () => t,
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+    });
+
+    reply.update('partial');
+    await tick();
+    reply.update('partial stale'); // arms a trailing-edge timer
+    expect(timer.armed).toBe(1);
+
+    await reply.finalize('final answer');
+    expect(timer.armed).toBe(0); // cancelled, not left dangling
+
+    // Even if something still tried to fire the cancelled timer, the message
+    // must stay at the finalize text — never overwritten with stream text.
+    await timer.fire();
+    await tick();
+
+    expect(calls).toEqual([
+      { op: 'send', text: 'partial' },
+      { op: 'edit', text: 'final answer' },
+    ]);
+  });
+
   test('a synchronous burst of deltas coalesces into the initial send', async () => {
     const { delivery, calls } = makeDelivery();
     const timer = makeTimer();
-    const reply = new StreamingReply(delivery, { schedule: timer.schedule });
+    const reply = new StreamingReply(delivery, {
+      schedule: timer.schedule,
+      cancel: timer.cancel,
+    });
 
     reply.update('Hel');
     reply.update('Hello wor'); // lands before the send op runs
@@ -178,6 +221,7 @@ describe('StreamingReply', () => {
       editIntervalMs: 1000,
       now: () => t,
       schedule: timer.schedule,
+      cancel: timer.cancel,
     });
 
     reply.update('12345');
@@ -231,6 +275,7 @@ describe('StreamingReply', () => {
       editIntervalMs: 1000,
       now: () => t,
       schedule: timer.schedule,
+      cancel: timer.cancel,
     });
 
     reply.update('a');
