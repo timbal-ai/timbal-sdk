@@ -61,6 +61,11 @@ describe('isPublicPath', () => {
     expect(isPublicPath('/api/healthcheck')).toBe(true);
   });
 
+  test('__timbal infrastructure routes are public by default (self-authenticating)', () => {
+    expect(isPublicPath('/__timbal/config/refresh')).toBe(true);
+    expect(isPublicPath('/api/__timbal/config/refresh')).toBe(true);
+  });
+
   test('protected paths are not public', () => {
     expect(isPublicPath('/me')).toBe(false);
     expect(isPublicPath('/workforce')).toBe(false);

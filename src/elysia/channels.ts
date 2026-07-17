@@ -1,0 +1,514 @@
+import { Elysia } from 'elysia';
+import { Timbal } from '../lib/timbal';
+import { DedupeCache } from '../channels/dedupe';
+import { StreamingReply } from '../channels/reply';
+import { WorkforceTextCollector } from '../channels/collect';
+import { channelBindingsFromEnv } from '../channels/env';
+import { resolvePublicOrigin } from '../channels/origin';
+import {
+  channelSpecsFromProject,
+  materializeChannelBindings,
+  type SkippedChannelSpec,
+} from '../channels/config';
+import { getCachedRuntimeChannels } from '../channels/runtime';
+import { getCachedProject } from '../auth/config';
+import { registerConfigRefreshHook } from '../config/refresh';
+import type { ProjectChannelSpec } from '../types';
+import type {
+  ChannelBinding,
+  ChannelEvent,
+  WebhookRequest,
+} from '../channels/types';
+
+export interface TimbalChannelsOptions {
+  /**
+   * Hand-written channel → workforce bindings (static mode: fixed routes,
+   * supports custom `path`s and multiple bindings per provider). When
+   * omitted, the plugin runs in **dynamic mode**: bindings are resolved
+   * per-request from the platform's runtime channel config (topology +
+   * platform-held credentials, TTL cached — the "add a channel in the
+   * dropdown, no env vars, no redeploy" path), falling back to
+   * `project.channels` topology + env creds on older platforms, and to env
+   * conventions ({@link channelBindingsFromEnv}) when the platform has no
+   * channel data at all or the process isn't platform-linked.
+   */
+  bindings?: ChannelBinding[];
+  /**
+   * Platform channel specs override (tests / local dev) — skips the platform
+   * fetch in dynamic mode, mirroring `timbalAuth`'s `authConfig` override.
+   */
+  channelSpecs?: ProjectChannelSpec[];
+  /** TTL for the cached platform-config fetches, ms. @default 60000 */
+  configCacheTtlMs?: number;
+  /** Environment source for credentials/fallbacks (injectable for tests). */
+  env?: Record<string, string | undefined>;
+  /**
+   * Observer for platform specs that couldn't be materialized (no credentials
+   * platform-side or in env, provider unknown to this SDK version). Fires on
+   * resolution, deduped per `provider:reason` so it doesn't spam per request.
+   */
+  onSkippedSpec?(skipped: SkippedChannelSpec): void;
+  /** Path prefix for every webhook route. @default '/channels' */
+  prefix?: string;
+  /**
+   * Timbal client used to invoke workforce components. Defaults to a fresh
+   * service-credentials client (same as `timbalAuth`). Injectable for tests.
+   */
+  timbal?: Timbal;
+  /**
+   * Stream the reply into the channel as the agent generates, via
+   * progressive message edits (**experimental** — edit APIs carry
+   * per-conversation rate limits and channel-specific quirks). Off by
+   * default: the reply is posted once, complete. Per-binding `streaming`
+   * overrides this. @default false
+   */
+  streaming?: boolean;
+  /** Min interval between streaming edits, ms. See `StreamingReply`. @default 1000 */
+  editIntervalMs?: number;
+  /** Idempotency window for webhook redelivery, ms. @default 900000 (15 min) */
+  dedupeTtlMs?: number;
+  /**
+   * Message posted to the conversation when the workforce run or the final
+   * delivery fails. `false` disables the user-facing notice (errors still
+   * reach {@link onError}).
+   * @default 'Something went wrong processing your message.'
+   */
+  errorMessage?: string | false;
+  /** Observer for processing failures (logging/metrics). Errors never throw past the pipeline. */
+  onError?(error: unknown, event: ChannelEvent): void;
+  /**
+   * Thread multi-turn conversations: remember the last run id per
+   * `provider:conversationId` and pass it as `context.parent_id` on the next
+   * message, so the agent keeps its memory across messages (same mechanism
+   * the platform chat UI uses). In-memory — restarting the server starts
+   * conversations fresh. @default true
+   */
+  sessionContinuity?: boolean;
+}
+
+/** conversation key → last run id, insertion-order bounded. */
+class SessionStore {
+  private readonly entries = new Map<string, string>();
+  constructor(private readonly maxEntries = 5000) {}
+
+  get(key: string): string | undefined {
+    return this.entries.get(key);
+  }
+
+  set(key: string, runId: string): void {
+    this.entries.delete(key); // re-insert → refreshes eviction order
+    this.entries.set(key, runId);
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
+  }
+}
+
+/**
+ * Webhook path for a binding:
+ * `{prefix}{binding.path ?? '/' + workforce + '/' + provider}`.
+ *
+ * Product rule today: one binding per `(workforce, provider)`. The workforce
+ * segment (prefer uid) keeps multi-agent Telegram/Slack URLs distinct. A
+ * future binding-id segment can extend this without breaking the prefix.
+ */
+export function resolveBindingPath(
+  binding: ChannelBinding,
+  prefix = '/channels',
+): string {
+  return `${prefix}${binding.path ?? `/${binding.workforce}/${binding.adapter.provider}`}`;
+}
+
+export interface ResolveChannelBindingsOptions {
+  bindings?: ChannelBinding[];
+  channelSpecs?: ProjectChannelSpec[];
+  configCacheTtlMs?: number;
+  env?: Record<string, string | undefined>;
+  onSkippedSpec?(skipped: SkippedChannelSpec): void;
+}
+
+/**
+ * Resolve the effective channel bindings:
+ *
+ * 1. explicit `bindings` (static, hand-written)
+ * 2. `channelSpecs` override (tests / local)
+ * 3. platform-linked (`TIMBAL_PROJECT_ID` set): the **runtime endpoint**
+ *    (`GET .../channels/runtime`, TTL-cached) — topology *and* platform-held
+ *    credentials, so channels added in the UI work with zero env vars.
+ *    Per-spec credential precedence: `spec.credentials` → env convention
+ *    vars → skipped as `missing-credentials`.
+ * 4. runtime endpoint 404 (older platform): `project.channels` topology
+ *    (same TTL-cached project fetch the auth gate uses) + env credentials.
+ * 5. platform unreachable / not linked: env conventions
+ *    ({@link channelBindingsFromEnv}).
+ *
+ * An **empty array** from the platform is authoritative — all channels off,
+ * no env fallback. Env conventions only apply when the platform has no
+ * channel data at all (absent field, 404, unreachable, unlinked): a platform
+ * blip degrades to env rather than dropping webhooks, but "zero channels
+ * configured" must stay zero.
+ */
+export async function resolveChannelBindings(
+  timbal: Timbal,
+  options: ResolveChannelBindingsOptions = {},
+): Promise<ChannelBinding[]> {
+  if (options.bindings) return options.bindings;
+  const env = options.env ?? process.env;
+
+  let specs = options.channelSpecs ?? null;
+  if (!specs && env.TIMBAL_PROJECT_ID) {
+    try {
+      specs = await getCachedRuntimeChannels(timbal, {
+        ttlMs: options.configCacheTtlMs,
+      });
+    } catch {
+      specs = null; // fail-soft — try the project payload next
+    }
+    if (specs === null) {
+      try {
+        const project = await getCachedProject(timbal, {
+          ttlMs: options.configCacheTtlMs,
+        });
+        specs = channelSpecsFromProject(project);
+      } catch {
+        specs = null; // fail-soft: platform unreachable → env conventions
+      }
+    }
+  }
+
+  // `[]` is deliberately truthy here: platform-says-none ≠ platform-says-
+  // nothing. Only `null` (no platform data) reaches the env fallback.
+  if (specs) {
+    const { bindings, skipped } = materializeChannelBindings(specs, env);
+    for (const s of skipped) options.onSkippedSpec?.(s);
+    return bindings;
+  }
+  return channelBindingsFromEnv({ env });
+}
+
+/**
+ * Elysia plugin that connects messaging channels (Slack, Telegram, ...) to
+ * workforce components.
+ *
+ * Mounts one `POST` webhook route per binding and runs the channel-agnostic
+ * pipeline: **verify → ack → dedupe → parse → workforce → reply**. The
+ * webhook is acked immediately (Slack's 3-second deadline) and the workforce
+ * run + reply happen detached, streaming progressive edits where the channel
+ * supports them.
+ *
+ * ```ts
+ * import { timbalAuth, timbalChannels, telegram, slack } from "@timbal-ai/timbal-sdk/elysia";
+ *
+ * const app = new Elysia()
+ *   // Webhooks authenticate via signatures, not user tokens — exempt them
+ *   // from the auth ingress gate:
+ *   .use(timbalAuth({ publicPaths: ["/channels/"] }))
+ *   // Zero-config: channels + target component read from env
+ *   // (TELEGRAM_BOT_TOKEN, SLACK_*, CHANNELS_WORKFORCE)...
+ *   .use(timbalChannels())
+ *   .listen(3000);
+ *
+ * // ...or hand-written bindings (URLs: /channels/{workforce}/{provider}):
+ * timbalChannels({
+ *   bindings: [
+ *     { adapter: telegram({ botToken }), workforce: "support-agent" },
+ *     { adapter: slack({ signingSecret, botToken }), workforce: "sales-agent" },
+ *   ],
+ * })
+ * ```
+ *
+ * The default workforce input is `{ prompt: event.text }`; use
+ * `binding.buildInput` to thread conversation/user context into components
+ * with richer input schemas (e.g. session continuity keyed on
+ * `event.conversationId`).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function timbalChannels(options: TimbalChannelsOptions = {}): any {
+  const timbal = options.timbal ?? new Timbal();
+  const prefix = options.prefix ?? '/channels';
+  const dedupe = new DedupeCache(options.dedupeTtlMs);
+  const sessions = options.sessionContinuity !== false ? new SessionStore() : null;
+  const errorMessage =
+    options.errorMessage ?? 'Something went wrong processing your message.';
+
+  // Dedupe skipped-spec reports per provider:reason — dynamic mode resolves
+  // on every webhook, and a misconfigured channel shouldn't spam the observer.
+  const reportedSkips = new Set<string>();
+  const onSkippedSpec = (skipped: SkippedChannelSpec): void => {
+    const key = `${skipped.spec.provider}:${skipped.reason}`;
+    if (reportedSkips.has(key)) return;
+    reportedSkips.add(key);
+    try {
+      options.onSkippedSpec?.(skipped);
+    } catch {
+      /* observer must not take down the pipeline */
+    }
+  };
+
+  async function process(binding: ChannelBinding, event: ChannelEvent): Promise<void> {
+    const reply = new StreamingReply(binding.adapter.delivery(event), {
+      // Product default is OFF while streaming is experimental; the
+      // low-level StreamingReply class itself defaults on.
+      streaming: binding.streaming ?? options.streaming ?? false,
+      editIntervalMs: options.editIntervalMs,
+    });
+    try {
+      const wf = timbal.workforce.get(binding.workforce);
+      const input = binding.buildInput?.(event) ?? { prompt: event.text };
+
+      const sessionKey = `${event.provider}:${event.conversationId}`;
+      const parentId = sessions?.get(sessionKey);
+
+      // Collector understands the Timbal runtime vocabulary (DELTA/OUTPUT)
+      // plus the simplified lowercase shapes. See WorkforceTextCollector.
+      const collector = new WorkforceTextCollector();
+      let runId: string | undefined;
+      for await (const ev of wf.events(input, parentId ? { parentId } : undefined)) {
+        if (!runId && typeof ev.run_id === 'string') runId = ev.run_id;
+        const updated = collector.push(ev);
+        if (updated !== null) reply.update(updated);
+      }
+      const delivered = await reply.finalize(collector.text);
+      // Only advance the thread when the user actually got a reply — chaining
+      // onto a silent/empty run would make the next message inherit a parent
+      // the user never saw.
+      if (sessions && runId && delivered) sessions.set(sessionKey, runId);
+    } catch (err) {
+      // Drain in-flight stream sends before inspecting didDeliver — update()
+      // enqueues asynchronously, so a throw right after the first delta can
+      // race the postMessage.
+      await reply.settle();
+      // Release the dedupe claim only when nothing reached the channel yet —
+      // otherwise Slack/Telegram redelivery would re-run the workforce and
+      // post a duplicate on top of a partial reply. User can resend.
+      if (event.dedupeKey && !reply.didDeliver) dedupe.forget(event.dedupeKey);
+      try {
+        options.onError?.(err, event);
+      } catch {
+        /* observer must not take down the pipeline */
+      }
+      if (errorMessage !== false) {
+        try {
+          await binding.adapter.delivery(event).send(errorMessage);
+        } catch {
+          /* channel unreachable — nothing left to do */
+        }
+      }
+    }
+  }
+
+  async function handleWebhook(
+    binding: ChannelBinding,
+    request: Request,
+  ): Promise<Response> {
+    // Read the body once, as text — signature verification (Slack HMAC)
+    // needs the exact raw bytes, and a Request body is single-read.
+    const req: WebhookRequest = {
+      rawBody: await request.text(),
+      headers: request.headers,
+      url: request.url,
+    };
+
+    const verdict = await binding.adapter.verify(req);
+    if (verdict !== 'ok') return verdict;
+
+    const events = await binding.adapter.parse(req);
+    for (const event of events) {
+      if (event.dedupeKey && dedupe.seen(event.dedupeKey)) continue;
+      // Detached on purpose: the webhook must ack now (Slack retries after
+      // 3s), the agent replies out-of-band via the channel's send API.
+      void process(binding, event);
+    }
+
+    return binding.adapter.ack?.(req) ?? new Response(null, { status: 200 });
+  }
+
+  const app = new Elysia({ name: 'timbal-channels' });
+
+  if (options.bindings) {
+    // STATIC mode: fixed routes known at mount time. Supports custom `path`s.
+    for (const binding of options.bindings) {
+      const path = resolveBindingPath(binding, prefix);
+      app.post(
+        path,
+        ({ request }: { request: Request }) => handleWebhook(binding, request),
+        { detail: { hide: true } },
+      );
+    }
+    return app;
+  }
+
+  // DYNAMIC mode: one wildcard route keyed by workforce + provider
+  // (`/channels/{uid}/telegram`). Binding set is resolved per request from
+  // platform config (runtime endpoint with platform-held credentials,
+  // TTL-cached), so channels added in the platform UI go live without env
+  // changes or redeploys. Product rule: one binding per
+  // (workforce, provider); a future `:bindingId` segment can relax that.
+  // Custom `path`s require static mode.
+
+  // On platform-config refresh, re-run programmatic webhook provisioning so
+  // a binding that appeared (or gained credentials) gets its Telegram
+  // `setWebhook` — startup-only registration misses channels added later.
+  registerConfigRefreshHook('channels:webhook-provisioning', async () => {
+    await registerChannelWebhooks({
+      timbal,
+      channelSpecs: options.channelSpecs,
+      configCacheTtlMs: options.configCacheTtlMs,
+      prefix,
+      env: options.env,
+    }).catch(() => {
+      /* best-effort — TTL + next refresh retry cover it */
+    });
+  });
+  app.post(
+    `${prefix}/:workforce/:provider`,
+    async ({
+      request,
+      params,
+    }: {
+      request: Request;
+      params: { workforce: string; provider: string };
+    }) => {
+      let bindings: ChannelBinding[];
+      try {
+        bindings = await resolveChannelBindings(timbal, {
+          channelSpecs: options.channelSpecs,
+          configCacheTtlMs: options.configCacheTtlMs,
+          env: options.env,
+          onSkippedSpec,
+        });
+      } catch {
+        // Env conventions throw when credentials exist without
+        // CHANNELS_WORKFORCE — loud at startup, but a per-request resolve
+        // must not 500 Slack/Telegram (they'd retry forever).
+        return new Response('Channel configuration error', { status: 503 });
+      }
+      const binding = bindings.find(
+        (b) =>
+          b.workforce === params.workforce &&
+          b.adapter.provider === params.provider,
+      );
+      if (!binding) return new Response('Unknown channel', { status: 404 });
+      return handleWebhook(binding, request);
+    },
+    { detail: { hide: true } },
+  );
+
+  return app;
+}
+
+export interface RegisterChannelWebhooksOptions {
+  /** Bindings to provision. Defaults to the same resolution as the plugin's dynamic mode. */
+  bindings?: ChannelBinding[];
+  /** Platform channel specs override (tests / local dev). */
+  channelSpecs?: ProjectChannelSpec[];
+  /** Timbal client for the platform config fetch. Defaults to a fresh service client. */
+  timbal?: Timbal;
+  /** TTL for the cached platform project fetch, ms. @default 60000 */
+  configCacheTtlMs?: number;
+  /** Path prefix, matching the plugin's. @default '/channels' */
+  prefix?: string;
+  /** Environment source for credentials + origin resolution (injectable for tests). */
+  env?: Record<string, string | undefined>;
+  /** Fetch used for the dev-tunnel probe (injectable for tests). */
+  fetchImpl?: typeof fetch;
+}
+
+/** One binding's provisioning outcome. */
+export interface WebhookRegistration {
+  provider: string;
+  workforce: string;
+  /** Full webhook URL, when an origin was resolved. */
+  url: string | null;
+  /** True when the adapter's programmatic registration ran successfully. */
+  registered: boolean;
+  /** Why registration didn't run. */
+  reason?: 'manual-registration' | 'no-origin';
+}
+
+export interface ChannelProvisionResult {
+  /** The origin webhooks were registered against, or `null` if unresolvable. */
+  origin: string | null;
+  registrations: WebhookRegistration[];
+  /**
+   * Platform specs that couldn't become live bindings (missing env
+   * credentials, unknown provider). Startup is where a silently-dead
+   * channel should surface, so they're reported here for the app to log.
+   */
+  skipped: SkippedChannelSpec[];
+}
+
+/**
+ * Provision webhooks for every binding that supports programmatic
+ * registration (Telegram `setWebhook`; Slack/Teams are manifest/console-driven
+ * and are reported as `manual-registration` with their URL, for the app to
+ * surface). Call once at startup.
+ *
+ * The origin resolves via {@link resolvePublicOrigin}: explicit argument >
+ * `PUBLIC_ORIGIN` env > running ngrok tunnel (local dev only — the tunnel
+ * probe is skipped on platform-linked deployments). When nothing resolves,
+ * no registration runs and every entry carries `reason: 'no-origin'` —
+ * logging/failing on that is the caller's policy, not the SDK's.
+ *
+ * ```ts
+ * const { origin, registrations } = await registerChannelWebhooks({ bindings });
+ * ```
+ */
+export async function registerChannelWebhooks(
+  options: RegisterChannelWebhooksOptions = {},
+  origin?: string,
+): Promise<ChannelProvisionResult> {
+  const skipped: SkippedChannelSpec[] = [];
+  const bindings = await resolveChannelBindings(options.timbal ?? new Timbal(), {
+    bindings: options.bindings,
+    channelSpecs: options.channelSpecs,
+    configCacheTtlMs: options.configCacheTtlMs,
+    env: options.env,
+    onSkippedSpec: (s) => skipped.push(s),
+  });
+  const prefix = options.prefix ?? '/channels';
+  const resolved = await resolvePublicOrigin({
+    origin,
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+  const base = resolved?.replace(/\/$/, '') ?? null;
+
+  const registrations: WebhookRegistration[] = [];
+  for (const binding of bindings) {
+    const path = resolveBindingPath(binding, prefix);
+    const url = base ? `${base}${path}` : null;
+
+    if (!url) {
+      registrations.push({
+        provider: binding.adapter.provider,
+        workforce: binding.workforce,
+        url: null,
+        registered: false,
+        reason: 'no-origin',
+      });
+      continue;
+    }
+    if (!binding.adapter.registerWebhook) {
+      registrations.push({
+        provider: binding.adapter.provider,
+        workforce: binding.workforce,
+        url,
+        registered: false,
+        reason: 'manual-registration',
+      });
+      continue;
+    }
+    await binding.adapter.registerWebhook(url);
+    registrations.push({
+      provider: binding.adapter.provider,
+      workforce: binding.workforce,
+      url,
+      registered: true,
+    });
+  }
+
+  return { origin: base, registrations, skipped };
+}

@@ -374,9 +374,48 @@ export interface Project {
   auth_providers?: AuthProvider[];
   repository_url: string | null;
   screenshot_url: string | null;
+  /**
+   * Messaging-channel bindings configured on the platform ("add Slack to
+   * this component" in the UI). Optional: platform responses predating the
+   * channels feature omit it — consumers fall back to env conventions.
+   * Topology only (which channel → which component); credentials never
+   * travel through project config.
+   */
+  channels?: ProjectChannelSpec[];
   created_at: number;
   updated_at: number;
   workforce: WorkforcePreview[];
+}
+
+/**
+ * One platform-configured channel binding.
+ * Webhook URL is derived as `/channels/{workforce}/{provider}` — the platform
+ * canonicalizes `workforce` to the component's manifest uid on read.
+ * Product rule: at most one enabled binding per `(workforce, provider)`.
+ *
+ * Two payloads carry this shape:
+ * - `project.channels` (topology): never contains `credentials`; may carry
+ *   `configured` so UIs can flag bindings whose secrets are missing.
+ * - `GET .../channels/runtime` (service-principal only): includes
+ *   `credentials` for platform-configured bindings.
+ */
+export interface ProjectChannelSpec {
+  /** Channel provider id: 'telegram', 'slack', ... */
+  provider: string;
+  /** Workforce component the channel talks to (manifest uid on read). */
+  workforce: string;
+  /** Soft toggle from the platform UI. @default true */
+  enabled?: boolean;
+  /** Whether credentials are stored platform-side (topology payload only). */
+  configured?: boolean;
+  /** Provider-specific non-secret config (runtime payload). */
+  config?: Record<string, unknown>;
+  /**
+   * Provider-specific secrets (runtime payload only; `null` when not
+   * configured). Telegram: `{ token, secret_token? }`. Slack:
+   * `{ bot_token, signing_secret }`. Hold in memory only; never log.
+   */
+  credentials?: Record<string, string> | null;
 }
 
 // ── Auth ──
