@@ -256,6 +256,22 @@ describe('timbalMcp transport', () => {
     expect(text).toContain('[truncated 400 of 500 bytes]');
   });
 
+  test('truncation is byte-accurate for multibyte content and never splits a character', async () => {
+    // '€' is 3 bytes in UTF-8 — 200 of them is 600 bytes, but only 200
+    // UTF-16 code units, so a naive String.slice(0, 100) would keep 300 bytes.
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'], maxResultBytes: 100 }))
+      .get('/euros', () => '€'.repeat(200), { detail: { tags: ['T'] } });
+    const { result } = await rpc(app, 'tools/call', { name: 'get_euros', arguments: {} });
+    const text = (result!.content as { text: string }[])[0]!.text;
+
+    const body = text.slice(0, text.indexOf('\n'));
+    expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(100);
+    expect(body).toBe('€'.repeat(33)); // 99 bytes — backed off the 100-byte mid-character cut
+    expect(text).toContain('[truncated 501 of 600 bytes]');
+    expect(body).not.toInclude('\uFFFD'); // no mangled character at the cut point
+  });
+
   test('onToolCall observes successes, errors, and never breaks the transport', async () => {
     const calls: { tool: string; status: number | null; isError: boolean }[] = [];
     const app = new Elysia()

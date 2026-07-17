@@ -357,6 +357,31 @@ function buildToolRequest(
   return new Request(url.toString(), { method: binding.method, headers, body });
 }
 
+/**
+ * Truncate to a UTF-8 byte budget. A `String.slice` would count UTF-16 code
+ * units — up to 3–4 bytes each — letting multibyte content blow past the cap
+ * and potentially cutting a surrogate pair in half. Slicing the encoded bytes
+ * and backing off to a sequence boundary (continuation bytes are `0b10xxxxxx`)
+ * keeps the budget exact and the output valid UTF-8.
+ */
+function truncateUtf8(
+  text: string,
+  maxBytes: number
+): { text: string; byteLength: number; keptBytes: number; truncated: boolean } {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes) {
+    return { text, byteLength: bytes.length, keptBytes: bytes.length, truncated: false };
+  }
+  let end = maxBytes;
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return {
+    text: new TextDecoder().decode(bytes.subarray(0, end)),
+    byteLength: bytes.length,
+    keptBytes: end,
+    truncated: true,
+  };
+}
+
 function jsonRpcResult(id: string | number | null, result: unknown): Response {
   return Response.json({ jsonrpc: '2.0', id, result });
 }
@@ -471,13 +496,16 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
       const text = await response.text();
 
       // Cap before it reaches the agent — an unbounded list dump silently
-      // eats the context window. Char-based slice over exact bytes is fine;
-      // the marker tells the agent (and the user reading the transcript)
-      // that data is missing rather than exhaustive.
-      const byteLength = Buffer.byteLength(text, 'utf8');
-      const truncated = byteLength > maxResultBytes;
+      // eats the context window. The marker tells the agent (and the user
+      // reading the transcript) that data is missing rather than exhaustive.
+      const {
+        text: cappedText,
+        byteLength,
+        keptBytes,
+        truncated,
+      } = truncateUtf8(text, maxResultBytes);
       const finalText = truncated
-        ? `${text.slice(0, maxResultBytes)}\n… [truncated ${byteLength - maxResultBytes} of ${byteLength} bytes]`
+        ? `${cappedText}\n… [truncated ${byteLength - keptBytes} of ${byteLength} bytes]`
         : text;
 
       // structuredContent only when the tool declared an outputSchema (the
