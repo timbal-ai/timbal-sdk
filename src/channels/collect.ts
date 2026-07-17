@@ -1,6 +1,16 @@
 import type { WorkforceEvent } from '../lib/workforce/events';
 
 /**
+ * A file the agent attached to its reply. `file` is how the Timbal runtime
+ * serializes a `File`: the persisted platform URL when the file was
+ * persisted, otherwise a `data:<mime>;base64,...` URL.
+ */
+export interface ReplyFile {
+  file: string;
+  fileName?: string;
+}
+
+/**
  * Accumulates the user-facing reply text out of a workforce SSE stream.
  *
  * Understands the Timbal Python runtime's event vocabulary (both local
@@ -11,8 +21,10 @@ import type { WorkforceEvent } from '../lib/workforce/events';
  * - `OUTPUT` (top-level only, i.e. `path` without a dot) — the definitive
  *   result. Supersedes everything accumulated: extracts a plain string
  *   output directly, or joins the `text` blocks of a Message-shaped
- *   `{ content: [...] }` output. Nested OUTPUTs (tools, sub-steps —
- *   dotted paths like `agent.get_datetime`) are ignored.
+ *   `{ content: [...] }` output. `file` blocks in that content are
+ *   collected into {@link files} (they never stream as deltas). Nested
+ *   OUTPUTs (tools, sub-steps — dotted paths like `agent.get_datetime`)
+ *   are ignored.
  * - Lowercase `delta` / `output` — tolerated for custom components that
  *   emit simplified events.
  *
@@ -21,6 +33,7 @@ import type { WorkforceEvent } from '../lib/workforce/events';
 export class WorkforceTextCollector {
   private accumulated = '';
   private finalText: string | null = null;
+  private replyFiles: ReplyFile[] = [];
 
   /**
    * Feed one event. Returns the current best text when this event changed
@@ -49,6 +62,7 @@ export class WorkforceTextCollector {
       // (dotted paths) emit their own OUTPUTs with tool results.
       const path = typeof ev.path === 'string' ? ev.path : '';
       if (path.includes('.')) return null;
+      this.replyFiles = extractOutputFiles(ev.output);
       const extracted = extractOutputText(ev.output);
       if (extracted !== null) {
         this.finalText = extracted;
@@ -73,6 +87,11 @@ export class WorkforceTextCollector {
   /** Best known reply text right now: the final OUTPUT if seen, else the accumulation. */
   get text(): string {
     return this.finalText ?? this.accumulated;
+  }
+
+  /** Files attached to the reply (from the top-level OUTPUT). */
+  get files(): ReplyFile[] {
+    return this.replyFiles;
   }
 }
 
@@ -101,4 +120,23 @@ function extractOutputText(output: unknown): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Pull `{type:'file'}` blocks out of an OUTPUT event's Message-shaped
+ * `output`. The runtime serializes `FileContent` as
+ * `{ type: 'file', file: <url-or-data-url string>, name?: string }`.
+ */
+function extractOutputFiles(output: unknown): ReplyFile[] {
+  if (!output || typeof output !== 'object') return [];
+  const content = (output as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  const files: ReplyFile[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const { type, file, name } = block as { type?: unknown; file?: unknown; name?: unknown };
+    if (type !== 'file' || typeof file !== 'string' || !file) continue;
+    files.push({ file, fileName: typeof name === 'string' && name ? name : undefined });
+  }
+  return files;
 }

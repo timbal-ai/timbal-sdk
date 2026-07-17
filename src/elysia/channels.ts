@@ -241,10 +241,14 @@ export async function resolveChannelBindings(
  * })
  * ```
  *
- * The default workforce input is `{ prompt: event.text }`; use
- * `binding.buildInput` to thread conversation/user context into components
- * with richer input schemas (e.g. session continuity keyed on
- * `event.conversationId`).
+ * The default workforce input is `{ prompt: event.text }`. Events carrying
+ * attachments (Telegram photos/documents) are re-uploaded to Timbal temp
+ * storage and sent as prompt content parts
+ * (`{ prompt: [{type:'text',...}, {type:'file', file: url}] }`) — the same
+ * shape the platform chat UI produces. Use `binding.buildInput` to thread
+ * conversation/user context into components with richer input schemas (e.g.
+ * session continuity keyed on `event.conversationId`); an override takes
+ * full control, including attachment handling via `event.attachments`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function timbalChannels(options: TimbalChannelsOptions = {}): any {
@@ -269,16 +273,64 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     }
   };
 
+  /**
+   * Default workforce input. Text-only events keep the legacy shape
+   * (`{ prompt: text }`). Events with attachments download each file from
+   * the provider (adapter-authenticated) and re-upload it to Timbal temp
+   * storage (`POST /files`) via the pipeline's own client — on deployed
+   * projects that authenticates as the project service principal
+   * (`TIMBAL_PROJECT_SECRET`) — then send prompt content parts, the same
+   * shape the platform chat UI uses.
+   */
+  async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
+    const attachments = event.attachments ?? [];
+    if (attachments.length === 0) return { prompt: event.text };
+
+    const parts: Array<Record<string, unknown>> = [];
+    if (event.text) parts.push({ type: 'text', text: event.text });
+    const failures: unknown[] = [];
+    for (const attachment of attachments) {
+      try {
+        const { data, contentType, fileName } = await attachment.download();
+        const tmp = await timbal.uploadTempFileFromBuffer(data, fileName, contentType);
+        parts.push({ type: 'file', file: tmp.url });
+      } catch (err) {
+        // Per-attachment fail-soft: a 20MB-cap photo shouldn't sink the
+        // caption + other files. Collected, not thrown — unless nothing at
+        // all survives.
+        failures.push(err);
+      }
+    }
+    if (parts.length === 0) {
+      // Bare attachment(s), all failed — nothing to run the workforce on.
+      // Throw into the pipeline's error path so the user gets the notice.
+      throw failures[0] ?? new Error('No usable message content');
+    }
+    for (const err of failures) {
+      try {
+        options.onError?.(err, event);
+      } catch {
+        /* observer must not take down the pipeline */
+      }
+    }
+    return { prompt: parts };
+  }
+
   async function process(binding: ChannelBinding, event: ChannelEvent): Promise<void> {
-    const reply = new StreamingReply(binding.adapter.delivery(event), {
+    const delivery = binding.adapter.delivery(event);
+    const reply = new StreamingReply(delivery, {
       // Product default is OFF while streaming is experimental; the
       // low-level StreamingReply class itself defaults on.
       streaming: binding.streaming ?? options.streaming ?? false,
       editIntervalMs: options.editIntervalMs,
     });
+    // Tracked outside `try` so the catch can tell "file already reached the
+    // user" apart from "nothing delivered" — StreamingReply only knows about
+    // text.
+    let fileDelivered = false;
     try {
       const wf = timbal.workforce.get(binding.workforce);
-      const input = binding.buildInput?.(event) ?? { prompt: event.text };
+      const input = binding.buildInput?.(event) ?? (await buildDefaultInput(event));
 
       const sessionKey = `${event.provider}:${event.conversationId}`;
       const parentId = sessions?.get(sessionKey);
@@ -292,11 +344,37 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         const updated = collector.push(ev);
         if (updated !== null) reply.update(updated);
       }
-      const delivered = await reply.finalize(collector.text);
+      const textDelivered = await reply.finalize(collector.text);
+
+      // Files the agent attached to its reply — sent after the text, in
+      // order. Channels with `sendFile` get the native treatment (Telegram
+      // sendPhoto/sendDocument); without it, URL files degrade to a plain
+      // link message and data-URL files are dropped (reported, not posted —
+      // megabytes of base64 as chat text helps nobody).
+      for (const file of collector.files) {
+        if (delivery.sendFile) {
+          await delivery.sendFile(file.file, { fileName: file.fileName });
+          fileDelivered = true;
+        } else if (!file.file.startsWith('data:')) {
+          await delivery.send(file.fileName ? `${file.fileName}: ${file.file}` : file.file);
+          fileDelivered = true;
+        } else {
+          try {
+            options.onError?.(
+              new Error('Reply file dropped: channel has no sendFile and file is a data URL'),
+              event,
+            );
+          } catch {
+            /* observer must not take down the pipeline */
+          }
+        }
+      }
       // Only advance the thread when the user actually got a reply — chaining
       // onto a silent/empty run would make the next message inherit a parent
       // the user never saw.
-      if (sessions && runId && delivered) sessions.set(sessionKey, runId);
+      if (sessions && runId && (textDelivered || fileDelivered)) {
+        sessions.set(sessionKey, runId);
+      }
     } catch (err) {
       // Drain in-flight stream sends before inspecting didDeliver — update()
       // enqueues asynchronously, so a throw right after the first delta can
@@ -305,7 +383,9 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
       // Release the dedupe claim only when nothing reached the channel yet —
       // otherwise Slack/Telegram redelivery would re-run the workforce and
       // post a duplicate on top of a partial reply. User can resend.
-      if (event.dedupeKey && !reply.didDeliver) dedupe.forget(event.dedupeKey);
+      if (event.dedupeKey && !reply.didDeliver && !fileDelivered) {
+        dedupe.forget(event.dedupeKey);
+      }
       try {
         options.onError?.(err, event);
       } catch {

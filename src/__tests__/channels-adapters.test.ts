@@ -49,17 +49,109 @@ describe('telegram adapter', () => {
     expect(ev.dedupeKey).toBe('telegram:42');
   });
 
-  test('parse drops bot echoes, non-text updates, and junk bodies', async () => {
+  test('parse drops bot echoes, contentless updates, and junk bodies', async () => {
     expect(
       await adapter.parse(
         req({ update_id: 1, message: { text: 'x', chat: { id: 1 }, from: { is_bot: true } } }),
       ),
     ).toHaveLength(0);
+    // No text, no media (sticker/join/etc. subset) → nothing to act on.
     expect(
       await adapter.parse(req({ update_id: 2, message: { chat: { id: 1 }, from: {} } })),
     ).toHaveLength(0);
     expect(await adapter.parse(req({ update_id: 3 }))).toHaveLength(0);
     expect(await adapter.parse(req('not json'))).toHaveLength(0);
+  });
+
+  test('parse normalizes a photo message: caption as text, largest size, jpeg', async () => {
+    const events = await adapter.parse(
+      req({
+        update_id: 43,
+        message: {
+          message_id: 8,
+          caption: 'what is this?',
+          chat: { id: 555 },
+          from: { id: 99, is_bot: false, username: 'dani' },
+          photo: [
+            { file_id: 'small', file_unique_id: 'u1', file_size: 100 },
+            { file_id: 'large', file_unique_id: 'u1', file_size: 9000 },
+          ],
+        },
+      }),
+    );
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    expect(ev.text).toBe('what is this?');
+    expect(ev.attachments).toHaveLength(1);
+    const att = ev.attachments![0]!;
+    expect(att.kind).toBe('image');
+    expect(att.fileName).toBe('photo_u1.jpg');
+    expect(att.contentType).toBe('image/jpeg');
+    expect(att.sizeBytes).toBe(9000);
+  });
+
+  test('parse keeps a bare photo (no caption) with empty text', async () => {
+    const events = await adapter.parse(
+      req({
+        update_id: 44,
+        message: {
+          chat: { id: 555 },
+          from: { id: 99 },
+          photo: [{ file_id: 'f1', file_unique_id: 'u2' }],
+        },
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.text).toBe('');
+    expect(events[0]!.attachments).toHaveLength(1);
+  });
+
+  test('parse normalizes a document: name + mime, image mime → image kind', async () => {
+    const pdf = await adapter.parse(
+      req({
+        update_id: 45,
+        message: {
+          chat: { id: 555 },
+          from: { id: 99 },
+          caption: 'read this',
+          document: {
+            file_id: 'doc1',
+            file_unique_id: 'ud1',
+            file_name: 'report.pdf',
+            mime_type: 'application/pdf',
+            file_size: 12345,
+          },
+        },
+      }),
+    );
+    const att = pdf[0]!.attachments![0]!;
+    expect(att.kind).toBe('document');
+    expect(att.fileName).toBe('report.pdf');
+    expect(att.contentType).toBe('application/pdf');
+    expect(att.sizeBytes).toBe(12345);
+
+    // Uncompressed image sent "as file" still classifies as image.
+    const img = await adapter.parse(
+      req({
+        update_id: 46,
+        message: {
+          chat: { id: 555 },
+          from: { id: 99 },
+          document: { file_id: 'doc2', file_name: 'shot.png', mime_type: 'image/png' },
+        },
+      }),
+    );
+    expect(img[0]!.attachments![0]!.kind).toBe('image');
+  });
+
+  test('text-only events carry no attachments field', async () => {
+    const events = await adapter.parse(
+      req({
+        update_id: 47,
+        message: { text: 'plain', chat: { id: 555 }, from: { id: 99 } },
+      }),
+    );
+    expect(events[0]!.attachments).toBeUndefined();
   });
 
   test('constructor requires botToken; secretToken is derived when absent', () => {
@@ -147,6 +239,158 @@ describe('telegram delivery + registerWebhook (mocked API)', () => {
     nextResponses.push({ ok: false, description: 'chat not found' });
     const delivery = adapter.delivery(event);
     expect(delivery.send('x')).rejects.toThrow(/sendMessage.*chat not found/);
+  });
+});
+
+describe('telegram sendFile (mocked API)', () => {
+  const originalFetch = globalThis.fetch;
+  /** JSON calls record the parsed body; multipart calls record the FormData. */
+  let calls: { url: string; json?: Record<string, unknown>; form?: FormData }[] = [];
+  let failOnce: string | null = null;
+
+  beforeEach(() => {
+    calls = [];
+    failOnce = null;
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      const u = String(url);
+      const entry: (typeof calls)[number] = { url: u };
+      if (init?.body instanceof FormData) entry.form = init.body;
+      else entry.json = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      calls.push(entry);
+      if (failOnce && u.endsWith(failOnce)) {
+        failOnce = null;
+        return new Response(JSON.stringify({ ok: false, description: 'PHOTO_INVALID_DIMENSIONS' }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 77 } }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const adapter = telegram({
+    botToken: '123:abc',
+    secretToken: 's3cret',
+    apiBase: 'https://tg.test',
+  });
+  const delivery = () =>
+    adapter.delivery({ provider: 'telegram', conversationId: '555', text: '', raw: {} });
+
+  test('image URL goes out as sendPhoto with the URL passed through', async () => {
+    const ref = await delivery().sendFile!('https://cdn.test/chart.png');
+    expect(ref).toBe(77);
+    expect(calls[0]!.url).toBe('https://tg.test/bot123:abc/sendPhoto');
+    expect(calls[0]!.json).toEqual({ chat_id: '555', photo: 'https://cdn.test/chart.png' });
+  });
+
+  test('non-image URL goes out as sendDocument', async () => {
+    await delivery().sendFile!('https://cdn.test/report.pdf', { fileName: 'report.pdf' });
+    expect(calls[0]!.url).toBe('https://tg.test/bot123:abc/sendDocument');
+    expect(calls[0]!.json).toEqual({ chat_id: '555', document: 'https://cdn.test/report.pdf' });
+  });
+
+  test('fileName drives photo/document choice when the URL has no extension', async () => {
+    await delivery().sendFile!('https://cdn.test/f/abc123', { fileName: 'pic.jpg' });
+    expect(calls[0]!.url).toBe('https://tg.test/bot123:abc/sendPhoto');
+  });
+
+  test('data URL uploads bytes as multipart', async () => {
+    const b64 = Buffer.from([1, 2, 3]).toString('base64');
+    await delivery().sendFile!(`data:image/png;base64,${b64}`, { fileName: 'gen.png' });
+    expect(calls[0]!.url).toBe('https://tg.test/bot123:abc/sendPhoto');
+    const form = calls[0]!.form!;
+    expect(form.get('chat_id')).toBe('555');
+    const blob = form.get('photo') as globalThis.File;
+    expect(blob.name).toBe('gen.png');
+    expect(blob.type).toBe('image/png');
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  test('rejected sendPhoto falls back to sendDocument', async () => {
+    failOnce = '/sendPhoto';
+    const ref = await delivery().sendFile!('https://cdn.test/huge.png');
+    expect(ref).toBe(77);
+    expect(calls.map((c) => c.url.split('/').pop())).toEqual(['sendPhoto', 'sendDocument']);
+    expect(calls[1]!.json).toEqual({ chat_id: '555', document: 'https://cdn.test/huge.png' });
+  });
+
+  test('document failures propagate (no infinite fallback)', async () => {
+    failOnce = '/sendDocument';
+    expect(delivery().sendFile!('https://cdn.test/report.pdf')).rejects.toThrow(/sendDocument/);
+  });
+});
+
+describe('telegram attachment download (mocked API)', () => {
+  const originalFetch = globalThis.fetch;
+  let requests: string[] = [];
+
+  const BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0x00]); // JPEG-ish
+
+  beforeEach(() => {
+    requests = [];
+    globalThis.fetch = (async (url: string | Request) => {
+      const u = String(url);
+      requests.push(u);
+      if (u.includes('/getFile')) {
+        return new Response(
+          JSON.stringify({ ok: true, result: { file_path: 'photos/file_9.jpg' } }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      // The file-path download endpoint serves raw bytes.
+      return new Response(BYTES, { headers: { 'Content-Type': 'image/jpeg' } });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const adapter = telegram({
+    botToken: '123:abc',
+    secretToken: 's3cret',
+    apiBase: 'https://tg.test',
+  });
+
+  async function photoAttachment() {
+    const events = await adapter.parse(
+      req(
+        {
+          update_id: 50,
+          message: {
+            chat: { id: 555 },
+            from: { id: 99 },
+            photo: [{ file_id: 'f-large', file_unique_id: 'u9' }],
+          },
+        },
+        { 'x-telegram-bot-api-secret-token': 's3cret' },
+      ),
+    );
+    return events[0]!.attachments![0]!;
+  }
+
+  test('download exchanges file_id via getFile and fetches the file path', async () => {
+    const att = await photoAttachment();
+    const { data, contentType, fileName } = await att.download();
+    expect(requests[0]).toBe('https://tg.test/bot123:abc/getFile');
+    expect(requests[1]).toBe('https://tg.test/file/bot123:abc/photos/file_9.jpg');
+    expect(data).toEqual(BYTES);
+    expect(contentType).toBe('image/jpeg');
+    expect(fileName).toBe('photo_u9.jpg');
+  });
+
+  test('download surfaces a missing file_path as an error', async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ ok: true, result: {} }), {
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch;
+    const att = await photoAttachment();
+    expect(att.download()).rejects.toThrow(/file_path/);
   });
 });
 

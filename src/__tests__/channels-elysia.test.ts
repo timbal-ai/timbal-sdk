@@ -329,6 +329,330 @@ describe('timbalChannels plugin', () => {
     expect(invocations[0]!.input).toEqual({ message: 'yo', session: 'conv-1' });
   });
 
+  describe('attachments', () => {
+    /**
+     * Media-aware fake adapter: body is `{ id, text, files: [{name, type,
+     * fail?}] }`; each file becomes an attachment whose download() yields
+     * one byte per name char (or throws when `fail`).
+     */
+    function makeMediaAdapter() {
+      const base = makeAdapter('media');
+      const adapter: ChannelAdapter = {
+        ...base.adapter,
+        parse(req: WebhookRequest) {
+          const body = JSON.parse(req.rawBody) as {
+            id?: string;
+            text?: string;
+            files?: { name: string; type: string; fail?: boolean }[];
+          };
+          const attachments = (body.files ?? []).map((f) => ({
+            kind: 'document' as const,
+            fileName: f.name,
+            contentType: f.type,
+            async download() {
+              if (f.fail) throw new Error(`download failed: ${f.name}`);
+              return {
+                data: new Uint8Array(f.name.length),
+                contentType: f.type,
+                fileName: f.name,
+              };
+            },
+          }));
+          const event: ChannelEvent = {
+            provider: 'media',
+            conversationId: 'conv-1',
+            text: body.text ?? '',
+            attachments: attachments.length > 0 ? attachments : undefined,
+            dedupeKey: body.id ? `media:${body.id}` : undefined,
+            raw: body,
+          };
+          return [event];
+        },
+      };
+      return { ...base, adapter };
+    }
+
+    /** makeTimbal + a recording uploadTempFileFromBuffer. */
+    function makeUploadingTimbal() {
+      const { timbal, invocations } = makeTimbal(() => [
+        { type: 'delta', delta: 'seen it' },
+      ]);
+      const uploads: { filename: string; contentType?: string; bytes: number }[] = [];
+      (timbal as unknown as Record<string, unknown>).uploadTempFileFromBuffer =
+        async (data: Uint8Array, filename: string, contentType?: string) => {
+          uploads.push({ filename, contentType, bytes: data.byteLength });
+          return { url: `https://cdn.test/tmp/${filename}` };
+        };
+      return { timbal, invocations, uploads };
+    }
+
+    test('uploads attachments and sends prompt content parts', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        text: 'what does this say?',
+        files: [{ name: 'scan.pdf', type: 'application/pdf' }],
+      });
+      await settle();
+
+      expect(uploads).toEqual([
+        { filename: 'scan.pdf', contentType: 'application/pdf', bytes: 8 },
+      ]);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: 'what does this say?' },
+          { type: 'file', file: 'https://cdn.test/tmp/scan.pdf' },
+        ],
+      });
+    });
+
+    test('bare attachment (no caption) sends a file-only prompt', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'pic.jpg', type: 'image/jpeg' }],
+      });
+      await settle();
+
+      expect(invocations[0]!.input).toEqual({
+        prompt: [{ type: 'file', file: 'https://cdn.test/tmp/pic.jpg' }],
+      });
+    });
+
+    test('text-only events keep the legacy { prompt: text } shape', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), { id: 'e1', text: 'plain' });
+      await settle();
+
+      expect(invocations[0]!.input).toEqual({ prompt: 'plain' });
+    });
+
+    test('a failed attachment is dropped, the rest still runs', async () => {
+      const { adapter, sent } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        text: 'two files',
+        files: [
+          { name: 'huge.mov', type: 'video/quicktime', fail: true },
+          { name: 'ok.pdf', type: 'application/pdf' },
+        ],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual(['ok.pdf']);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: 'two files' },
+          { type: 'file', file: 'https://cdn.test/tmp/ok.pdf' },
+        ],
+      });
+      // Drop is surfaced to the observer but the reply still lands.
+      expect(errors).toHaveLength(1);
+      expect(sent).toContain('seen it');
+    });
+
+    test('all attachments failing with no text hits the error path', async () => {
+      const { adapter, sent } = makeMediaAdapter();
+      const { timbal, invocations } = makeUploadingTimbal();
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          errorMessage: 'could not read your file',
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'broken.bin', type: 'application/octet-stream', fail: true }],
+      });
+      await settle();
+
+      expect(invocations).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(sent).toEqual(['could not read your file']);
+    });
+  });
+
+  describe('outbound files', () => {
+    /** makeAdapter + a recording sendFile on the delivery. */
+    function makeFileAdapter() {
+      const base = makeAdapter('fake');
+      const sentFiles: { file: string; fileName?: string }[] = [];
+      const adapter: ChannelAdapter = {
+        ...base.adapter,
+        delivery(event) {
+          const d = base.adapter.delivery(event);
+          return {
+            ...d,
+            async sendFile(file: string, opts?: { fileName?: string }) {
+              sentFiles.push({ file, fileName: opts?.fileName });
+              return 'file-ref';
+            },
+          };
+        },
+      };
+      return { ...base, adapter, sentFiles };
+    }
+
+    const outputWithFiles = (
+      text: string | null,
+      files: { file: string; name?: string }[],
+    ) => [
+      { type: 'START', run_id: 'r1' },
+      {
+        type: 'OUTPUT',
+        run_id: 'r1',
+        path: 'agent',
+        output: {
+          role: 'assistant',
+          content: [
+            ...(text ? [{ type: 'text', text }] : []),
+            ...files.map((f) => ({ type: 'file', ...f })),
+          ],
+        },
+      },
+    ];
+
+    test('reply files are sent after the text, in order', async () => {
+      const { adapter, sent, sentFiles } = makeFileAdapter();
+      const { timbal } = makeTimbal(() =>
+        outputWithFiles('here you go', [
+          { file: 'https://cdn.test/a.png', name: 'a.png' },
+          { file: 'https://cdn.test/b.pdf', name: 'b.pdf' },
+        ]),
+      );
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a'), { id: 'e1', text: 'make me a chart' });
+      await settle();
+
+      expect(sent).toEqual(['here you go']);
+      expect(sentFiles).toEqual([
+        { file: 'https://cdn.test/a.png', fileName: 'a.png' },
+        { file: 'https://cdn.test/b.pdf', fileName: 'b.pdf' },
+      ]);
+    });
+
+    test('a file-only reply still counts as delivered (session advances)', async () => {
+      const { adapter, sent, sentFiles } = makeFileAdapter();
+      const { timbal, invocations } = makeTimbal(() =>
+        outputWithFiles(null, [{ file: 'https://cdn.test/a.png' }]),
+      );
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a'), { id: 'e1', text: 'chart please' });
+      await settle();
+      await post(app, channelPath('a'), { id: 'e2', text: 'another' });
+      await settle();
+
+      expect(sent).toHaveLength(0);
+      expect(sentFiles).toHaveLength(2);
+      // The silent-but-file-carrying first run must chain the second message.
+      expect(invocations[1]!.ctx?.parentId).toBe('r1');
+    });
+
+    test('no sendFile: URL files degrade to a link message, data URLs are dropped', async () => {
+      const { adapter, sent } = makeAdapter(); // no sendFile
+      const { timbal } = makeTimbal(() =>
+        outputWithFiles('done', [
+          { file: 'https://cdn.test/a.png', name: 'a.png' },
+          { file: 'data:image/png;base64,AAAA', name: 'gen.png' },
+        ]),
+      );
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a'), { id: 'e1', text: 'hi' });
+      await settle();
+
+      expect(sent).toEqual(['done', 'a.png: https://cdn.test/a.png']);
+      expect(errors).toHaveLength(1);
+      expect(String(errors[0])).toContain('data URL');
+    });
+
+    test('sendFile failure after text lands posts the error notice and keeps dedupe', async () => {
+      const base = makeAdapter();
+      let attempts = 0;
+      const adapter: ChannelAdapter = {
+        ...base.adapter,
+        delivery(event) {
+          return {
+            ...base.adapter.delivery(event),
+            async sendFile() {
+              throw new Error('file send exploded');
+            },
+          };
+        },
+      };
+      const timbal = {
+        workforce: {
+          get() {
+            return {
+              async *events(): AsyncGenerator<Record<string, unknown>> {
+                attempts += 1;
+                yield* outputWithFiles('text part', [{ file: 'https://cdn.test/a.png' }]);
+              },
+            };
+          },
+        },
+      } as unknown as Timbal;
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          errorMessage: 'file failed',
+        }),
+      );
+
+      await post(app, channelPath('a'), { id: 'same', text: 'hi' });
+      await settle();
+      expect(base.sent).toEqual(['text part', 'file failed']);
+
+      // Text already reached the user — redelivery must not re-run.
+      await post(app, channelPath('a'), { id: 'same', text: 'hi' });
+      await settle();
+      expect(attempts).toBe(1);
+    });
+  });
+
   test('handles the Timbal runtime vocabulary (DELTA/OUTPUT)', async () => {
     const { adapter, sent, edits } = makeAdapter();
     const { timbal } = makeTimbal(() => [

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type {
   ChannelAdapter,
+  ChannelAttachment,
+  ChannelAttachmentData,
   ChannelDelivery,
   ChannelEvent,
   WebhookRequest,
@@ -31,14 +33,67 @@ export function deriveTelegramSecretToken(botToken: string): string {
     .slice(0, 32);
 }
 
+const IMAGE_EXTENSION = /\.(jpe?g|png|gif|webp|bmp|tiff?)$/i;
+
+/** Whether a reply file should go out as a Telegram photo rather than a document. */
+function looksLikeImage(file: string, fileName?: string): boolean {
+  if (file.startsWith('data:')) return file.startsWith('data:image/');
+  if (fileName && IMAGE_EXTENSION.test(fileName)) return true;
+  return IMAGE_EXTENSION.test(file.split(/[?#]/, 1)[0] ?? '');
+}
+
+const MIME_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'application/pdf': 'pdf',
+  'text/plain': 'txt',
+  'text/csv': 'csv',
+};
+
+/** Decode a `data:` URL into bytes + MIME (base64 or percent-encoded). */
+function decodeDataUrl(dataUrl: string): { data: Uint8Array; contentType: string } {
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(dataUrl);
+  if (!match) throw new Error('Malformed data URL');
+  const contentType = match[1] || 'application/octet-stream';
+  const payload = match[3] ?? '';
+  const data = match[2]
+    ? new Uint8Array(Buffer.from(payload, 'base64'))
+    : new TextEncoder().encode(decodeURIComponent(payload));
+  return { data, contentType };
+}
+
+/** Subset of Telegram's `PhotoSize`. */
+interface TelegramPhotoSize {
+  file_id?: string;
+  file_unique_id?: string;
+  file_size?: number;
+}
+
+/** Subset of Telegram's `Document`. */
+interface TelegramDocument {
+  file_id?: string;
+  file_unique_id?: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
 /** Subset of Telegram's `Update` we care about. */
 interface TelegramUpdate {
   update_id?: number;
   message?: {
     message_id?: number;
     text?: string;
+    /** Media messages carry their text here instead of `text`. */
+    caption?: string;
     chat?: { id?: number };
     from?: { id?: number; is_bot?: boolean; first_name?: string; username?: string };
+    /** Compressed photo — one entry per resolution, ascending. */
+    photo?: TelegramPhotoSize[];
+    /** Generic file — also how Telegram sends "uncompressed" images. */
+    document?: TelegramDocument;
   };
 }
 
@@ -64,12 +119,7 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
   const secretToken = options.secretToken || deriveTelegramSecretToken(botToken);
   const apiBase = options.apiBase ?? 'https://api.telegram.org';
 
-  async function api(method: string, body: Record<string, unknown>): Promise<unknown> {
-    const res = await fetch(`${apiBase}/bot${botToken}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+  async function parseApiResponse(res: Response, method: string): Promise<unknown> {
     const payload = (await res.json().catch(() => null)) as
       | { ok?: boolean; result?: unknown; description?: string }
       | null;
@@ -79,6 +129,90 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
       );
     }
     return payload.result;
+  }
+
+  async function api(method: string, body: Record<string, unknown>): Promise<unknown> {
+    const res = await fetch(`${apiBase}/bot${botToken}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return parseApiResponse(res, method);
+  }
+
+  /** Multipart variant of {@link api} — used to upload file bytes. */
+  async function apiForm(method: string, form: FormData): Promise<unknown> {
+    const res = await fetch(`${apiBase}/bot${botToken}/${method}`, {
+      method: 'POST',
+      body: form,
+    });
+    return parseApiResponse(res, method);
+  }
+
+  /**
+   * Exchange a `file_id` for bytes: `getFile` → download from the
+   * token-bearing file URL. That URL embeds the bot token and expires
+   * (~1h), so it never leaves the adapter — callers get bytes only.
+   * Bot API caps `getFile` downloads at 20MB; larger files fail here.
+   */
+  async function downloadFile(fileId: string): Promise<{ data: Uint8Array; contentType: string | null }> {
+    const info = (await api('getFile', { file_id: fileId })) as { file_path?: string };
+    if (!info?.file_path) {
+      throw new Error('Telegram getFile returned no file_path');
+    }
+    const res = await fetch(`${apiBase}/file/bot${botToken}/${info.file_path}`);
+    if (!res.ok) {
+      throw new Error(`Telegram file download failed (${res.status})`);
+    }
+    return {
+      data: new Uint8Array(await res.arrayBuffer()),
+      contentType: res.headers.get('content-type'),
+    };
+  }
+
+  function parseAttachments(message: NonNullable<TelegramUpdate['message']>): ChannelAttachment[] {
+    const attachments: ChannelAttachment[] = [];
+
+    // `photo` lists resolutions in ascending size — last is the original's
+    // largest rendition. Compressed photos are always JPEG and carry no name.
+    const photo = message.photo?.[message.photo.length - 1];
+    if (photo?.file_id) {
+      const fileId = photo.file_id;
+      const fileName = `photo_${photo.file_unique_id ?? fileId}.jpg`;
+      attachments.push({
+        kind: 'image',
+        fileName,
+        contentType: 'image/jpeg',
+        sizeBytes: photo.file_size,
+        async download(): Promise<ChannelAttachmentData> {
+          const { data, contentType } = await downloadFile(fileId);
+          return { data, contentType: contentType ?? 'image/jpeg', fileName };
+        },
+      });
+    }
+
+    const doc = message.document;
+    if (doc?.file_id) {
+      const fileId = doc.file_id;
+      const fileName = doc.file_name ?? `document_${doc.file_unique_id ?? fileId}`;
+      const declaredType = doc.mime_type;
+      attachments.push({
+        kind: declaredType?.startsWith('image/') ? 'image' : 'document',
+        fileName,
+        contentType: declaredType,
+        sizeBytes: doc.file_size,
+        async download(): Promise<ChannelAttachmentData> {
+          const { data, contentType } = await downloadFile(fileId);
+          return {
+            data,
+            contentType: declaredType ?? contentType ?? 'application/octet-stream',
+            fileName,
+          };
+        },
+      });
+    }
+
+    return attachments;
   }
 
   return {
@@ -102,10 +236,18 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
 
       const message = update.message;
       const chatId = message?.chat?.id;
-      const text = message?.text;
-      // Skip non-text updates (stickers, joins, edits, callbacks) and bot
-      // echoes — replying to ourselves would loop.
-      if (!message || chatId === undefined || !text || message.from?.is_bot) {
+      if (!message || chatId === undefined || message.from?.is_bot) {
+        return [];
+      }
+
+      // Media messages carry their text as `caption`. A bare photo/document
+      // has neither — still a valid event, with empty text.
+      const text = message.text ?? message.caption ?? '';
+      const attachments = parseAttachments(message);
+      // Skip updates with nothing to act on (stickers, joins, voice — for
+      // now —, edits, callbacks). Bot echoes are skipped above: replying to
+      // ourselves would loop.
+      if (!text && attachments.length === 0) {
         return [];
       }
 
@@ -117,6 +259,7 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
             message.from?.id !== undefined ? String(message.from.id) : undefined,
           userDisplayName: message.from?.username ?? message.from?.first_name,
           text,
+          attachments: attachments.length > 0 ? attachments : undefined,
           dedupeKey:
             update.update_id !== undefined
               ? `telegram:${update.update_id}`
@@ -157,6 +300,37 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
               return;
             }
             throw err;
+          }
+        },
+        async sendFile(file: string, opts?: { fileName?: string }): Promise<unknown> {
+          const asPhoto = looksLikeImage(file, opts?.fileName);
+          const post = async (method: 'sendPhoto' | 'sendDocument'): Promise<unknown> => {
+            const field = method === 'sendPhoto' ? 'photo' : 'document';
+            if (file.startsWith('data:')) {
+              // Unpersisted agent output — upload the bytes as multipart.
+              const { data, contentType } = decodeDataUrl(file);
+              const fileName =
+                opts?.fileName ?? `file.${MIME_EXTENSIONS[contentType] ?? 'bin'}`;
+              const form = new FormData();
+              form.append('chat_id', chatId);
+              form.append(field, new Blob([data], { type: contentType }), fileName);
+              return apiForm(method, form);
+            }
+            // https URL: Telegram fetches it server-side (caps: 5MB photos,
+            // 20MB documents by URL).
+            return api(method, { chat_id: chatId, [field]: file });
+          };
+          try {
+            const result = (await post(asPhoto ? 'sendPhoto' : 'sendDocument')) as {
+              message_id?: number;
+            };
+            return result?.message_id ?? null;
+          } catch (err) {
+            if (!asPhoto) throw err;
+            // sendPhoto is picky (5MB URL cap, dimension/format limits) —
+            // anything it rejects still reaches the user as a document.
+            const result = (await post('sendDocument')) as { message_id?: number };
+            return result?.message_id ?? null;
           }
         },
       };
