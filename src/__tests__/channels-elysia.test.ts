@@ -7,7 +7,12 @@ import {
   resolveChannelBindings,
 } from '../elysia/channels';
 import { clearProjectAuthConfigCache } from '../auth/config';
+import { clearRuntimeChannelsCache } from '../channels/runtime';
+import { deriveTelegramSecretToken } from '../channels/adapters/telegram';
+import { clearConfigRefreshHooks } from '../config/refresh';
+import { TimbalApiError } from '../lib/api';
 import type { Timbal } from '../lib/timbal';
+import type { ProjectChannelSpec } from '../types';
 import type {
   ChannelAdapter,
   ChannelBinding,
@@ -577,24 +582,49 @@ describe('timbalChannels plugin', () => {
  * Fake platform-linked Timbal: `getProject` returns the given project (or
  * rejects), with a unique org/project cache key per instance so the shared
  * auth-config cache never leaks across tests.
+ *
+ * `runtime` models `GET .../channels/runtime`:
+ * - omitted → 404 (older platform, falls back to the project payload)
+ * - array → the runtime channel specs (may carry `credentials`)
+ * - Error → endpoint failure (5xx/network)
+ * The returned array is read live, so tests can mutate it between calls.
  */
 let fakeProjectCounter = 0;
-function makePlatformTimbal(project: Record<string, unknown> | Error) {
+function makePlatformTimbal(
+  project: Record<string, unknown> | Error,
+  runtime?: ProjectChannelSpec[] | Error,
+) {
   const projectId = `test-proj-${++fakeProjectCounter}`;
   let fetches = 0;
+  let runtimeFetches = 0;
   const timbal = {
-    apiClient: { getConfig: () => ({ orgId: 'test-org', projectId }) },
+    apiClient: {
+      getConfig: () => ({ orgId: 'test-org', projectId, token: 'svc-secret' }),
+      async get() {
+        runtimeFetches += 1;
+        if (runtime === undefined) throw new TimbalApiError('Not Found', 404);
+        if (runtime instanceof Error) throw runtime;
+        return { data: { channels: runtime }, success: true, statusCode: 200 };
+      },
+    },
     async getProject() {
       fetches += 1;
       if (project instanceof Error) throw project;
       return project;
     },
   } as unknown as Timbal;
-  return { timbal, fetchCount: () => fetches };
+  return {
+    timbal,
+    fetchCount: () => fetches,
+    runtimeFetchCount: () => runtimeFetches,
+  };
 }
 
 describe('resolveChannelBindings', () => {
-  afterEach(() => clearProjectAuthConfigCache());
+  afterEach(() => {
+    clearProjectAuthConfigCache();
+    clearRuntimeChannelsCache();
+  });
 
   const TG_ENV = {
     TIMBAL_PROJECT_ID: '248',
@@ -613,7 +643,97 @@ describe('resolveChannelBindings', () => {
     expect(fetchCount()).toBe(0);
   });
 
-  test('platform project.channels drives the bindings (creds from env)', async () => {
+  test('runtime endpoint drives bindings with platform-held creds — zero channel env vars', async () => {
+    const { timbal, fetchCount } = makePlatformTimbal(
+      new Error('project payload must not be needed'),
+      [
+        {
+          provider: 'telegram',
+          workforce: 'platform-target',
+          credentials: { token: '999:platform-token' },
+        },
+      ],
+    );
+    const bindings = await resolveChannelBindings(timbal, {
+      env: { TIMBAL_PROJECT_ID: '248' }, // no TELEGRAM_*, no CHANNELS_WORKFORCE
+    });
+    expect(bindings.map((b) => [b.adapter.provider, b.workforce])).toEqual([
+      ['telegram', 'platform-target'],
+    ]);
+    expect(fetchCount()).toBe(0);
+  });
+
+  test('per-spec platform creds beat env convention vars', async () => {
+    const { timbal } = makePlatformTimbal({}, [
+      {
+        provider: 'telegram',
+        workforce: 'joi',
+        credentials: { token: '999:platform-token' },
+      },
+    ]);
+    const [binding] = await resolveChannelBindings(timbal, { env: TG_ENV });
+    // The adapter's webhook secret is derived from its bot token, so verify()
+    // tells us which token won.
+    const verifyWith = (token: string) =>
+      binding!.adapter.verify({
+        headers: new Headers({
+          'x-telegram-bot-api-secret-token': deriveTelegramSecretToken(token),
+        }),
+        rawBody: '{}',
+        url: 'https://x.test/channels/joi/telegram',
+      });
+    expect(verifyWith('999:platform-token')).toBe('ok');
+    expect(verifyWith(TG_ENV.TELEGRAM_BOT_TOKEN)).not.toBe('ok');
+  });
+
+  test('runtime spec without creds falls back to env vars per-spec', async () => {
+    const { timbal } = makePlatformTimbal({}, [
+      { provider: 'telegram', workforce: 'joi', credentials: null },
+    ]);
+    const bindings = await resolveChannelBindings(timbal, { env: TG_ENV });
+    expect(bindings.map((b) => [b.adapter.provider, b.workforce])).toEqual([
+      ['telegram', 'joi'],
+    ]);
+  });
+
+  test('runtime empty array is authoritative: all off, even with env creds present', async () => {
+    const { timbal } = makePlatformTimbal({}, []);
+    const bindings = await resolveChannelBindings(timbal, { env: TG_ENV });
+    expect(bindings).toEqual([]);
+  });
+
+  test('two telegram bindings route to different workforces with per-binding tokens', async () => {
+    const { timbal } = makePlatformTimbal(new Error('unused'), [
+      { provider: 'telegram', workforce: 'joi', credentials: { token: '111:bot-a' } },
+      { provider: 'telegram', workforce: 'ada', credentials: { token: '222:bot-b' } },
+    ]);
+    const bindings = await resolveChannelBindings(timbal, {
+      env: { TIMBAL_PROJECT_ID: '248' },
+    });
+    expect(bindings.map((b) => b.workforce)).toEqual(['joi', 'ada']);
+    const verifies = (b: ChannelBinding, token: string) =>
+      b.adapter.verify({
+        headers: new Headers({
+          'x-telegram-bot-api-secret-token': deriveTelegramSecretToken(token),
+        }),
+        rawBody: '{}',
+        url: 'https://x.test/',
+      }) === 'ok';
+    expect(verifies(bindings[0]!, '111:bot-a')).toBe(true);
+    expect(verifies(bindings[1]!, '222:bot-b')).toBe(true);
+    expect(verifies(bindings[0]!, '222:bot-b')).toBe(false);
+  });
+
+  test('runtime endpoint failure falls back to project payload topology + env creds', async () => {
+    const { timbal } = makePlatformTimbal(
+      { channels: [{ provider: 'telegram', workforce: 'platform-target' }] },
+      new TimbalApiError('boom', 500),
+    );
+    const bindings = await resolveChannelBindings(timbal, { env: TG_ENV });
+    expect(bindings.map((b) => b.workforce)).toEqual(['platform-target']);
+  });
+
+  test('OLDER platform (runtime 404): project.channels topology + env creds', async () => {
     const { timbal } = makePlatformTimbal({
       channels: [{ provider: 'telegram', workforce: 'platform-target' }],
     });
@@ -674,7 +794,11 @@ describe('resolveChannelBindings', () => {
 });
 
 describe('timbalChannels dynamic mode', () => {
-  afterEach(() => clearProjectAuthConfigCache());
+  afterEach(() => {
+    clearProjectAuthConfigCache();
+    clearRuntimeChannelsCache();
+    clearConfigRefreshHooks();
+  });
 
   test('routes per-request from platform config; unknown providers 404', async () => {
     const { timbal: platformTimbal } = makePlatformTimbal({

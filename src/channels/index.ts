@@ -9,10 +9,17 @@ export { DedupeCache } from './dedupe';
 export { WorkforceTextCollector } from './collect';
 export {
   channelSpecsFromProject,
+  filterChannelSpecs,
   materializeChannelBindings,
   type SkippedChannelSpec,
   type MaterializedBindings,
 } from './config';
+export {
+  getRuntimeChannels,
+  getCachedRuntimeChannels,
+  clearRuntimeChannelsCache,
+  type CachedRuntimeChannelsOptions,
+} from './runtime';
 export { StreamingReply, type StreamingReplyOptions } from './reply';
 export {
   channelBindingsFromEnv,

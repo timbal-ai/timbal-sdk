@@ -2,7 +2,13 @@ import type { Timbal } from '../lib/timbal';
 import type { TimbalAuthOptions } from './types';
 import type { Session, Project } from '../types';
 
-const DEFAULT_PUBLIC_PATHS = ['/auth/', '/healthcheck'];
+// `/__timbal/` is SDK infrastructure (e.g. the platform-config refresh
+// endpoint) — those routes authenticate themselves with the project service
+// credential, a stronger check than the user-token gate. Exempting them by
+// default removes the silent failure where a forgotten `publicPaths` entry
+// bounces the platform's refresh call and everything degrades to TTL
+// staleness with no visible error.
+const DEFAULT_PUBLIC_PATHS = ['/auth/', '/healthcheck', '/__timbal/'];
 
 /**
  * Check if the environment is local development (no TIMBAL_PROJECT_ID set).

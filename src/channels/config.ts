@@ -4,33 +4,39 @@ import { telegram } from './adapters/telegram';
 import { slack } from './adapters/slack';
 
 /**
- * Platform-driven channel configuration — the same pattern as
- * `ProjectAuthConfig`: the platform project carries the *topology* (which
- * channels are enabled and which workforce component each talks to, i.e.
- * the dropdown), while **credentials stay out of it** and are supplied by
- * the runtime environment. A bot token in a project settings payload would
- * leak through every surface that renders project config; env (and later
- * the integrations credential vault) is the secrets' home.
+ * Platform-driven channel configuration.
+ *
+ * Topology (which channels, which workforce) lives on the platform project;
+ * credentials live platform-side too (encrypted under the project DEK) and
+ * arrive **only** via the service-principal runtime endpoint — never on the
+ * project payload, which renders everywhere. Env vars remain a per-provider
+ * fallback for local dev, self-hosted, and migration.
  */
 
 /**
- * Pure mapper: platform `Project` → channel specs, or `null` when the
- * platform response predates the channels feature (consumers fall back to
- * env conventions). Disabled and malformed entries are dropped here so
- * downstream code only ever sees actionable specs.
+ * Drop disabled and malformed entries so downstream code only ever sees
+ * actionable specs. Returns `null` when the input isn't an array (older
+ * platform / absent field) — callers use that to fall through.
  */
-export function channelSpecsFromProject(project: Project): ProjectChannelSpec[] | null {
-  const raw = project.channels;
+export function filterChannelSpecs(raw: unknown): ProjectChannelSpec[] | null {
   if (!Array.isArray(raw)) return null;
   return raw.filter(
     (spec): spec is ProjectChannelSpec =>
       !!spec &&
-      typeof spec.provider === 'string' &&
-      !!spec.provider &&
-      typeof spec.workforce === 'string' &&
-      !!spec.workforce &&
-      spec.enabled !== false,
+      typeof (spec as ProjectChannelSpec).provider === 'string' &&
+      !!(spec as ProjectChannelSpec).provider &&
+      typeof (spec as ProjectChannelSpec).workforce === 'string' &&
+      !!(spec as ProjectChannelSpec).workforce &&
+      (spec as ProjectChannelSpec).enabled !== false,
   );
+}
+
+/**
+ * Pure mapper: platform `Project` → channel specs (topology only), or `null`
+ * when the platform response predates the channels feature.
+ */
+export function channelSpecsFromProject(project: Project): ProjectChannelSpec[] | null {
+  return filterChannelSpecs(project.channels);
 }
 
 /** A spec that couldn't be materialized into a live binding, and why. */
@@ -45,39 +51,41 @@ export interface MaterializedBindings {
 }
 
 /**
- * Adapter factories per provider, reading credentials from env. Returns
- * `null` when the env is missing that provider's secrets — the spec is then
- * reported as skipped rather than mounting a webhook that can't
- * authenticate or reply.
+ * Adapter factory for one spec. Credential precedence is **per field**:
+ * platform-held `spec.credentials` first (the runtime-endpoint path — no
+ * env, no redeploy, supports multiple bots of one provider), then env
+ * convention vars. Returns `null` when neither source has the provider's
+ * secrets, `'unknown'` for providers this SDK version doesn't ship.
  */
 function buildAdapter(
-  provider: string,
+  spec: ProjectChannelSpec,
   env: Record<string, string | undefined>,
 ): ChannelAdapter | null | 'unknown' {
-  switch (provider) {
-    case 'telegram':
-      return env.TELEGRAM_BOT_TOKEN
-        ? telegram({
-            botToken: env.TELEGRAM_BOT_TOKEN,
-            secretToken: env.TELEGRAM_SECRET_TOKEN,
-          })
-        : null;
-    case 'slack':
-      return env.SLACK_SIGNING_SECRET && env.SLACK_BOT_TOKEN
-        ? slack({
-            signingSecret: env.SLACK_SIGNING_SECRET,
-            botToken: env.SLACK_BOT_TOKEN,
-          })
-        : null;
+  const creds = spec.credentials ?? {};
+  switch (spec.provider) {
+    case 'telegram': {
+      const botToken = creds.token || env.TELEGRAM_BOT_TOKEN;
+      if (!botToken) return null;
+      return telegram({
+        botToken,
+        secretToken: creds.secret_token || env.TELEGRAM_SECRET_TOKEN,
+      });
+    }
+    case 'slack': {
+      const botToken = creds.bot_token || env.SLACK_BOT_TOKEN;
+      const signingSecret = creds.signing_secret || env.SLACK_SIGNING_SECRET;
+      if (!botToken || !signingSecret) return null;
+      return slack({ botToken, signingSecret });
+    }
     default:
       return 'unknown';
   }
 }
 
 /**
- * Join platform specs (topology) with env credentials into live bindings.
- * Specs whose provider is unknown to this SDK version, or whose credentials
- * aren't present in the environment, are returned in `skipped` — the caller
+ * Join platform specs with credentials into live bindings. Specs whose
+ * provider is unknown to this SDK version, or whose credentials aren't
+ * present platform-side or in env, are returned in `skipped` — the caller
  * decides whether that's a log line or an error.
  */
 export function materializeChannelBindings(
@@ -88,7 +96,7 @@ export function materializeChannelBindings(
   const skipped: SkippedChannelSpec[] = [];
 
   for (const spec of specs) {
-    const adapter = buildAdapter(spec.provider, env);
+    const adapter = buildAdapter(spec, env);
     if (adapter === 'unknown') {
       skipped.push({ spec, reason: 'unknown-provider' });
     } else if (adapter === null) {

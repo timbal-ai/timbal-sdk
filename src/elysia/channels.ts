@@ -10,7 +10,9 @@ import {
   materializeChannelBindings,
   type SkippedChannelSpec,
 } from '../channels/config';
+import { getCachedRuntimeChannels } from '../channels/runtime';
 import { getCachedProject } from '../auth/config';
+import { registerConfigRefreshHook } from '../config/refresh';
 import type { ProjectChannelSpec } from '../types';
 import type {
   ChannelBinding,
@@ -23,11 +25,12 @@ export interface TimbalChannelsOptions {
    * Hand-written channel → workforce bindings (static mode: fixed routes,
    * supports custom `path`s and multiple bindings per provider). When
    * omitted, the plugin runs in **dynamic mode**: bindings are resolved
-   * per-request from platform project settings (`project.channels`, TTL
-   * cached — the "add a channel in the dropdown, no redeploy" path), falling
-   * back to env conventions ({@link channelBindingsFromEnv}) whenever the
-   * platform doesn't return the field, is unreachable, or the process isn't
-   * platform-linked.
+   * per-request from the platform's runtime channel config (topology +
+   * platform-held credentials, TTL cached — the "add a channel in the
+   * dropdown, no env vars, no redeploy" path), falling back to
+   * `project.channels` topology + env creds on older platforms, and to env
+   * conventions ({@link channelBindingsFromEnv}) when the platform has no
+   * channel data at all or the process isn't platform-linked.
    */
   bindings?: ChannelBinding[];
   /**
@@ -35,14 +38,14 @@ export interface TimbalChannelsOptions {
    * fetch in dynamic mode, mirroring `timbalAuth`'s `authConfig` override.
    */
   channelSpecs?: ProjectChannelSpec[];
-  /** TTL for the cached platform project fetch, ms. @default 60000 */
+  /** TTL for the cached platform-config fetches, ms. @default 60000 */
   configCacheTtlMs?: number;
   /** Environment source for credentials/fallbacks (injectable for tests). */
   env?: Record<string, string | undefined>;
   /**
-   * Observer for platform specs that couldn't be materialized (missing env
-   * credentials, provider unknown to this SDK version). Fires on resolution,
-   * deduped per `provider:reason` so it doesn't spam per request.
+   * Observer for platform specs that couldn't be materialized (no credentials
+   * platform-side or in env, provider unknown to this SDK version). Fires on
+   * resolution, deduped per `provider:reason` so it doesn't spam per request.
    */
   onSkippedSpec?(skipped: SkippedChannelSpec): void;
   /** Path prefix for every webhook route. @default '/channels' */
@@ -127,19 +130,25 @@ export interface ResolveChannelBindingsOptions {
 }
 
 /**
- * Resolve the effective channel bindings, auth-config style:
+ * Resolve the effective channel bindings:
  *
  * 1. explicit `bindings` (static, hand-written)
- * 2. `channelSpecs` override (tests / local) → materialized with env creds
- * 3. platform-linked: `project.channels` from the **same TTL-cached project
- *    fetch the auth gate uses** (single-flight, fail-soft) → materialized.
- *    A project without a `channels` field — which is every project until
- *    the platform ships it — falls through to (4), so behavior is
- *    identical to the pre-platform-config SDK.
- * 4. env conventions ({@link channelBindingsFromEnv})
+ * 2. `channelSpecs` override (tests / local)
+ * 3. platform-linked (`TIMBAL_PROJECT_ID` set): the **runtime endpoint**
+ *    (`GET .../channels/runtime`, TTL-cached) — topology *and* platform-held
+ *    credentials, so channels added in the UI work with zero env vars.
+ *    Per-spec credential precedence: `spec.credentials` → env convention
+ *    vars → skipped as `missing-credentials`.
+ * 4. runtime endpoint 404 (older platform): `project.channels` topology
+ *    (same TTL-cached project fetch the auth gate uses) + env credentials.
+ * 5. platform unreachable / not linked: env conventions
+ *    ({@link channelBindingsFromEnv}).
  *
- * Platform errors also fall through to env rather than failing the webhook —
- * a platform blip shouldn't take channels down when env can serve them.
+ * An **empty array** from the platform is authoritative — all channels off,
+ * no env fallback. Env conventions only apply when the platform has no
+ * channel data at all (absent field, 404, unreachable, unlinked): a platform
+ * blip degrades to env rather than dropping webhooks, but "zero channels
+ * configured" must stay zero.
  */
 export async function resolveChannelBindings(
   timbal: Timbal,
@@ -151,15 +160,26 @@ export async function resolveChannelBindings(
   let specs = options.channelSpecs ?? null;
   if (!specs && env.TIMBAL_PROJECT_ID) {
     try {
-      const project = await getCachedProject(timbal, {
+      specs = await getCachedRuntimeChannels(timbal, {
         ttlMs: options.configCacheTtlMs,
       });
-      specs = channelSpecsFromProject(project);
     } catch {
-      specs = null; // fail-soft: platform unreachable → env conventions
+      specs = null; // fail-soft — try the project payload next
+    }
+    if (specs === null) {
+      try {
+        const project = await getCachedProject(timbal, {
+          ttlMs: options.configCacheTtlMs,
+        });
+        specs = channelSpecsFromProject(project);
+      } catch {
+        specs = null; // fail-soft: platform unreachable → env conventions
+      }
     }
   }
 
+  // `[]` is deliberately truthy here: platform-says-none ≠ platform-says-
+  // nothing. Only `null` (no platform data) reaches the env fallback.
   if (specs) {
     const { bindings, skipped } = materializeChannelBindings(specs, env);
     for (const s of skipped) options.onSkippedSpec?.(s);
@@ -322,11 +342,26 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
 
   // DYNAMIC mode: one wildcard route keyed by workforce + provider
   // (`/channels/{uid}/telegram`). Binding set is resolved per request from
-  // platform project settings (TTL-cached — same freshness model as the auth
-  // ingress gate), so channels added in the platform UI go live within the
-  // cache TTL, no redeploy. Product rule: one binding per
+  // platform config (runtime endpoint with platform-held credentials,
+  // TTL-cached), so channels added in the platform UI go live without env
+  // changes or redeploys. Product rule: one binding per
   // (workforce, provider); a future `:bindingId` segment can relax that.
   // Custom `path`s require static mode.
+
+  // On platform-config refresh, re-run programmatic webhook provisioning so
+  // a binding that appeared (or gained credentials) gets its Telegram
+  // `setWebhook` — startup-only registration misses channels added later.
+  registerConfigRefreshHook('channels:webhook-provisioning', async () => {
+    await registerChannelWebhooks({
+      timbal,
+      channelSpecs: options.channelSpecs,
+      configCacheTtlMs: options.configCacheTtlMs,
+      prefix,
+      env: options.env,
+    }).catch(() => {
+      /* best-effort — TTL + next refresh retry cover it */
+    });
+  });
   app.post(
     `${prefix}/:workforce/:provider`,
     async ({

@@ -25,6 +25,17 @@ export {
   type WebhookRegistration,
   type ChannelProvisionResult,
 } from './channels';
+export {
+  timbalConfigRefresh,
+  type TimbalConfigRefreshOptions,
+} from './config-refresh';
+export {
+  refreshPlatformConfig,
+  registerConfigRefreshHook,
+  clearConfigRefreshHooks,
+  type ConfigRefreshHook,
+  type RefreshPlatformConfigOptions,
+} from '../config/refresh';
 export * from '../channels';
 
 /**
