@@ -25,6 +25,36 @@ export interface WebhookRequest {
   url: string;
 }
 
+/** Raw bytes + metadata of a downloaded attachment. */
+export interface ChannelAttachmentData {
+  data: Uint8Array;
+  contentType: string;
+  fileName: string;
+}
+
+/**
+ * A media file attached to an incoming message (photo, document, ...).
+ *
+ * The adapter supplies metadata plus a **lazy, adapter-authenticated**
+ * `download()` — providers gate file content behind their own auth (Telegram
+ * `getFile` + token-bearing URL, Slack `url_private` + bot token), and those
+ * URLs must never leak past the adapter (they embed credentials and expire).
+ * The pipeline downloads and re-uploads to Timbal temp storage
+ * (`POST /files`), so the workforce only ever sees a platform URL.
+ */
+export interface ChannelAttachment {
+  /** Broad media class — drives filename synthesis and future routing. */
+  kind: 'image' | 'document' | 'audio' | 'video';
+  /** Original filename, when the provider carries one. */
+  fileName?: string;
+  /** MIME type, when the provider carries one. */
+  contentType?: string;
+  /** Declared size in bytes, when known (pre-download hint, not verified). */
+  sizeBytes?: number;
+  /** Fetch the raw bytes from the provider, using the adapter's credentials. */
+  download(): Promise<ChannelAttachmentData>;
+}
+
 /**
  * A normalized incoming message, provider-agnostic. This is the only shape
  * the pipeline (and the workforce input builder) ever sees.
@@ -41,8 +71,13 @@ export interface ChannelEvent {
   externalUserId?: string;
   /** Sender's display name, when the payload carries one. */
   userDisplayName?: string;
-  /** Message text, cleaned of channel artifacts (e.g. leading bot mentions). */
+  /**
+   * Message text, cleaned of channel artifacts (e.g. leading bot mentions).
+   * Media messages use the caption; may be `''` for a bare attachment.
+   */
   text: string;
+  /** Media attached to the message. Absent/empty for text-only messages. */
+  attachments?: ChannelAttachment[];
   /**
    * Idempotency key for webhook redelivery (Slack retries, Telegram
    * re-sends on non-200). Events without one are never deduped.
@@ -70,6 +105,23 @@ export interface ChannelDelivery {
    * posted once, when complete).
    */
   edit?(ref: unknown, text: string): Promise<void>;
+  /**
+   * Delete a previously sent message. Optional — used to retract streamed
+   * interim text when the definitive reply turns out to carry no text
+   * (e.g. a file-only reply): a message can't be edited to empty, so
+   * channels without `delete` keep the interim text on screen.
+   */
+  delete?(ref: unknown): Promise<void>;
+  /**
+   * Post a file into the event's conversation. `file` is either an
+   * `https://` URL (platform CDN / temp storage — channels that can fetch
+   * URLs server-side, like Telegram, pass it through) or a
+   * `data:<mime>;base64,...` URL (unpersisted agent output — must be
+   * decoded and uploaded as bytes). Optional — channels without it degrade:
+   * the pipeline posts URL files as a plain text message and drops data-URL
+   * files.
+   */
+  sendFile?(file: string, opts?: { fileName?: string }): Promise<unknown>;
   /**
    * The channel's max message length, in characters (Telegram 4096, Slack
    * 40k). The reply writer streams edits only up to this cap and splits the
@@ -137,8 +189,12 @@ export interface ChannelBinding {
   path?: string;
   /**
    * Map the normalized event to the workforce input. Defaults to
-   * `{ prompt: event.text }` — override when your component expects a
-   * different input schema or wants conversation/user context threaded in.
+   * `{ prompt: event.text }`; when the event carries attachments, the
+   * pipeline uploads them to Timbal temp storage and sends prompt content
+   * parts (`{type:'text'}` / `{type:'file', file: url}`) instead. Override
+   * when your component expects a different input schema or wants
+   * conversation/user context threaded in — an override takes full control,
+   * including attachment handling.
    */
   buildInput?(event: ChannelEvent): Record<string, unknown>;
   /**

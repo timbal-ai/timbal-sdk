@@ -1,12 +1,14 @@
 export type {
   ChannelAdapter,
+  ChannelAttachment,
+  ChannelAttachmentData,
   ChannelBinding,
   ChannelDelivery,
   ChannelEvent,
   WebhookRequest,
 } from './types';
 export { DedupeCache } from './dedupe';
-export { WorkforceTextCollector } from './collect';
+export { WorkforceTextCollector, type ReplyFile } from './collect';
 export {
   channelSpecsFromProject,
   filterChannelSpecs,

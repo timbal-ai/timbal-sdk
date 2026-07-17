@@ -78,4 +78,75 @@ describe('WorkforceTextCollector', () => {
     expect(c.push({ type: 'START', status_text: 'Thinking...' })).toBeNull();
     expect(c.push({ weird: true })).toBeNull();
   });
+
+  test('OUTPUT file blocks are collected into files', () => {
+    const c = new WorkforceTextCollector();
+    c.push({
+      type: 'OUTPUT',
+      path: 'agent',
+      output: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'here is your chart' },
+          { type: 'file', file: 'https://cdn.timbal.ai/x/chart.png', name: 'chart.png' },
+          { type: 'file', file: 'data:application/pdf;base64,AAAA' },
+        ],
+      },
+    });
+    expect(c.text).toBe('here is your chart');
+    expect(c.files).toEqual([
+      { file: 'https://cdn.timbal.ai/x/chart.png', fileName: 'chart.png' },
+      { file: 'data:application/pdf;base64,AAAA', fileName: undefined },
+    ]);
+  });
+
+  test('a file-only OUTPUT yields files with empty text', () => {
+    const c = new WorkforceTextCollector();
+    const updated = c.push({
+      type: 'OUTPUT',
+      path: 'agent',
+      output: { content: [{ type: 'file', file: 'https://cdn.test/a.pdf' }] },
+    });
+    // No text change to stream — but the file is captured.
+    expect(updated).toBeNull();
+    expect(c.text).toBe('');
+    expect(c.files).toHaveLength(1);
+  });
+
+  test('a file-only OUTPUT supersedes accumulated deltas (no stale text)', () => {
+    const c = new WorkforceTextCollector();
+    c.push({ type: 'DELTA', item: { type: 'text_delta', text_delta: 'pre-tool chatter' } });
+    const updated = c.push({
+      type: 'OUTPUT',
+      path: 'agent',
+      output: { role: 'assistant', content: [{ type: 'file', file: 'https://cdn.test/a.pdf' }] },
+    });
+    // The definitive reply has no text — the deltas must not leak through.
+    expect(updated).toBe('');
+    expect(c.text).toBe('');
+    expect(c.files).toHaveLength(1);
+  });
+
+  test('non-Message OUTPUT (no content array) keeps the accumulation fallback', () => {
+    const c = new WorkforceTextCollector();
+    c.push({ type: 'DELTA', item: { type: 'text_delta', text_delta: 'streamed' } });
+    expect(c.push({ type: 'OUTPUT', path: 'agent', output: { some: 'dict' } })).toBeNull();
+    expect(c.text).toBe('streamed');
+  });
+
+  test('nested OUTPUT files are ignored; malformed file blocks skipped', () => {
+    const c = new WorkforceTextCollector();
+    c.push({
+      type: 'OUTPUT',
+      path: 'agent.tool',
+      output: { content: [{ type: 'file', file: 'https://cdn.test/tool-artifact.bin' }] },
+    });
+    expect(c.files).toHaveLength(0);
+    c.push({
+      type: 'OUTPUT',
+      path: 'agent',
+      output: { content: [{ type: 'file' }, { type: 'file', file: '' }, 'junk'] },
+    });
+    expect(c.files).toHaveLength(0);
+  });
 });

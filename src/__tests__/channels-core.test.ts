@@ -39,9 +39,9 @@ describe('DedupeCache', () => {
   });
 });
 
-/** Delivery double that records calls and lets tests control edit support. */
-function makeDelivery(withEdit = true, maxTextLength?: number) {
-  const calls: { op: 'send' | 'edit'; text: string }[] = [];
+/** Delivery double that records calls and lets tests control edit/delete support. */
+function makeDelivery(withEdit = true, maxTextLength?: number, withDelete = false) {
+  const calls: { op: 'send' | 'edit' | 'delete'; text: string }[] = [];
   const delivery: ChannelDelivery = {
     maxTextLength,
     async send(text: string) {
@@ -52,6 +52,13 @@ function makeDelivery(withEdit = true, maxTextLength?: number) {
       ? {
           async edit(_ref: unknown, text: string) {
             calls.push({ op: 'edit', text });
+          },
+        }
+      : {}),
+    ...(withDelete
+      ? {
+          async delete(_ref: unknown) {
+            calls.push({ op: 'delete', text: '' });
           },
         }
       : {}),
@@ -209,6 +216,51 @@ describe('StreamingReply', () => {
     const reply = new StreamingReply(delivery);
     await reply.finalize('');
     expect(calls).toHaveLength(0);
+  });
+
+  test('empty finalize retracts a streamed message when delete is supported', async () => {
+    const { delivery, calls } = makeDelivery(true, undefined, true);
+    const reply = new StreamingReply(delivery);
+    reply.update('interim chatter');
+    await tick();
+    const delivered = await reply.finalize('');
+    expect(calls).toEqual([
+      { op: 'send', text: 'interim chatter' },
+      { op: 'delete', text: '' },
+    ]);
+    // Retracted → nothing user-visible remains from the text path.
+    expect(delivered).toBe(false);
+    expect(reply.didDeliver).toBe(false);
+  });
+
+  test('empty finalize without delete keeps the streamed message', async () => {
+    const { delivery, calls } = makeDelivery();
+    const reply = new StreamingReply(delivery);
+    reply.update('interim chatter');
+    await tick();
+    const delivered = await reply.finalize('');
+    expect(calls).toEqual([{ op: 'send', text: 'interim chatter' }]);
+    expect(delivered).toBe(true); // still on screen — counts as delivered
+  });
+
+  test('failed retraction is swallowed and the message counts as delivered', async () => {
+    const calls: string[] = [];
+    const delivery: ChannelDelivery = {
+      async send(text: string) {
+        calls.push(`send:${text}`);
+        return 'msg-1';
+      },
+      async edit() {},
+      async delete() {
+        throw new Error('delete rejected');
+      },
+    };
+    const reply = new StreamingReply(delivery);
+    reply.update('interim');
+    await tick();
+    const delivered = await reply.finalize(''); // must not throw
+    expect(delivered).toBe(true);
+    expect(reply.didDeliver).toBe(true);
   });
 
   test('finalize sends when nothing was streamed', async () => {
