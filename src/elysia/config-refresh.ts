@@ -43,7 +43,7 @@ function tokenMatches(presented: string, expected: string): boolean {
  *
  * ```ts
  * new Elysia()
- *   .use(timbalAuth({ publicPaths: ["/channels/"] }))
+ *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] }))
  *   .use(timbalChannels())
  *   .use(timbalConfigRefresh())
  * ```

@@ -27,6 +27,7 @@ export {
 } from './env';
 export {
   detectNgrokOrigin,
+  derivePlatformPublicOrigin,
   resolvePublicOrigin,
   type ResolvePublicOriginOptions,
 } from './origin';

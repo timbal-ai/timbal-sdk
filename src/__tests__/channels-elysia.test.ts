@@ -576,6 +576,25 @@ describe('timbalChannels plugin', () => {
     expect(registered).toHaveLength(0);
     expect(result.origin).toBeNull();
   });
+
+  test('registerChannelWebhooks derives platform origin from TIMBAL_PROJECT_ENV_ID', async () => {
+    const { adapter, registered } = makeAdapter('tg');
+    const result = await registerChannelWebhooks({
+      bindings: [{ adapter, workforce: 'joi' }],
+      env: {
+        TIMBAL_PROJECT_ID: '248',
+        TIMBAL_PROJECT_ENV_ID: '1755',
+      },
+      fetchImpl: (async () => {
+        throw new Error('must not probe ngrok');
+      }) as unknown as typeof fetch,
+    });
+
+    expect(result.origin).toBe('https://e1755.deployments.timbal.ai/api');
+    expect(registered).toEqual([
+      'https://e1755.deployments.timbal.ai/api/channels/joi/tg',
+    ]);
+  });
 });
 
 /**
@@ -870,6 +889,8 @@ describe('timbalChannels dynamic mode', () => {
         timbal: makePlatformTimbal(new Error('must not be fetched')).timbal,
         channelSpecs: [{ provider: 'telegram', workforce: 'joi' }],
         env: {
+          // Linked without env-id → origin null; skip ngrok probe on mount provision.
+          TIMBAL_PROJECT_ID: '248',
           TELEGRAM_BOT_TOKEN: '123:abc',
           TELEGRAM_SECRET_TOKEN: 'shh',
         },
