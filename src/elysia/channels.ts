@@ -20,6 +20,18 @@ import type {
   WebhookRequest,
 } from '../channels/types';
 
+/**
+ * Path prefixes that must bypass `timbalAuth` ingress. Webhooks authenticate
+ * via provider signatures (Slack HMAC / Telegram secret), not user tokens.
+ *
+ * ```ts
+ * import { timbalAuth, CHANNELS_PUBLIC_PATHS } from "@timbal-ai/timbal-sdk/elysia";
+ *
+ * .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] }))
+ * ```
+ */
+export const CHANNELS_PUBLIC_PATHS = ['/channels/'] as const;
+
 export interface TimbalChannelsOptions {
   /**
    * Hand-written channel → workforce bindings (static mode: fixed routes,
@@ -198,15 +210,25 @@ export async function resolveChannelBindings(
  * run + reply happen detached, streaming progressive edits where the channel
  * supports them.
  *
+ * **Auth:** webhook routes must bypass `timbalAuth` ingress — they authenticate
+ * via provider signatures, not user tokens. Spread {@link CHANNELS_PUBLIC_PATHS}
+ * into `timbalAuth({ publicPaths })` (or pass `["/channels/"]` directly).
+ *
+ * **Provisioning (dynamic mode):** on mount, fire-and-forget
+ * {@link registerChannelWebhooks} so Telegram `setWebhook` runs without a
+ * manual startup call. A config-refresh hook re-runs provisioning when the
+ * platform pushes channel changes. Static mode (`bindings` set) skips both —
+ * the app owns those URLs.
+ *
  * ```ts
- * import { timbalAuth, timbalChannels, telegram, slack } from "@timbal-ai/timbal-sdk/elysia";
+ * import {
+ *   timbalAuth,
+ *   timbalChannels,
+ *   CHANNELS_PUBLIC_PATHS,
+ * } from "@timbal-ai/timbal-sdk/elysia";
  *
  * const app = new Elysia()
- *   // Webhooks authenticate via signatures, not user tokens — exempt them
- *   // from the auth ingress gate:
- *   .use(timbalAuth({ publicPaths: ["/channels/"] }))
- *   // Zero-config: channels + target component read from env
- *   // (TELEGRAM_BOT_TOKEN, SLACK_*, CHANNELS_WORKFORCE)...
+ *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] }))
  *   .use(timbalChannels())
  *   .listen(3000);
  *
@@ -348,17 +370,26 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
   // (workforce, provider); a future `:bindingId` segment can relax that.
   // Custom `path`s require static mode.
 
+  const provisionOpts: RegisterChannelWebhooksOptions = {
+    timbal,
+    channelSpecs: options.channelSpecs,
+    configCacheTtlMs: options.configCacheTtlMs,
+    prefix,
+    env: options.env,
+  };
+
+  // Startup provisioning — fire-and-forget so apps don't need a manual
+  // `registerChannelWebhooks()` after `.listen()`. Failures are best-effort;
+  // the refresh hook + TTL retry cover them. Never take down mount.
+  void registerChannelWebhooks(provisionOpts).catch(() => {
+    /* best-effort — refresh + TTL retry */
+  });
+
   // On platform-config refresh, re-run programmatic webhook provisioning so
   // a binding that appeared (or gained credentials) gets its Telegram
   // `setWebhook` — startup-only registration misses channels added later.
   registerConfigRefreshHook('channels:webhook-provisioning', async () => {
-    await registerChannelWebhooks({
-      timbal,
-      channelSpecs: options.channelSpecs,
-      configCacheTtlMs: options.configCacheTtlMs,
-      prefix,
-      env: options.env,
-    }).catch(() => {
+    await registerChannelWebhooks(provisionOpts).catch(() => {
       /* best-effort — TTL + next refresh retry cover it */
     });
   });
@@ -444,12 +475,18 @@ export interface ChannelProvisionResult {
  * Provision webhooks for every binding that supports programmatic
  * registration (Telegram `setWebhook`; Slack/Teams are manifest/console-driven
  * and are reported as `manual-registration` with their URL, for the app to
- * surface). Call once at startup.
+ * surface).
+ *
+ * In dynamic mode, {@link timbalChannels} already calls this on mount and on
+ * config refresh — apps usually don't need a manual startup call. Static mode
+ * (explicit `bindings`) still needs an explicit call if you want programmatic
+ * registration.
  *
  * The origin resolves via {@link resolvePublicOrigin}: explicit argument >
- * `PUBLIC_ORIGIN` env > running ngrok tunnel (local dev only — the tunnel
- * probe is skipped on platform-linked deployments). When nothing resolves,
- * no registration runs and every entry carries `reason: 'no-origin'` —
+ * `PUBLIC_ORIGIN` env > platform derivation (`TIMBAL_PROJECT_ENV_ID` →
+ * `https://e{id}.{domain}/api`) > running ngrok tunnel (local dev only —
+ * skipped when `TIMBAL_PROJECT_ID` is set). When nothing resolves, no
+ * registration runs and every entry carries `reason: 'no-origin'` —
  * logging/failing on that is the caller's policy, not the SDK's.
  *
  * ```ts

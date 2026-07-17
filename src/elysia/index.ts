@@ -19,6 +19,7 @@ export {
   registerChannelWebhooks,
   resolveBindingPath,
   resolveChannelBindings,
+  CHANNELS_PUBLIC_PATHS,
   type TimbalChannelsOptions,
   type RegisterChannelWebhooksOptions,
   type ResolveChannelBindingsOptions,
