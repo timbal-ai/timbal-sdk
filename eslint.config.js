@@ -31,6 +31,7 @@ export default [
         Response: 'readonly',
         AbortController: 'readonly',
         AbortSignal: 'readonly',
+        URL: 'readonly',
         URLSearchParams: 'readonly',
         FormData: 'readonly',
         File: 'readonly',

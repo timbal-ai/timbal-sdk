@@ -27,6 +27,13 @@ export {
   type ChannelProvisionResult,
 } from './channels';
 export {
+  timbalMcp,
+  deriveMcpTools,
+  type TimbalMcpOptions,
+  type McpRouteMeta,
+  type DeriveMcpToolsOptions,
+} from './mcp';
+export {
   timbalConfigRefresh,
   type TimbalConfigRefreshOptions,
 } from './config-refresh';
