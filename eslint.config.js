@@ -22,7 +22,9 @@ export default [
         global: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
-        
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+
         // Browser APIs (used by fetch)
         fetch: 'readonly',
         Headers: 'readonly',
@@ -38,7 +40,8 @@ export default [
         Blob: 'readonly',
         TextEncoder: 'readonly',
         TextDecoder: 'readonly',
-        
+        ReadableStream: 'readonly',
+
         crypto: 'readonly',
 
         // Bun globals
@@ -53,11 +56,11 @@ export default [
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': [
         'error',
-        { 
+        {
           argsIgnorePattern: '^_',
           varsIgnorePattern: '^_',
-          ignoreRestSiblings: true 
-        }
+          ignoreRestSiblings: true,
+        },
       ],
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/explicit-module-boundary-types': 'off',

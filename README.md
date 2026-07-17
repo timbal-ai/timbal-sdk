@@ -726,10 +726,15 @@ app.use(timbalMcp({
   maxResultBytes: 100 * 1024,      // tool results larger than this are truncated with a marker
   onToolCall: ({ tool, status, durationMs, isError }) =>
     console.log(`mcp ${tool} → ${status} in ${durationMs}ms${isError ? " (error)" : ""}`),
+  progressIntervalMs: 15_000,      // heartbeat cadence for streamed long-running calls
 }));
 ```
 
 Routes that declare an object `response` schema also get a typed `outputSchema` on their tool, and successful calls return the parsed JSON as `structuredContent` alongside the text — agents handle typed results better than prose-wrapped JSON.
+
+### Long-running tools
+
+MCP clients default to ~60-second request timeouts, resettable only by progress notifications. When a client accepts SSE and requests progress (the official SDK does both whenever an `onprogress` callback is passed), `tools/call` responds as an SSE stream with `notifications/progress` heartbeats every `progressIntervalMs` while the route runs — so a workforce run that thinks for five minutes completes instead of timing out client-side. Clients that don't opt in get plain JSON responses, unchanged.
 
 ### Auth
 

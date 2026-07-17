@@ -298,6 +298,118 @@ describe('timbalMcp transport', () => {
     ]);
   });
 
+  test('streams SSE with progress heartbeats when the client accepts SSE + sends progressToken', async () => {
+    const app = new Elysia().use(timbalMcp({ include: ['T'], progressIntervalMs: 20 })).get(
+      '/slow',
+      async () => {
+        await new Promise(r => setTimeout(r, 90));
+        return 'finally';
+      },
+      { detail: { tags: ['T'] } }
+    );
+
+    const res = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 7,
+          method: 'tools/call',
+          params: { name: 'get_slow', arguments: {}, _meta: { progressToken: 'tok-1' } },
+        }),
+      })
+    );
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+
+    const frames = (await res.text())
+      .split('\n\n')
+      .filter(f => f.includes('data: '))
+      .map(f => JSON.parse(f.split('data: ')[1]!) as Record<string, any>);
+
+    const progress = frames.filter(f => f.method === 'notifications/progress');
+    expect(progress.length).toBeGreaterThanOrEqual(2);
+    expect(progress.every(p => p.params.progressToken === 'tok-1')).toBe(true);
+    // Progress values strictly increase, per spec.
+    const values = progress.map(p => p.params.progress as number);
+    expect([...values].sort((a, b) => a - b)).toEqual(values);
+    expect(new Set(values).size).toBe(values.length);
+
+    const final = frames.at(-1)!;
+    expect(final.id).toBe(7);
+    expect(final.result.content[0].text).toBe('finally');
+  });
+
+  test('falls back to plain JSON without SSE accept or without progressToken', async () => {
+    const app = workforceApp();
+    const body = (extra: Record<string, unknown>) =>
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'get_workforce_id', arguments: { id: 'x' }, ...extra },
+      });
+
+    // progressToken but no SSE accept
+    const noAccept = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: body({ _meta: { progressToken: 1 } }),
+      })
+    );
+    expect(noAccept.headers.get('content-type')).toContain('application/json');
+
+    // SSE accept but no progressToken
+    const noToken = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+        },
+        body: body({}),
+      })
+    );
+    expect(noToken.headers.get('content-type')).toContain('application/json');
+  });
+
+  test('streamed unknown tool ends with a JSON-RPC error frame', async () => {
+    const res = await workforceApp().handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 9,
+          method: 'tools/call',
+          params: { name: 'nope', arguments: {}, _meta: { progressToken: 2 } },
+        }),
+      })
+    );
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
+    const frames = (await res.text())
+      .split('\n\n')
+      .filter(f => f.includes('data: '))
+      .map(f => JSON.parse(f.split('data: ')[1]!) as Record<string, any>);
+    expect(frames.at(-1)!.error.code).toBe(-32602);
+  });
+
+  test('wildcard routes are never exposed as tools', async () => {
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'] }))
+      .get('/files/*', () => 'file', { detail: { tags: ['T'] } })
+      .get('/ok', () => 'ok', { detail: { tags: ['T'] } });
+    const { result } = await rpc(app, 'tools/list');
+    expect((result!.tools as { name: string }[]).map(t => t.name)).toEqual(['get_ok']);
+  });
+
   test('custom path and server identity', async () => {
     const app = new Elysia().use(
       timbalMcp({ path: '/tools/mcp', serverName: 'blueprint', serverVersion: '1.2.3' })

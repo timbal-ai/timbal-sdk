@@ -65,6 +65,15 @@ export interface TimbalMcpOptions {
   maxResultBytes?: number;
   /** Observer for tool calls (logging/metrics). Errors never reach the transport. */
   onToolCall?(info: ToolCallInfo): void;
+  /**
+   * Interval between `notifications/progress` heartbeats during a streamed
+   * `tools/call`, ms. Streaming engages when the client accepts
+   * `text/event-stream` and supplies a `progressToken` (the official SDK
+   * does both whenever an `onprogress` callback is passed); the heartbeats
+   * reset client-side request timeouts, so long workforce runs survive the
+   * default 60s limit. @default 15000
+   */
+  progressIntervalMs?: number;
 }
 
 /** Outcome of one `tools/call`, reported to {@link TimbalMcpOptions.onToolCall}. */
@@ -268,6 +277,9 @@ export function deriveMcpTools(
   for (const route of routes) {
     if (!TOOL_METHODS.has(route.method)) continue;
     if (options.mcpPath && route.path === options.mcpPath) continue;
+    // Wildcard segments have no argument to fill them — there is no sane
+    // tool mapping for `/files/*`. Expose a purpose-built route instead.
+    if (route.path.includes('*')) continue;
 
     const detail = route.hooks?.detail as
       | (Record<string, unknown> & { mcp?: McpRouteMeta | boolean })
@@ -598,6 +610,79 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
   }
 
   /**
+   * SSE response mode of Streamable HTTP, for `tools/call` only: emit
+   * `notifications/progress` heartbeats while the dispatched route runs,
+   * then the JSON-RPC response, then close. Progress is a plain counter —
+   * its job is resetting client request timeouts (the official SDK's
+   * default is 60s, reset-on-progress), not conveying completion percentage.
+   * A client that disconnects mid-call stops receiving events; the tool
+   * call itself runs to completion server-side.
+   */
+  function streamToolCall(
+    id: string | number,
+    toolName: string,
+    args: Record<string, unknown>,
+    progressToken: string | number,
+    request: Request
+  ): Response {
+    const encoder = new TextEncoder();
+    const intervalMs = options.progressIntervalMs ?? 15_000;
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start: controller => {
+        let closed = false;
+        const send = (msg: unknown): void => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(msg)}\n\n`));
+          } catch {
+            closed = true; // client went away — finish the call, drop the events
+          }
+        };
+
+        let progress = 0;
+        interval = setInterval(() => {
+          send({
+            jsonrpc: '2.0',
+            method: 'notifications/progress',
+            params: { progressToken, progress: ++progress },
+          });
+        }, intervalMs);
+
+        void (async () => {
+          const result = await callTool(toolName, args, request);
+          if (interval) clearInterval(interval);
+          if (result) {
+            send({ jsonrpc: '2.0', id, result });
+          } else {
+            send({
+              jsonrpc: '2.0',
+              id,
+              error: { code: -32602, message: `Unknown tool: ${toolName}` },
+            });
+          }
+          if (!closed) {
+            closed = true;
+            try {
+              controller.close();
+            } catch {
+              /* already closed by the client */
+            }
+          }
+        })();
+      },
+      cancel: () => {
+        if (interval) clearInterval(interval);
+      },
+    });
+
+    return new Response(stream, {
+      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+    });
+  }
+
+  /**
    * Streamable HTTP requires Origin validation (DNS-rebinding defense: a
    * malicious page must not drive a victim's browser into `localhost:3000/mcp`,
    * which the legacy local-dev auth bypass would otherwise let straight
@@ -629,6 +714,30 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
       if (Array.isArray(message) || typeof message !== 'object' || message === null) {
         return jsonRpcError(null, -32600, 'Invalid request');
       }
+
+      // Stream the response only when the client both accepts SSE and asked
+      // for progress (a progressToken without SSE has nowhere to deliver;
+      // SSE without a token gains nothing over plain JSON here).
+      if (
+        message.method === 'tools/call' &&
+        message.id !== undefined &&
+        message.id !== null &&
+        typeof message.params?.name === 'string' &&
+        (request.headers.get('accept') ?? '').includes('text/event-stream')
+      ) {
+        const meta = message.params._meta as { progressToken?: string | number } | undefined;
+        if (meta?.progressToken !== undefined) {
+          const args = (message.params.arguments as Record<string, unknown> | undefined) ?? {};
+          return streamToolCall(
+            message.id,
+            message.params.name as string,
+            args,
+            meta.progressToken,
+            request
+          );
+        }
+      }
+
       return handleMessage(message, request);
     },
     { detail: { hide: true } }

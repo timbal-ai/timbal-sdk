@@ -17,7 +17,13 @@ let url: URL;
 
 beforeAll(() => {
   app = new Elysia()
-    .use(timbalMcp({ include: ['Workforce'], instructions: 'App tools for tests' }))
+    .use(
+      timbalMcp({
+        include: ['Workforce'],
+        instructions: 'App tools for tests',
+        progressIntervalMs: 50,
+      })
+    )
     .post('/workforce/:id/run', ({ params, body }) => ({ id: params.id, echo: body.prompt }), {
       body: t.Object({ prompt: t.String({ description: 'The prompt' }) }),
       detail: {
@@ -32,6 +38,14 @@ beforeAll(() => {
       response: t.Object({ answer: t.Number(), source: t.String() }),
       detail: { mcp: { name: 'get_answer', description: 'Structured output route' } },
     })
+    .get(
+      '/slow',
+      async () => {
+        await new Promise(r => setTimeout(r, 250));
+        return 'took a while';
+      },
+      { detail: { mcp: { name: 'slow_tool', description: 'Long-running route' } } }
+    )
     .get('/healthcheck', () => 'ok')
     .listen(0);
   url = new URL(`http://localhost:${app.server!.port}/mcp`);
@@ -62,7 +76,12 @@ describe('MCP conformance (official SDK client)', () => {
   test('listTools returns the opted-in routes with valid schemas', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map(t => t.name).sort()).toEqual(['get_answer', 'run_workforce', 'whoami']);
+    expect(tools.map(t => t.name).sort()).toEqual([
+      'get_answer',
+      'run_workforce',
+      'slow_tool',
+      'whoami',
+    ]);
 
     const run = tools.find(t => t.name === 'run_workforce')!;
     expect(run.description).toBe('Run a workforce agent');
@@ -119,6 +138,33 @@ describe('MCP conformance (official SDK client)', () => {
     // and throws on mismatch — resolving cleanly IS the conformance check.
     const result = await client.callTool({ name: 'get_answer', arguments: { n: 7 } });
     expect(result.structuredContent).toEqual({ answer: 7, source: 'test' });
+    await client.close();
+  });
+
+  test('long tool calls stream progress that resets the client timeout', async () => {
+    const client = await connect();
+    const progressUpdates: number[] = [];
+
+    // Timeout (150ms) is far below the route's 250ms runtime — the call only
+    // survives because our SSE heartbeats (every 50ms) reset it.
+    const result = await client.callTool({ name: 'slow_tool', arguments: {} }, undefined, {
+      timeout: 150,
+      resetTimeoutOnProgress: true,
+      onprogress: p => progressUpdates.push(p.progress),
+    });
+
+    const content = result.content as { text: string }[];
+    expect(content[0]!.text).toBe('took a while');
+    expect(progressUpdates.length).toBeGreaterThanOrEqual(2);
+    // Strictly increasing, as the spec requires.
+    expect([...progressUpdates].sort((a, b) => a - b)).toEqual(progressUpdates);
+    await client.close();
+  });
+
+  test('without progress opt-in, the same slow tool still completes (JSON mode)', async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: 'slow_tool', arguments: {} });
+    expect((result.content as { text: string }[])[0]!.text).toBe('took a while');
     await client.close();
   });
 
