@@ -195,6 +195,93 @@ describe('timbalMcp transport', () => {
     ).toBe(405);
   });
 
+  test('rejects cross-origin browser requests, allows same-host and allowlisted', async () => {
+    const post = (app: Elysia, origin?: string) =>
+      app.handle(
+        new Request('http://localhost/mcp', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(origin ? { origin } : {}),
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+        })
+      );
+
+    const app = workforceApp();
+    expect((await post(app, 'http://evil.com')).status).toBe(403);
+    expect((await post(app, 'http://localhost')).status).toBe(200);
+    expect((await post(app)).status).toBe(200); // non-browser client, no Origin
+
+    const allowlisted = new Elysia().use(
+      timbalMcp({ allowedOrigins: ['https://studio.acme.com'] })
+    );
+    expect((await post(allowlisted, 'https://studio.acme.com')).status).toBe(200);
+  });
+
+  test('declares outputSchema from the response schema and returns structuredContent', async () => {
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'] }))
+      .get('/answer', () => ({ answer: 42 }), {
+        response: t.Object({ answer: t.Number() }),
+        detail: { tags: ['T'] },
+      });
+
+    const list = await rpc(app, 'tools/list');
+    const tool = (list.result!.tools as Record<string, unknown>[])[0]!;
+    expect((tool.outputSchema as { type: string }).type).toBe('object');
+
+    const call = await rpc(app, 'tools/call', { name: 'get_answer', arguments: {} });
+    expect(call.result!.structuredContent).toEqual({ answer: 42 });
+  });
+
+  test('no outputSchema when the route declares none or a non-object one', async () => {
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'] }))
+      .get('/plain', () => 'text', { detail: { tags: ['T'] } })
+      .get('/num', () => 3, { response: t.Number(), detail: { tags: ['T'] } });
+    const { result } = await rpc(app, 'tools/list');
+    for (const tool of result!.tools as Record<string, unknown>[]) {
+      expect(tool.outputSchema).toBeUndefined();
+    }
+  });
+
+  test('oversized results are truncated with a marker', async () => {
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'], maxResultBytes: 100 }))
+      .get('/big', () => 'x'.repeat(500), { detail: { tags: ['T'] } });
+    const { result } = await rpc(app, 'tools/call', { name: 'get_big', arguments: {} });
+    const text = (result!.content as { text: string }[])[0]!.text;
+    expect(text).toStartWith('x'.repeat(100));
+    expect(text).toContain('[truncated 400 of 500 bytes]');
+  });
+
+  test('onToolCall observes successes, errors, and never breaks the transport', async () => {
+    const calls: { tool: string; status: number | null; isError: boolean }[] = [];
+    const app = new Elysia()
+      .use(
+        timbalMcp({
+          include: ['T'],
+          onToolCall: info => {
+            calls.push({ tool: info.tool, status: info.status, isError: info.isError });
+            throw new Error('observer bug'); // must not surface
+          },
+        })
+      )
+      .get('/ok', () => 'fine', { detail: { tags: ['T'] } })
+      .get('/boom', () => new Response('nope', { status: 500 }), { detail: { tags: ['T'] } });
+
+    const ok = await rpc(app, 'tools/call', { name: 'get_ok', arguments: {} });
+    expect(ok.result!.isError).toBeUndefined();
+    const boom = await rpc(app, 'tools/call', { name: 'get_boom', arguments: {} });
+    expect(boom.result!.isError).toBe(true);
+
+    expect(calls).toEqual([
+      { tool: 'get_ok', status: 200, isError: false },
+      { tool: 'get_boom', status: 500, isError: true },
+    ]);
+  });
+
   test('custom path and server identity', async () => {
     const app = new Elysia().use(
       timbalMcp({ path: '/tools/mcp', serverName: 'blueprint', serverVersion: '1.2.3' })

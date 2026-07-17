@@ -28,6 +28,10 @@ beforeAll(() => {
     .get('/whoami', ({ request }) => request.headers.get('authorization') ?? 'anonymous', {
       detail: { mcp: { name: 'whoami', description: 'Echo the auth header' } },
     })
+    .get('/answer/:n', ({ params }) => ({ answer: Number(params.n), source: 'test' }), {
+      response: t.Object({ answer: t.Number(), source: t.String() }),
+      detail: { mcp: { name: 'get_answer', description: 'Structured output route' } },
+    })
     .get('/healthcheck', () => 'ok')
     .listen(0);
   url = new URL(`http://localhost:${app.server!.port}/mcp`);
@@ -58,7 +62,7 @@ describe('MCP conformance (official SDK client)', () => {
   test('listTools returns the opted-in routes with valid schemas', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map(t => t.name).sort()).toEqual(['run_workforce', 'whoami']);
+    expect(tools.map(t => t.name).sort()).toEqual(['get_answer', 'run_workforce', 'whoami']);
 
     const run = tools.find(t => t.name === 'run_workforce')!;
     expect(run.description).toBe('Run a workforce agent');
@@ -102,6 +106,19 @@ describe('MCP conformance (official SDK client)', () => {
   test('unknown tool is a JSON-RPC error the client rejects with', async () => {
     const client = await connect();
     expect(client.callTool({ name: 'does_not_exist', arguments: {} })).rejects.toThrow();
+    await client.close();
+  });
+
+  test('structuredContent validates against the declared outputSchema', async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    const tool = tools.find(t => t.name === 'get_answer')!;
+    expect(tool.outputSchema).toBeDefined();
+
+    // The official client validates structuredContent against outputSchema
+    // and throws on mismatch — resolving cleanly IS the conformance check.
+    const result = await client.callTool({ name: 'get_answer', arguments: { n: 7 } });
+    expect(result.structuredContent).toEqual({ answer: 7, source: 'test' });
     await client.close();
   });
 

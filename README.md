@@ -665,6 +665,99 @@ app.use(timbalAuth({
 
 Requires `elysia` as a peer dependency.
 
+## Elysia MCP Plugin
+
+Expose your app's routes as [MCP](https://modelcontextprotocol.io) tools, so agents (Claude, Cursor, anything MCP-capable) can call them:
+
+```typescript
+import { Elysia, t } from "elysia";
+import { timbalAuth, timbalMcp } from "@timbal-ai/timbal-sdk/elysia";
+
+const app = new Elysia()
+  .use(timbalAuth())
+  .use(timbalMcp({ include: ["Workforce"] })) // opt-in by swagger tag
+  .post("/workforce/:id/run", handler, {
+    body: t.Object({ prompt: t.String({ description: "What to ask the agent" }) }),
+    detail: { tags: ["Workforce"], summary: "Run a workforce agent" },
+  })
+  .listen(3000);
+```
+
+This mounts a stateless [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) endpoint at `POST /mcp`. A tool call is dispatched back through your app's own router — every guard, validator, and middleware on the target route runs exactly as it would for a plain HTTP request.
+
+### Choosing what's exposed
+
+Selection is **opt-in** — nothing is exposed by default, so `/healthcheck`, `/docs`, and upload routes never leak into the tool list. Three levers, all on the same `detail` object swagger reads:
+
+```typescript
+// 1. Bulk: every route with a matching tag becomes a tool
+.use(timbalMcp({ include: ["Workforce", "Documents"] }))
+
+// 2. Curated identity — agents want intent-shaped names, not REST paths
+.post("/workforce/:id/run", handler, {
+  detail: {
+    tags: ["Workforce"],
+    mcp: {
+      name: "run_workforce",
+      description: "Run a workforce agent with a prompt and get its reply",
+    },
+  },
+})
+
+// 3. Individual opt-in (no tag needed) or opt-out (overrides the tag)
+.get("/status", handler, { detail: { mcp: { name: "get_app_status" } } })
+.post("/workforce/:id/upload", handler, { detail: { tags: ["Workforce"], mcp: false } })
+```
+
+Precedence: `mcp: false` always excludes → explicit `mcp: {...}` always includes → tag match includes. Routes hidden from swagger (`detail: { hide: true }`) stay out unless they carry explicit `mcp` metadata.
+
+Tool schemas are generated from the route's TypeBox schemas: path params, `query`, and `body` flatten into a single argument object, with field `description`s carried through — documenting your schemas well *is* the tool-schema customization. Tool names default to `{method}_{path}` (`post_workforce_id_run`); descriptions fall back through `mcp.description` → `detail.description` → `detail.summary` → `METHOD /path`.
+
+### Options
+
+```typescript
+app.use(timbalMcp({
+  include: ["Workforce"],          // swagger tags to expose (default: none)
+  path: "/mcp",                    // endpoint path
+  serverName: "acme-support-app",  // shown in the client's server list
+  serverVersion: "1.0.0",          // defaults to the SDK version
+  instructions: "Prefer run_workforce for user questions.", // hint sent to clients on connect
+  allowedOrigins: ["https://studio.acme.com"], // extra browser origins (cross-origin is 403 by default)
+  maxResultBytes: 100 * 1024,      // tool results larger than this are truncated with a marker
+  onToolCall: ({ tool, status, durationMs, isError }) =>
+    console.log(`mcp ${tool} → ${status} in ${durationMs}ms${isError ? " (error)" : ""}`),
+}));
+```
+
+Routes that declare an object `response` schema also get a typed `outputSchema` on their tool, and successful calls return the parsed JSON as `structuredContent` alongside the text — agents handle typed results better than prose-wrapped JSON.
+
+### Auth
+
+There is no MCP-specific auth layer. The `/mcp` endpoint sits behind `timbalAuth` ingress like any other route, and the caller's `Authorization` header is forwarded to every tool call — so tools run with the MCP client's Timbal identity, and the target route's own auth re-validates it. Point an MCP client at it with a bearer token:
+
+```jsonc
+// e.g. Cursor / Claude Desktop MCP config
+{
+  "timbal-app": {
+    "url": "https://your-app.timbal.ai/mcp",
+    "headers": { "Authorization": "Bearer <timbal token or API key>" }
+  }
+}
+```
+
+### Inspecting the tool list
+
+```typescript
+import { deriveMcpTools } from "@timbal-ai/timbal-sdk/elysia";
+
+const tools = deriveMcpTools(app.routes, { include: ["Workforce"], mcpPath: "/mcp" });
+console.log(tools.map(t => ({ name: t.name, description: t.description })));
+```
+
+Useful as a startup log or a snapshot test, so a new tagged route showing up as a tool is a deliberate diff, not a surprise.
+
+Tool results are the raw HTTP response body as text; non-2xx responses come back as tool errors (`isError: true`) that agents can read and retry. If you need a tool whose shape differs from any HTTP route, add a purpose-built route rather than bending the mapping.
+
 ## Error Handling
 
 The SDK throws `TimbalApiError` for API errors, with status-aware predicates so you don't sniff codes manually:

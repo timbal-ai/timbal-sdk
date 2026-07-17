@@ -31,12 +31,10 @@ export {
   deriveMcpTools,
   type TimbalMcpOptions,
   type McpRouteMeta,
+  type ToolCallInfo,
   type DeriveMcpToolsOptions,
 } from './mcp';
-export {
-  timbalConfigRefresh,
-  type TimbalConfigRefreshOptions,
-} from './config-refresh';
+export { timbalConfigRefresh, type TimbalConfigRefreshOptions } from './config-refresh';
 export {
   refreshPlatformConfig,
   registerConfigRefreshHook,
@@ -68,8 +66,7 @@ export function timbalAuth(options: TimbalAuthOptions = {}): any {
   const timbal = new Timbal();
 
   // `/config` is platform-mode only and opt-out via `configRoute: false`.
-  const mountConfig =
-    resolveAuthMode(options) === 'platform' && options.configRoute !== false;
+  const mountConfig = resolveAuthMode(options) === 'platform' && options.configRoute !== false;
 
   // Make `/config` public so the ingress gate never blocks it. Done here (not in
   // the shared default list) so legacy apps are completely unaffected.

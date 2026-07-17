@@ -48,6 +48,33 @@ export interface TimbalMcpOptions {
   serverVersion?: string;
   /** Optional `instructions` string returned from `initialize`. */
   instructions?: string;
+  /**
+   * Origins (e.g. `https://studio.example.com`) allowed to reach the
+   * endpoint from a browser, in addition to same-host requests. Requests
+   * carrying a cross-origin `Origin` header are rejected with 403 — the
+   * Streamable HTTP spec requires this to block DNS-rebinding attacks
+   * against local dev servers. Non-browser MCP clients send no `Origin`
+   * and are unaffected.
+   */
+  allowedOrigins?: string[];
+  /**
+   * Cap on a tool result's text content, in bytes. Oversized responses are
+   * truncated with a marker instead of silently flooding the agent's
+   * context window. @default 102400 (100 KiB)
+   */
+  maxResultBytes?: number;
+  /** Observer for tool calls (logging/metrics). Errors never reach the transport. */
+  onToolCall?(info: ToolCallInfo): void;
+}
+
+/** Outcome of one `tools/call`, reported to {@link TimbalMcpOptions.onToolCall}. */
+export interface ToolCallInfo {
+  tool: string;
+  args: Record<string, unknown>;
+  /** HTTP status of the dispatched request, or `null` when dispatch threw. */
+  status: number | null;
+  durationMs: number;
+  isError: boolean;
 }
 
 /** Protocol revisions this transport accepts, newest first. */
@@ -80,6 +107,8 @@ interface ToolBinding {
   args: Record<string, ArgRoute>;
   /** `object` = body composed from flattened args; `raw` = single `body` arg passed through. */
   bodyMode: 'object' | 'raw' | 'none';
+  /** JSON Schema of the 200 response, when the route declares an object one. */
+  outputSchema?: Record<string, unknown>;
 }
 
 // Loose view over Elysia's InternalRoute — `hooks` is untyped there anyway.
@@ -91,6 +120,7 @@ interface RouteLike {
     body?: unknown;
     query?: unknown;
     params?: unknown;
+    response?: unknown;
   };
 }
 
@@ -123,6 +153,20 @@ function pathParamNames(path: string): string[] {
     .split('/')
     .filter(s => s.startsWith(':'))
     .map(s => s.slice(1));
+}
+
+/**
+ * The route's 200-response schema, when it's a JSON object — that's the only
+ * shape MCP `structuredContent` accepts. Elysia stores `response` either as a
+ * bare schema or as a status→schema record.
+ */
+function deriveOutputSchema(route: RouteLike): Record<string, unknown> | undefined {
+  const raw = route.hooks?.response;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const record = raw as Record<string | number, unknown>;
+  const candidate = 200 in record || '200' in record ? (record[200] ?? record['200']) : raw;
+  const schema = toJsonSchema(candidate);
+  return schema?.type === 'object' ? schema : undefined;
 }
 
 /**
@@ -181,6 +225,7 @@ function buildToolBinding(route: RouteLike, name: string, description: string): 
     }
   }
 
+  const outputSchema = deriveOutputSchema(route);
   return {
     name,
     description,
@@ -193,6 +238,7 @@ function buildToolBinding(route: RouteLike, name: string, description: string): 
     },
     args,
     bodyMode,
+    ...(outputSchema ? { outputSchema } : {}),
   };
 }
 
@@ -393,24 +439,83 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
     return deriveMcpTools(routes, { include: options.include, mcpPath: path });
   }
 
+  const maxResultBytes = options.maxResultBytes ?? 100 * 1024;
+
+  function report(info: ToolCallInfo): void {
+    try {
+      options.onToolCall?.(info);
+    } catch {
+      /* observer must not take down the transport */
+    }
+  }
+
+  interface ToolResult {
+    content: { type: 'text'; text: string }[];
+    structuredContent?: Record<string, unknown>;
+    isError?: boolean;
+  }
+
   async function callTool(
     toolName: string,
     args: Record<string, unknown>,
     incoming: Request
-  ): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean } | null> {
+  ): Promise<ToolResult | null> {
     const binding = currentTools().find(t => t.name === toolName);
     if (!binding) return null;
 
     const origin = new URL(incoming.url).origin;
     const request = buildToolRequest(binding, args, origin, incoming);
+    const started = Date.now();
     try {
       const response: Response = await resolveRoot().handle(request);
       const text = await response.text();
+
+      // Cap before it reaches the agent — an unbounded list dump silently
+      // eats the context window. Char-based slice over exact bytes is fine;
+      // the marker tells the agent (and the user reading the transcript)
+      // that data is missing rather than exhaustive.
+      const byteLength = Buffer.byteLength(text, 'utf8');
+      const truncated = byteLength > maxResultBytes;
+      const finalText = truncated
+        ? `${text.slice(0, maxResultBytes)}\n… [truncated ${byteLength - maxResultBytes} of ${byteLength} bytes]`
+        : text;
+
+      // structuredContent only when the tool declared an outputSchema (the
+      // spec then requires it on success) and the payload is intact — a
+      // truncated result must not masquerade as valid structured output.
+      let structuredContent: Record<string, unknown> | undefined;
+      if (binding.outputSchema && response.ok && !truncated) {
+        try {
+          const parsed: unknown = JSON.parse(text);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            structuredContent = parsed as Record<string, unknown>;
+          }
+        } catch {
+          /* non-JSON despite a response schema — text content stands alone */
+        }
+      }
+
+      const isError = !response.ok;
+      report({
+        tool: toolName,
+        args,
+        status: response.status,
+        durationMs: Date.now() - started,
+        isError,
+      });
       return {
-        content: [{ type: 'text', text }],
-        ...(response.ok ? {} : { isError: true }),
+        content: [{ type: 'text', text: finalText }],
+        ...(structuredContent ? { structuredContent } : {}),
+        ...(isError ? { isError: true } : {}),
       };
     } catch (err) {
+      report({
+        tool: toolName,
+        args,
+        status: null,
+        durationMs: Date.now() - started,
+        isError: true,
+      });
       return {
         content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
         isError: true,
@@ -446,6 +551,7 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
             name: t.name,
             description: t.description,
             inputSchema: t.inputSchema,
+            ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
           })),
         });
       case 'tools/call': {
@@ -463,9 +569,27 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
     }
   }
 
+  /**
+   * Streamable HTTP requires Origin validation (DNS-rebinding defense: a
+   * malicious page must not drive a victim's browser into `localhost:3000/mcp`,
+   * which the legacy local-dev auth bypass would otherwise let straight
+   * through). Non-browser MCP clients send no Origin and pass untouched.
+   */
+  function originAllowed(request: Request): boolean {
+    const origin = request.headers.get('origin');
+    if (!origin) return true;
+    if (options.allowedOrigins?.includes(origin)) return true;
+    try {
+      return new URL(origin).host === new URL(request.url).host;
+    } catch {
+      return false; // e.g. `Origin: null` (sandboxed iframe) — reject
+    }
+  }
+
   plugin.post(
     path,
     async ({ request }: { request: Request }) => {
+      if (!originAllowed(request)) return new Response('Forbidden origin', { status: 403 });
       let message: JsonRpcMessage;
       try {
         message = (await request.json()) as JsonRpcMessage;
