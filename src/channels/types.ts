@@ -106,6 +106,13 @@ export interface ChannelDelivery {
    */
   edit?(ref: unknown, text: string): Promise<void>;
   /**
+   * Delete a previously sent message. Optional — used to retract streamed
+   * interim text when the definitive reply turns out to carry no text
+   * (e.g. a file-only reply): a message can't be edited to empty, so
+   * channels without `delete` keep the interim text on screen.
+   */
+  delete?(ref: unknown): Promise<void>;
+  /**
    * Post a file into the event's conversation. `file` is either an
    * `https://` URL (platform CDN / temp storage — channels that can fetch
    * URLs server-side, like Telegram, pass it through) or a

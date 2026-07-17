@@ -38,7 +38,10 @@ export interface StreamingReplyOptions {
  *   messages at that limit (preferring newline/space boundaries), editing
  *   the streamed message down to chunk one and sending the rest fresh.
  * - `finalize` flushes the definitive text, bypassing the throttle window,
- *   and settles only after every in-flight call has finished.
+ *   and settles only after every in-flight call has finished. An **empty**
+ *   definitive text retracts a previously streamed message via the
+ *   delivery's optional `delete` (best-effort) — the stream said something
+ *   the final reply doesn't.
  * - Deliveries without `edit` support, or `streaming: false`, degrade
  *   gracefully: nothing is sent during generation and the whole reply is
  *   posted at `finalize`.
@@ -150,7 +153,23 @@ export class StreamingReply {
 
     await this.chain.catch(() => {}); // drain in-flight sends/edits
 
-    if (!finalText) return this.didDeliver;
+    if (!finalText) {
+      // Streamed interim text that the definitive reply doesn't contain
+      // (e.g. a file-only OUTPUT superseding deltas). A message can't be
+      // edited to empty, so retract it where the channel supports deletion.
+      // Best-effort: a failed retraction is cosmetic, and must not trip the
+      // pipeline's error path into posting an error notice.
+      if (this.ref !== null && this.delivery.delete) {
+        try {
+          await this.delivery.delete(this.ref);
+          this.ref = null;
+          this.deliveredText = null;
+        } catch {
+          /* retraction is best-effort */
+        }
+      }
+      return this.didDeliver;
+    }
     if (finalText === this.deliveredText) return true;
 
     const chunks = splitText(finalText, this.delivery.maxTextLength);

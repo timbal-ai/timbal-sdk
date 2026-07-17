@@ -502,10 +502,11 @@ describe('timbalChannels plugin', () => {
   });
 
   describe('outbound files', () => {
-    /** makeAdapter + a recording sendFile on the delivery. */
+    /** makeAdapter + recording sendFile/delete on the delivery. */
     function makeFileAdapter() {
       const base = makeAdapter('fake');
       const sentFiles: { file: string; fileName?: string }[] = [];
+      const deleted: unknown[] = [];
       const adapter: ChannelAdapter = {
         ...base.adapter,
         delivery(event) {
@@ -516,10 +517,13 @@ describe('timbalChannels plugin', () => {
               sentFiles.push({ file, fileName: opts?.fileName });
               return 'file-ref';
             },
+            async delete(ref: unknown) {
+              deleted.push(ref);
+            },
           };
         },
       };
-      return { ...base, adapter, sentFiles };
+      return { ...base, adapter, sentFiles, deleted };
     }
 
     const outputWithFiles = (
@@ -607,6 +611,69 @@ describe('timbalChannels plugin', () => {
 
       expect(sent).toHaveLength(0);
       expect(sentFiles).toEqual([{ file: 'https://cdn.test/a.png', fileName: 'a.png' }]);
+    });
+
+    test('streaming: interim text is retracted when the reply turns out file-only', async () => {
+      const { adapter, sent, sentFiles, deleted } = makeFileAdapter();
+      const { timbal } = makeTimbal(() => [
+        { type: 'START', run_id: 'r1' },
+        { type: 'DELTA', run_id: 'r1', item: { type: 'text_delta', text_delta: 'pre-tool chatter' } },
+        {
+          type: 'OUTPUT',
+          run_id: 'r1',
+          path: 'agent',
+          output: {
+            role: 'assistant',
+            content: [{ type: 'file', file: 'https://cdn.test/a.png', name: 'a.png' }],
+          },
+        },
+      ]);
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          streaming: true,
+          editIntervalMs: 0,
+          bindings: [{ adapter, workforce: 'a' }],
+        }),
+      );
+
+      await post(app, channelPath('a'), { id: 'e1', text: 'chart please' });
+      await settle();
+
+      // The delta was streamed out...
+      expect(sent).toEqual(['pre-tool chatter']);
+      // ...but retracted at finalize (the definitive reply has no text),
+      // leaving only the file.
+      expect(deleted).toEqual(['ref-1']);
+      expect(sentFiles).toEqual([{ file: 'https://cdn.test/a.png', fileName: 'a.png' }]);
+    });
+
+    test('a run where every file is dropped releases the dedupe claim', async () => {
+      const { adapter, sent } = makeAdapter(); // no sendFile
+      const { timbal, invocations } = makeTimbal(() =>
+        outputWithFiles(null, [{ file: 'data:image/png;base64,AAAA', name: 'gen.png' }]),
+      );
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      // Nothing reaches the user: no text, and the only file is a data URL
+      // on a channel without sendFile.
+      await post(app, channelPath('a'), { id: 'same', text: 'hi' });
+      await settle();
+      expect(sent).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+
+      // The claim must be released — redelivery re-runs instead of being
+      // swallowed by a run that produced nothing.
+      await post(app, channelPath('a'), { id: 'same', text: 'hi' });
+      await settle();
+      expect(invocations).toHaveLength(2);
     });
 
     test('no sendFile: URL files degrade to a link message, data URLs are dropped', async () => {

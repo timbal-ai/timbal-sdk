@@ -382,6 +382,14 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           }
         }
       }
+
+      // A run that completed with nothing reaching the user (silent
+      // workforce, or every reply file dropped) releases the idempotency
+      // claim — mirroring the error path below: a claim that produced no
+      // user-visible output must not swallow provider redelivery.
+      if (event.dedupeKey && !reply.didDeliver && !fileDelivered) {
+        dedupe.forget(event.dedupeKey);
+      }
     } catch (err) {
       // Drain in-flight stream sends before inspecting didDeliver — update()
       // enqueues asynchronously, so a throw right after the first delta can

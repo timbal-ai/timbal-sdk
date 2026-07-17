@@ -302,6 +302,10 @@ export function telegram(options: TelegramAdapterOptions): ChannelAdapter {
             throw err;
           }
         },
+        async delete(ref: unknown): Promise<void> {
+          if (ref === null || ref === undefined) return;
+          await api('deleteMessage', { chat_id: chatId, message_id: ref });
+        },
         async sendFile(file: string, opts?: { fileName?: string }): Promise<unknown> {
           const asPhoto = looksLikeImage(file, opts?.fileName);
           const post = async (method: 'sendPhoto' | 'sendDocument'): Promise<unknown> => {

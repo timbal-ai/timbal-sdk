@@ -225,6 +225,16 @@ describe('telegram delivery + registerWebhook (mocked API)', () => {
     await delivery.edit!(88, 'updated'); // must not throw
   });
 
+  test('delete posts deleteMessage against the ref', async () => {
+    const delivery = adapter.delivery(event);
+    await delivery.delete!(88);
+    expect(requests[0]!.url).toBe('https://tg.test/bot123:abc/deleteMessage');
+    expect(requests[0]!.body).toEqual({ chat_id: '555', message_id: 88 });
+
+    await delivery.delete!(null); // no ref — no API call
+    expect(requests).toHaveLength(1);
+  });
+
   test('registerWebhook calls setWebhook with url + secret', async () => {
     await adapter.registerWebhook!('https://app.example.com/channels/telegram');
     expect(requests[0]!.url).toBe('https://tg.test/bot123:abc/setWebhook');
