@@ -401,6 +401,61 @@ describe('timbalMcp transport', () => {
     expect(frames.at(-1)!.error.code).toBe(-32602);
   });
 
+  test('CORS: preflight and responses carry allow-origin for permitted origins only', async () => {
+    const app = new Elysia().use(timbalMcp({ allowedOrigins: ['https://studio.acme.com'] }));
+
+    // Preflight from an allowlisted origin
+    const preflight = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://studio.acme.com',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'content-type, authorization',
+        },
+      })
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe('https://studio.acme.com');
+    expect(preflight.headers.get('access-control-allow-methods')).toContain('POST');
+    expect(preflight.headers.get('access-control-allow-headers')).toContain('authorization');
+    expect(preflight.headers.get('access-control-allow-credentials')).toBe('true');
+
+    // Preflight from a forbidden origin
+    const forbidden = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'OPTIONS',
+        headers: { origin: 'http://evil.com', 'access-control-request-method': 'POST' },
+      })
+    );
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.headers.get('access-control-allow-origin')).toBeNull();
+
+    // Actual POST response echoes the allowed origin
+    const res = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://studio.acme.com',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      })
+    );
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://studio.acme.com');
+    expect(res.headers.get('vary')).toBe('Origin');
+
+    // No Origin header (non-browser client) → no CORS headers added
+    const plain = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      })
+    );
+    expect(plain.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
   test('wildcard routes are never exposed as tools', async () => {
     const app = new Elysia()
       .use(timbalMcp({ include: ['T'] }))

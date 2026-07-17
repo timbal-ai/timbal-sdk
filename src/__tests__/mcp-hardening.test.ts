@@ -135,6 +135,56 @@ describe('argument routing', () => {
     expect('hacker_field' in body).toBe(false);
   });
 
+  test('null path/query args are treated as absent, never the literal "null"', async () => {
+    const app = new Elysia().use(timbalMcp({ include: ['T'] })).get(
+      '/q/:id',
+      ({ params, request }) => ({
+        id: params.id,
+        verbose: new URL(request.url).searchParams.has('verbose'),
+      }),
+      {
+        query: t.Object({ verbose: t.Optional(t.String()) }),
+        detail: { tags: ['T'] },
+      }
+    );
+
+    // null for an optional query arg → key omitted entirely
+    const ok = await rpc(app, 'tools/call', {
+      name: 'get_q_id',
+      arguments: { id: 'real', verbose: null },
+    });
+    expect(JSON.parse(ok.result.content[0].text)).toEqual({ id: 'real', verbose: false });
+
+    // null for a required path arg → validation error, not a /q/null dispatch
+    const bad = await rpc(app, 'tools/call', {
+      name: 'get_q_id',
+      arguments: { id: null },
+    });
+    expect(bad.result.isError).toBe(true);
+    expect(bad.result.content[0].text).toContain('id');
+  });
+
+  test('missing required args fail fast with a named error, not a :param 404', async () => {
+    const calls: { status: number | null; isError: boolean }[] = [];
+    const app = new Elysia()
+      .use(
+        timbalMcp({
+          include: ['T'],
+          onToolCall: info => calls.push({ status: info.status, isError: info.isError }),
+        })
+      )
+      .post('/wf/:id/run', () => 'ran', {
+        body: t.Object({ prompt: t.String() }),
+        detail: { tags: ['T'] },
+      });
+
+    const { result } = await rpc(app, 'tools/call', { name: 'post_wf_id_run', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe('Missing required argument(s): id, prompt');
+    // Never dispatched — observer sees status null, and no literal :id URL was hit.
+    expect(calls).toEqual([{ status: null, isError: true }]);
+  });
+
   test('array query params append one entry per value', async () => {
     const app = new Elysia()
       .use(timbalMcp({ include: ['T'] }))

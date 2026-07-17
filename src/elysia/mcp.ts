@@ -330,6 +330,10 @@ function buildToolRequest(
   for (const [argName, route] of Object.entries(binding.args)) {
     const value = rawArgs[argName];
     if (value === undefined) continue;
+    // JSON null has no URL representation — treat it as absent for path and
+    // query args rather than emitting the literal string "null". Body args
+    // keep null: it's meaningful JSON the route's validator can judge.
+    if (value === null && route.in !== 'body') continue;
     switch (route.in) {
       case 'path':
         path = path.replace(`:${route.key}`, encodeURIComponent(String(value)));
@@ -499,6 +503,24 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
   ): Promise<ToolResult | null> {
     const binding = currentTools().find(t => t.name === toolName);
     if (!binding) return null;
+
+    // Validate required args before dispatch. A missing path param would
+    // otherwise leave a literal `:id` segment in the URL and dispatch to a
+    // wrong route or a bare 404 — an agent can't self-correct from that,
+    // but it can from an explicit missing-argument error.
+    const missing = (binding.inputSchema.required ?? []).filter(name => {
+      const value = args[name];
+      if (value === undefined) return true;
+      // null is treated as absent everywhere except JSON bodies.
+      return value === null && binding.args[name]?.in !== 'body';
+    });
+    if (missing.length > 0) {
+      report({ tool: toolName, args, status: null, durationMs: 0, isError: true });
+      return {
+        content: [{ type: 'text', text: `Missing required argument(s): ${missing.join(', ')}` }],
+        isError: true,
+      };
+    }
 
     const origin = new URL(incoming.url).origin;
     const request = buildToolRequest(binding, args, origin, incoming);
@@ -699,6 +721,44 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
     }
   }
 
+  /**
+   * CORS for browser-based MCP clients: gating alone isn't enough — an
+   * allowlisted (or same-host) origin still needs `Access-Control-Allow-*`
+   * on the actual responses, or the browser blocks the fetch it just
+   * preflighted. Credentials are allowed because the origin is echoed only
+   * when it passed the gate, never wildcarded.
+   */
+  function withCors(response: Response, request: Request): Response {
+    const origin = request.headers.get('origin');
+    if (!origin || !originAllowed(request)) return response;
+    response.headers.set('access-control-allow-origin', origin);
+    response.headers.set('access-control-allow-credentials', 'true');
+    response.headers.set('vary', 'Origin');
+    return response;
+  }
+
+  plugin.options(
+    path,
+    ({ request }: { request: Request }) => {
+      if (!originAllowed(request)) return new Response(null, { status: 403 });
+      const requestedHeaders = request.headers.get('access-control-request-headers');
+      return withCors(
+        new Response(null, {
+          status: 204,
+          headers: {
+            'access-control-allow-methods': 'POST, GET, DELETE, OPTIONS',
+            'access-control-allow-headers':
+              requestedHeaders ??
+              'content-type, authorization, mcp-protocol-version, mcp-session-id, last-event-id',
+            'access-control-max-age': '86400',
+          },
+        }),
+        request
+      );
+    },
+    { detail: { hide: true } }
+  );
+
   plugin.post(
     path,
     async ({ request }: { request: Request }) => {
@@ -707,12 +767,12 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
       try {
         message = (await request.json()) as JsonRpcMessage;
       } catch {
-        return jsonRpcError(null, -32700, 'Parse error');
+        return withCors(jsonRpcError(null, -32700, 'Parse error'), request);
       }
       // JSON-RPC batching was removed in protocol 2025-06-18; keep the
       // transport simple and reject arrays outright.
       if (Array.isArray(message) || typeof message !== 'object' || message === null) {
-        return jsonRpcError(null, -32600, 'Invalid request');
+        return withCors(jsonRpcError(null, -32600, 'Invalid request'), request);
       }
 
       // Stream the response only when the client both accepts SSE and asked
@@ -728,24 +788,35 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
         const meta = message.params._meta as { progressToken?: string | number } | undefined;
         if (meta?.progressToken !== undefined) {
           const args = (message.params.arguments as Record<string, unknown> | undefined) ?? {};
-          return streamToolCall(
-            message.id,
-            message.params.name as string,
-            args,
-            meta.progressToken,
+          return withCors(
+            streamToolCall(
+              message.id,
+              message.params.name as string,
+              args,
+              meta.progressToken,
+              request
+            ),
             request
           );
         }
       }
 
-      return handleMessage(message, request);
+      return withCors(await handleMessage(message, request), request);
     },
     { detail: { hide: true } }
   );
 
   // Stateless transport: no server-initiated SSE stream, no sessions.
-  plugin.get(path, () => new Response(null, { status: 405 }), { detail: { hide: true } });
-  plugin.delete(path, () => new Response(null, { status: 405 }), { detail: { hide: true } });
+  plugin.get(
+    path,
+    ({ request }: { request: Request }) => withCors(new Response(null, { status: 405 }), request),
+    { detail: { hide: true } }
+  );
+  plugin.delete(
+    path,
+    ({ request }: { request: Request }) => withCors(new Response(null, { status: 405 }), request),
+    { detail: { hide: true } }
+  );
 
   return plugin;
 }
