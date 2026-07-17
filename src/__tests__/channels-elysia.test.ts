@@ -583,6 +583,32 @@ describe('timbalChannels plugin', () => {
       expect(invocations[1]!.ctx?.parentId).toBe('r1');
     });
 
+    test('file-only reply after streamed deltas sends the file, not stale text', async () => {
+      const { adapter, sent, sentFiles } = makeFileAdapter();
+      const { timbal } = makeTimbal(() => [
+        { type: 'START', run_id: 'r1' },
+        { type: 'DELTA', run_id: 'r1', item: { type: 'text_delta', text_delta: 'pre-tool chatter' } },
+        {
+          type: 'OUTPUT',
+          run_id: 'r1',
+          path: 'agent',
+          output: {
+            role: 'assistant',
+            content: [{ type: 'file', file: 'https://cdn.test/a.png', name: 'a.png' }],
+          },
+        },
+      ]);
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a'), { id: 'e1', text: 'chart please' });
+      await settle();
+
+      expect(sent).toHaveLength(0);
+      expect(sentFiles).toEqual([{ file: 'https://cdn.test/a.png', fileName: 'a.png' }]);
+    });
+
     test('no sendFile: URL files degrade to a link message, data URLs are dropped', async () => {
       const { adapter, sent } = makeAdapter(); // no sendFile
       const { timbal } = makeTimbal(() =>
@@ -611,6 +637,7 @@ describe('timbalChannels plugin', () => {
     test('sendFile failure after text lands posts the error notice and keeps dedupe', async () => {
       const base = makeAdapter();
       let attempts = 0;
+      const parentIds: Array<string | undefined> = [];
       const adapter: ChannelAdapter = {
         ...base.adapter,
         delivery(event) {
@@ -626,8 +653,12 @@ describe('timbalChannels plugin', () => {
         workforce: {
           get() {
             return {
-              async *events(): AsyncGenerator<Record<string, unknown>> {
+              async *events(
+                _input: Record<string, unknown>,
+                ctx?: { parentId?: string },
+              ): AsyncGenerator<Record<string, unknown>> {
                 attempts += 1;
+                parentIds.push(ctx?.parentId);
                 yield* outputWithFiles('text part', [{ file: 'https://cdn.test/a.png' }]);
               },
             };
@@ -650,6 +681,12 @@ describe('timbalChannels plugin', () => {
       await post(app, channelPath('a'), { id: 'same', text: 'hi' });
       await settle();
       expect(attempts).toBe(1);
+
+      // ...and the delivered text must have advanced session continuity,
+      // even though the file send blew up afterwards.
+      await post(app, channelPath('a'), { id: 'next', text: 'follow-up' });
+      await settle();
+      expect(parentIds).toEqual([undefined, 'r1']);
     });
   });
 

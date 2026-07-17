@@ -113,6 +113,27 @@ describe('WorkforceTextCollector', () => {
     expect(c.files).toHaveLength(1);
   });
 
+  test('a file-only OUTPUT supersedes accumulated deltas (no stale text)', () => {
+    const c = new WorkforceTextCollector();
+    c.push({ type: 'DELTA', item: { type: 'text_delta', text_delta: 'pre-tool chatter' } });
+    const updated = c.push({
+      type: 'OUTPUT',
+      path: 'agent',
+      output: { role: 'assistant', content: [{ type: 'file', file: 'https://cdn.test/a.pdf' }] },
+    });
+    // The definitive reply has no text — the deltas must not leak through.
+    expect(updated).toBe('');
+    expect(c.text).toBe('');
+    expect(c.files).toHaveLength(1);
+  });
+
+  test('non-Message OUTPUT (no content array) keeps the accumulation fallback', () => {
+    const c = new WorkforceTextCollector();
+    c.push({ type: 'DELTA', item: { type: 'text_delta', text_delta: 'streamed' } });
+    expect(c.push({ type: 'OUTPUT', path: 'agent', output: { some: 'dict' } })).toBeNull();
+    expect(c.text).toBe('streamed');
+  });
+
   test('nested OUTPUT files are ignored; malformed file blocks skipped', () => {
     const c = new WorkforceTextCollector();
     c.push({

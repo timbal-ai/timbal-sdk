@@ -344,7 +344,18 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         const updated = collector.push(ev);
         if (updated !== null) reply.update(updated);
       }
+      // Only advance the thread when the user actually got a reply — chaining
+      // onto a silent/empty run would make the next message inherit a parent
+      // the user never saw. Called at every delivery milestone (idempotent)
+      // rather than once at the end: a file send failing later must not
+      // undo continuity for text the user already received — dedupe keeps
+      // the claim in that case, so the run would otherwise be orphaned.
+      const advanceSession = (): void => {
+        if (sessions && runId) sessions.set(sessionKey, runId);
+      };
+
       const textDelivered = await reply.finalize(collector.text);
+      if (textDelivered) advanceSession();
 
       // Files the agent attached to its reply — sent after the text, in
       // order. Channels with `sendFile` get the native treatment (Telegram
@@ -355,9 +366,11 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         if (delivery.sendFile) {
           await delivery.sendFile(file.file, { fileName: file.fileName });
           fileDelivered = true;
+          advanceSession();
         } else if (!file.file.startsWith('data:')) {
           await delivery.send(file.fileName ? `${file.fileName}: ${file.file}` : file.file);
           fileDelivered = true;
+          advanceSession();
         } else {
           try {
             options.onError?.(
@@ -368,12 +381,6 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
             /* observer must not take down the pipeline */
           }
         }
-      }
-      // Only advance the thread when the user actually got a reply — chaining
-      // onto a silent/empty run would make the next message inherit a parent
-      // the user never saw.
-      if (sessions && runId && (textDelivered || fileDelivered)) {
-        sessions.set(sessionKey, runId);
       }
     } catch (err) {
       // Drain in-flight stream sends before inspecting didDeliver — update()

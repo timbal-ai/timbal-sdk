@@ -21,10 +21,11 @@ export interface ReplyFile {
  * - `OUTPUT` (top-level only, i.e. `path` without a dot) — the definitive
  *   result. Supersedes everything accumulated: extracts a plain string
  *   output directly, or joins the `text` blocks of a Message-shaped
- *   `{ content: [...] }` output. `file` blocks in that content are
- *   collected into {@link files} (they never stream as deltas). Nested
- *   OUTPUTs (tools, sub-steps — dotted paths like `agent.get_datetime`)
- *   are ignored.
+ *   `{ content: [...] }` output — including down to `''` when a
+ *   Message-shaped output carries no text blocks at all (file-only reply).
+ *   `file` blocks in that content are collected into {@link files} (they
+ *   never stream as deltas). Nested OUTPUTs (tools, sub-steps — dotted
+ *   paths like `agent.get_datetime`) are ignored.
  * - Lowercase `delta` / `output` — tolerated for custom components that
  *   emit simplified events.
  *
@@ -68,6 +69,16 @@ export class WorkforceTextCollector {
         this.finalText = extracted;
         return this.text;
       }
+      // Message-shaped OUTPUT with no text blocks (e.g. a file-only reply)
+      // is still the definitive result — it must supersede accumulated
+      // deltas, or stale stream text gets sent alongside the files. Only
+      // non-Message outputs (custom dicts, missing content) keep the
+      // accumulation as a fallback.
+      if (isMessageShaped(ev.output)) {
+        const changed = this.text !== '';
+        this.finalText = '';
+        return changed ? '' : null;
+      }
       return null;
     }
 
@@ -93,6 +104,15 @@ export class WorkforceTextCollector {
   get files(): ReplyFile[] {
     return this.replyFiles;
   }
+}
+
+/** A serialized runtime `Message`: an object carrying a `content` array. */
+function isMessageShaped(output: unknown): boolean {
+  return (
+    !!output &&
+    typeof output === 'object' &&
+    Array.isArray((output as { content?: unknown }).content)
+  );
 }
 
 /**
