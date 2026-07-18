@@ -185,6 +185,43 @@ describe('argument routing', () => {
     expect(calls).toEqual([{ status: null, isError: true }]);
   });
 
+  test('all-optional body schemas dispatch {} when the agent sends no body args', async () => {
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'] }))
+      .post('/optional', ({ body }) => JSON.stringify(body), {
+        body: t.Object({ note: t.Optional(t.String()) }),
+        detail: { tags: ['T'] },
+      })
+      .post('/empty', ({ body }) => JSON.stringify(body), {
+        body: t.Object({}),
+        detail: { tags: ['T'] },
+      });
+
+    // A bodyless POST would fail the object validator; `{}` must be sent.
+    const optional = await rpc(app, 'tools/call', { name: 'post_optional', arguments: {} });
+    expect(optional.result.isError).toBeUndefined();
+    expect(JSON.parse(optional.result.content[0].text)).toEqual({});
+
+    const empty = await rpc(app, 'tools/call', { name: 'post_empty', arguments: {} });
+    expect(empty.result.isError).toBeUndefined();
+  });
+
+  test('tool discovery falls back to the root route table without getGlobalRoutes', async () => {
+    const mcp = timbalMcp({ include: ['T'] });
+    const app = new Elysia().use(mcp).get('/ok', () => 'ok', { detail: { tags: ['T'] } });
+
+    // Simulate an Elysia version without getGlobalRoutes: the plugin's own
+    // route list holds only the /mcp transport, so without the root-walk
+    // fallback the tool set would silently derive empty.
+    (mcp as { getGlobalRoutes?: unknown }).getGlobalRoutes = undefined;
+
+    const list = await rpc(app, 'tools/list');
+    expect((list.result.tools as { name: string }[]).map(t => t.name)).toEqual(['get_ok']);
+
+    const call = await rpc(app, 'tools/call', { name: 'get_ok', arguments: {} });
+    expect(call.result.content[0].text).toBe('ok');
+  });
+
   test('array query params append one entry per value', async () => {
     const app = new Elysia()
       .use(timbalMcp({ include: ['T'] }))

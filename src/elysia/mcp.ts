@@ -365,7 +365,12 @@ function buildToolRequest(
   if (cookie) headers.set('cookie', cookie);
 
   let body: string | undefined;
-  if (hasBody && binding.method !== 'GET' && binding.method !== 'HEAD') {
+  // Object-mode routes always get a JSON body, even `{}` when every field is
+  // optional and the agent sent none — the route's validator expects an
+  // object, and a bodyless POST would fail validation spuriously. Raw mode
+  // only sends when the (required) `body` arg was actually provided.
+  const sendBody = binding.bodyMode === 'object' || hasBody;
+  if (sendBody && binding.method !== 'GET' && binding.method !== 'HEAD') {
     headers.set('content-type', 'application/json');
     body = JSON.stringify(binding.bodyMode === 'raw' ? rawBody : bodyObject);
   }
@@ -475,8 +480,12 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
   function currentTools(): ToolBinding[] {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = plugin as any;
+    // getGlobalRoutes is the live root route table. On Elysia versions
+    // without it, walk getParent to the root app — the plugin's own `routes`
+    // would contain only the /mcp transport itself, deriving an empty tool
+    // set while dispatch (which already uses the root) still worked.
     const routes: RouteLike[] =
-      typeof p.getGlobalRoutes === 'function' ? p.getGlobalRoutes() : p.routes;
+      typeof p.getGlobalRoutes === 'function' ? p.getGlobalRoutes() : (resolveRoot().routes ?? []);
     return deriveMcpTools(routes, { include: options.include, mcpPath: path });
   }
 
