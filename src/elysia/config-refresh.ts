@@ -41,11 +41,16 @@ function tokenMatches(presented: string, expected: string): boolean {
  * authenticates itself with a stronger credential), so no `publicPaths`
  * entry is needed.
  *
+ * Prefer letting `timbalAuth()` mount this (default). Use the standalone
+ * plugin only when the host skips auth:
+ *
  * ```ts
  * new Elysia()
- *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] }))
+ *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] })) // mounts refresh
  *   .use(timbalChannels())
- *   .use(timbalConfigRefresh())
+ *
+ * // or, without auth:
+ * new Elysia().use(timbalConfigRefresh())
  * ```
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,6 +74,6 @@ export function timbalConfigRefresh(options: TimbalConfigRefreshOptions = {}): a
       void refreshPlatformConfig({ timbal, warm: options.warm });
       return new Response(null, { status: 202 });
     },
-    { detail: { hide: true } },
+    { detail: { hide: true } }
   );
 }

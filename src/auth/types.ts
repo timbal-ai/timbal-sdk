@@ -122,4 +122,15 @@ export interface TimbalAuthOptions {
    * @default true when `authMode === 'platform'`
    */
   configRoute?: boolean | string;
+
+  /**
+   * Mount `POST /__timbal/config/refresh` — the platform cache-invalidation
+   * endpoint (auth config + channel bindings, plus any registered refresh
+   * hooks). SDK infrastructure: apps almost never need to opt out. The
+   * standalone `timbalConfigRefresh()` plugin remains for hosts that skip
+   * `timbalAuth`.
+   *
+   * @default true
+   */
+  configRefresh?: boolean;
 }

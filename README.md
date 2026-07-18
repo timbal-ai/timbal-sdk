@@ -660,8 +660,11 @@ app.use(timbalAuth({
   authConfig: { enabled: true, providers: ["email", "google"] }, // override; skips the fetch (tests/local)
   authConfigCacheTtlMs: 60_000,                                  // config cache TTL (default 60s)
   configRoute: "/config",                                        // path, or false to disable
+  configRefresh: true,                                           // POST /__timbal/config/refresh (default on)
 }));
 ```
+
+`timbalAuth` also mounts `POST /__timbal/config/refresh` by default — the platform cache-invalidation endpoint used by auth config and channel bindings. Apps do not need a separate `.use(timbalConfigRefresh())`. Opt out with `configRefresh: false`; the standalone plugin remains for hosts that skip auth entirely.
 
 Requires `elysia` as a peer dependency.
 

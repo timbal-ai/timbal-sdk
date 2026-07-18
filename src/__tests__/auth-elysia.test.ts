@@ -40,7 +40,9 @@ describe('timbalAuth Elysia plugin', () => {
 
     test('POST /auth/callback returns 200 with HTML (magic-link 307 redirect)', async () => {
       const app = new Elysia().use(timbalAuth());
-      const res = await app.handle(new Request('http://localhost/auth/callback', { method: 'POST' }));
+      const res = await app.handle(
+        new Request('http://localhost/auth/callback', { method: 'POST' })
+      );
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('Completing authentication');
@@ -53,9 +55,7 @@ describe('timbalAuth Elysia plugin', () => {
     });
 
     test('protected routes are accessible without token in local dev', async () => {
-      const app = new Elysia()
-        .use(timbalAuth())
-        .get('/test', () => 'ok');
+      const app = new Elysia().use(timbalAuth()).get('/test', () => 'ok');
       const res = await app.handle(new Request('http://localhost/test'));
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('ok');
@@ -96,18 +96,14 @@ describe('timbalAuth Elysia plugin', () => {
     });
 
     test('protected routes return 401 without token', async () => {
-      const app = new Elysia()
-        .use(timbalAuth())
-        .get('/test', () => 'ok');
+      const app = new Elysia().use(timbalAuth()).get('/test', () => 'ok');
       const res = await app.handle(new Request('http://localhost/test'));
       expect(res.status).toBe(401);
     });
 
     test('POST /auth/logout clears cookie and returns success', async () => {
       const app = new Elysia().use(timbalAuth());
-      const res = await app.handle(
-        new Request('http://localhost/auth/logout', { method: 'POST' }),
-      );
+      const res = await app.handle(new Request('http://localhost/auth/logout', { method: 'POST' }));
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
@@ -147,25 +143,23 @@ describe('timbalAuth Elysia plugin', () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve({ session: mockSession, project: mockProject }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       try {
         let capturedSession: unknown;
         let capturedProject: unknown;
 
-        const app = new Elysia()
-          .use(timbalAuth())
-          .get('/protected', ({ session, project }) => {
-            capturedSession = session;
-            capturedProject = project;
-            return 'ok';
-          });
+        const app = new Elysia().use(timbalAuth()).get('/protected', ({ session, project }) => {
+          capturedSession = session;
+          capturedProject = project;
+          return 'ok';
+        });
 
         const res = await app.handle(
           new Request('http://localhost/protected', {
             headers: { Authorization: 'Bearer test-token' },
-          }),
+          })
         );
 
         expect(res.status).toBe(200);
@@ -189,7 +183,7 @@ describe('timbalAuth Elysia plugin', () => {
               session: { user_id: '1', user_email: 'test@example.com' },
               project: { id: '248', name: 'Test' },
             }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       try {
@@ -197,7 +191,7 @@ describe('timbalAuth Elysia plugin', () => {
         const res = await app.handle(
           new Request('http://localhost/auth/login', {
             headers: { Authorization: 'Bearer test-token' },
-          }),
+          })
         );
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toBe('/');
@@ -217,16 +211,15 @@ describe('timbalAuth Elysia plugin', () => {
               session: { user_id: '1', user_email: 'test@example.com' },
               project: { id: '248', name: 'Test' },
             }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       try {
         const app = new Elysia().use(timbalAuth());
         const res = await app.handle(
-          new Request(
-            'http://localhost/auth/login?return_to=%2Fdashboard',
-            { headers: { Authorization: 'Bearer test-token' } },
-          ),
+          new Request('http://localhost/auth/login?return_to=%2Fdashboard', {
+            headers: { Authorization: 'Bearer test-token' },
+          })
         );
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toBe('/dashboard');
@@ -246,7 +239,7 @@ describe('timbalAuth Elysia plugin', () => {
               session: { user_id: '1', user_email: 'test@example.com' },
               project: { id: '248', name: 'Test' },
             }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       try {
@@ -256,7 +249,7 @@ describe('timbalAuth Elysia plugin', () => {
             headers: {
               cookie: 'timbal_project_access_token=cookie-token',
             },
-          }),
+          })
         );
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toBe('/');
@@ -284,18 +277,15 @@ describe('timbalAuth Elysia plugin', () => {
               session: { user_id: '1', user_email: 'test@example.com' },
               project: { id: '248', name: 'Test' },
             }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       try {
-        const app = new Elysia().use(
-          timbalAuth({ afterLoginRedirect: '/app' }),
-        );
+        const app = new Elysia().use(timbalAuth({ afterLoginRedirect: '/app' }));
         const res = await app.handle(
-          new Request(
-            'http://localhost/auth/login?return_to=%2F%2Fevil.com',
-            { headers: { Authorization: 'Bearer test-token' } },
-          ),
+          new Request('http://localhost/auth/login?return_to=%2F%2Fevil.com', {
+            headers: { Authorization: 'Bearer test-token' },
+          })
         );
         expect(res.status).toBe(302);
         expect(res.headers.get('location')).toBe('/app');
@@ -332,7 +322,7 @@ describe('timbalAuth Elysia plugin', () => {
     test('loginPage: false still mounts other auth routes', async () => {
       const app = new Elysia().use(timbalAuth({ loginPage: false }));
       const logoutRes = await app.handle(
-        new Request('http://localhost/auth/logout', { method: 'POST' }),
+        new Request('http://localhost/auth/logout', { method: 'POST' })
       );
       expect(logoutRes.status).toBe(200);
     });
@@ -369,7 +359,7 @@ describe('timbalAuth Elysia plugin', () => {
           ok: true,
           status: 200,
           json: () => Promise.resolve(rawProject(overrides)),
-        }),
+        })
       ) as unknown as typeof global.fetch;
     }
 
@@ -426,7 +416,7 @@ describe('timbalAuth Elysia plugin', () => {
         timbalAuth({
           authMode: 'platform',
           authConfig: { enabled: false, providers: ['email'] },
-        }),
+        })
       );
       const res = await app.handle(new Request('http://localhost/config'));
       const body = await res.json();
@@ -438,14 +428,14 @@ describe('timbalAuth Elysia plugin', () => {
       // The gate runs on the override without the platform; /config must too —
       // an unreachable platform should not 503 a setup that overrides authConfig.
       global.fetch = mock(() =>
-        Promise.reject(new Error('platform down')),
+        Promise.reject(new Error('platform down'))
       ) as unknown as typeof global.fetch;
 
       const app = new Elysia().use(
         timbalAuth({
           authMode: 'platform',
           authConfig: { enabled: true, providers: ['email'] },
-        }),
+        })
       );
       const res = await app.handle(new Request('http://localhost/config'));
       expect(res.status).toBe(200);
@@ -458,19 +448,34 @@ describe('timbalAuth Elysia plugin', () => {
     test('custom configRoute path', async () => {
       mockProjectFetch({ auth_enabled: true });
       const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', configRoute: '/app-config' }),
+        timbalAuth({ authMode: 'platform', configRoute: '/app-config' })
       );
       const res = await app.handle(new Request('http://localhost/app-config'));
       expect(res.status).toBe(200);
     });
 
     test('configRoute: false does not mount /config', async () => {
-      const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', configRoute: false }),
-      );
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform', configRoute: false }));
       // Route absent → 404 (the global gate only runs for matched routes, so an
       // unmounted path is 404 rather than a gated 401).
       const res = await app.handle(new Request('http://localhost/config'));
+      expect(res.status).toBe(404);
+    });
+
+    test('mounts POST /__timbal/config/refresh by default', async () => {
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform' }));
+      const res = await app.handle(
+        new Request('http://localhost/__timbal/config/refresh', { method: 'POST' })
+      );
+      // Route is mounted and self-authenticating — no bearer → 401, not 404.
+      expect(res.status).toBe(401);
+    });
+
+    test('configRefresh: false does not mount the refresh endpoint', async () => {
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform', configRefresh: false }));
+      const res = await app.handle(
+        new Request('http://localhost/__timbal/config/refresh', { method: 'POST' })
+      );
       expect(res.status).toBe(404);
     });
 
@@ -487,7 +492,7 @@ describe('timbalAuth Elysia plugin', () => {
       // No prior cached value → nothing to fail-soft to. Must degrade like the
       // middleware (retryable 503), not throw an unhandled 500.
       global.fetch = mock(() =>
-        Promise.reject(new Error('platform down')),
+        Promise.reject(new Error('platform down'))
       ) as unknown as typeof global.fetch;
 
       const app = new Elysia().use(timbalAuth({ authMode: 'platform' }));
@@ -522,14 +527,11 @@ describe('timbalAuth Elysia plugin', () => {
           ok: true,
           status: 200,
           // first fetch open, any later fetch authenticated
-          json: () =>
-            Promise.resolve(rawProject({ auth_enabled: projectFetches > 1 })),
+          json: () => Promise.resolve(rawProject({ auth_enabled: projectFetches > 1 })),
         });
       }) as unknown as typeof global.fetch;
 
-      const app = new Elysia()
-        .use(timbalAuth({ authMode: 'platform' }))
-        .get('/api/x', () => 'ok');
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform' })).get('/api/x', () => 'ok');
 
       // Warm the cache via a protected route — open project → reachable.
       const gate = await app.handle(new Request('http://localhost/api/x'));
@@ -595,7 +597,7 @@ describe('timbalAuth Elysia plugin', () => {
       const res = await app.handle(
         new Request('http://localhost/api/workforce', {
           headers: { Authorization: 'Bearer some-token' },
-        }),
+        })
       );
       expect(res.status).toBe(200);
       expect(capturedToken).toBeNull();
@@ -619,7 +621,7 @@ describe('timbalAuth Elysia plugin', () => {
               session: { user_id: '1', user_email: 'u@x.com' },
               project: { id: '248', name: 'T' },
             }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       let capturedToken: unknown = 'unset';
@@ -632,7 +634,7 @@ describe('timbalAuth Elysia plugin', () => {
       const res = await app.handle(
         new Request('http://localhost/api/workforce', {
           headers: { Authorization: 'Bearer test-token' },
-        }),
+        })
       );
       expect(res.status).toBe(200);
       expect(capturedToken).toBe('test-token');
@@ -651,7 +653,7 @@ describe('timbalAuth Elysia plugin', () => {
             Promise.resolve({
               session: { user_id: '1', user_email: 'u@x.com' },
             }),
-        }),
+        })
       ) as unknown as typeof global.fetch;
 
       let capturedToken: unknown = 'unset';
@@ -664,7 +666,7 @@ describe('timbalAuth Elysia plugin', () => {
       const res = await app.handle(
         new Request('http://localhost/api/workforce', {
           headers: { Authorization: 'Bearer u-tok' },
-        }),
+        })
       );
       expect(res.status).toBe(200);
       expect(capturedToken).toBe('u-tok');
@@ -682,7 +684,7 @@ describe('timbalAuth Elysia plugin', () => {
     test('config fetch failure falls back to legacy (401 when project id set)', async () => {
       // No authConfig override → real fetch path; reject it.
       global.fetch = mock(() =>
-        Promise.reject(new Error('platform down')),
+        Promise.reject(new Error('platform down'))
       ) as unknown as typeof global.fetch;
 
       const app = new Elysia()
@@ -699,7 +701,7 @@ describe('timbalAuth Elysia plugin', () => {
             authMode: 'platform',
             authConfig: { ...authCfg },
             publicPaths: ['/webhook'],
-          }),
+          })
         )
         .get('/webhook', () => 'ok');
       const res = await app.handle(new Request('http://localhost/webhook'));
@@ -731,48 +733,42 @@ describe('timbalAuth Elysia plugin', () => {
 
     test('GET /auth/:provider → 400 when provider disabled', async () => {
       const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', authConfig: { ...authedGoogleOnly } }),
+        timbalAuth({ authMode: 'platform', authConfig: { ...authedGoogleOnly } })
       );
-      const res = await app.handle(
-        new Request('http://localhost/auth/microsoft'),
-      );
+      const res = await app.handle(new Request('http://localhost/auth/microsoft'));
       expect(res.status).toBe(400);
     });
 
     test('GET /auth/:provider → redirect when provider enabled', async () => {
       const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', authConfig: { ...authedGoogleOnly } }),
+        timbalAuth({ authMode: 'platform', authConfig: { ...authedGoogleOnly } })
       );
       const res = await app.handle(new Request('http://localhost/auth/google'));
       expect(res.status).toBe(302);
     });
 
     test('GET /auth/:provider → 400 for every provider in open mode', async () => {
-      const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', authConfig: { ...open } }),
-      );
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform', authConfig: { ...open } }));
       const res = await app.handle(new Request('http://localhost/auth/google'));
       expect(res.status).toBe(400);
     });
 
     test('POST /auth/magic-link → 400 when email disabled', async () => {
       const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', authConfig: { ...authedGoogleOnly } }),
+        timbalAuth({ authMode: 'platform', authConfig: { ...authedGoogleOnly } })
       );
       const res = await app.handle(
         new Request('http://localhost/auth/magic-link', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: 'u@x.com' }),
-        }),
+        })
       );
       expect(res.status).toBe(400);
     });
 
     test('GET /auth/login → 404 in open mode', async () => {
-      const app = new Elysia().use(
-        timbalAuth({ authMode: 'platform', authConfig: { ...open } }),
-      );
+      const app = new Elysia().use(timbalAuth({ authMode: 'platform', authConfig: { ...open } }));
       const res = await app.handle(new Request('http://localhost/auth/login'));
       expect(res.status).toBe(404);
     });
@@ -782,7 +778,7 @@ describe('timbalAuth Elysia plugin', () => {
         timbalAuth({
           authMode: 'platform',
           authConfig: { enabled: true, providers: ['email', 'google'] },
-        }),
+        })
       );
       const res = await app.handle(new Request('http://localhost/auth/login'));
       expect(res.status).toBe(200);
@@ -798,9 +794,7 @@ describe('timbalAuth Elysia plugin', () => {
       // Both TIMBAL_PROJECT_ID and TIMBAL_ORG_ID are set here, so mode now
       // infers 'platform'. Pin legacy explicitly to assert legacy behavior.
       const app = new Elysia().use(timbalAuth({ authMode: 'legacy' }));
-      const res = await app.handle(
-        new Request('http://localhost/auth/microsoft'),
-      );
+      const res = await app.handle(new Request('http://localhost/auth/microsoft'));
       expect(res.status).toBe(302);
     });
   });
@@ -840,8 +834,7 @@ describe('timbalAuth Elysia plugin', () => {
     function mockFetch(projectOverrides: Record<string, unknown> = {}) {
       meCalls = 0;
       global.fetch = mock((input: unknown) => {
-        const url =
-          typeof input === 'string' ? input : (input as Request).url;
+        const url = typeof input === 'string' ? input : (input as Request).url;
         // /me?project_id=... → token/session validation
         if (url.includes('/me')) {
           meCalls += 1;
@@ -901,7 +894,7 @@ describe('timbalAuth Elysia plugin', () => {
       const res = await app.handle(
         new Request('http://localhost/api/workforce', {
           headers: { Authorization: 'Bearer test-token' },
-        }),
+        })
       );
       expect(res.status).toBe(200);
       expect(capturedToken).toBe('test-token');
@@ -934,7 +927,7 @@ describe('timbalAuth Elysia plugin', () => {
       const res = await app.handle(
         new Request('http://localhost/api/workforce', {
           headers: { Authorization: 'Bearer leaked' },
-        }),
+        })
       );
       expect(res.status).toBe(200);
       expect(capturedToken).toBeNull();
@@ -1008,7 +1001,7 @@ describe('timbalAuth Elysia plugin', () => {
         const res = await app.handle(
           new Request('http://localhost/api/x', {
             headers: { Authorization: 'Bearer user-token' },
-          }),
+          })
         );
         expect(res.status).toBe(200);
         // User op validated AS THE USER, not the service secret.
@@ -1028,7 +1021,8 @@ describe('timbalAuth Elysia plugin', () => {
         .get('/api/workforce', () => 'ok');
       await app.handle(new Request('http://localhost/api/workforce'));
       await app.handle(new Request('http://localhost/api/workforce'));
-      const projectFetches = (global.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+      const projectFetches = (global.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls
+        .length;
       expect(projectFetches).toBe(1); // second request served from the TTL cache
     });
   });
