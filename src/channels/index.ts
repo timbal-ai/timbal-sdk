@@ -39,3 +39,4 @@ export {
   type TelegramAdapterOptions,
 } from './adapters/telegram';
 export { slack, type SlackAdapterOptions } from './adapters/slack';
+export { whatsapp, type WhatsAppAdapterOptions } from './adapters/whatsapp';

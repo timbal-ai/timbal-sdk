@@ -2,6 +2,7 @@ import type { Project, ProjectChannelSpec } from '../types';
 import type { ChannelAdapter, ChannelBinding } from './types';
 import { telegram } from './adapters/telegram';
 import { slack } from './adapters/slack';
+import { whatsapp } from './adapters/whatsapp';
 
 /**
  * Platform-driven channel configuration.
@@ -76,6 +77,14 @@ function buildAdapter(
       const signingSecret = creds.signing_secret || env.SLACK_SIGNING_SECRET;
       if (!botToken || !signingSecret) return null;
       return slack({ botToken, signingSecret });
+    }
+    case 'whatsapp': {
+      const accessToken = creds.access_token || env.WHATSAPP_ACCESS_TOKEN;
+      const phoneNumberId = creds.phone_number_id || env.WHATSAPP_PHONE_NUMBER_ID;
+      const appSecret = creds.app_secret || env.WHATSAPP_APP_SECRET;
+      const verifyToken = creds.verify_token || env.WHATSAPP_VERIFY_TOKEN;
+      if (!accessToken || !phoneNumberId || !appSecret || !verifyToken) return null;
+      return whatsapp({ accessToken, phoneNumberId, appSecret, verifyToken });
     }
     default:
       return 'unknown';

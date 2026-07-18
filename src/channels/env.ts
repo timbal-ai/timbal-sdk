@@ -1,6 +1,7 @@
 import type { ChannelBinding } from './types';
 import { telegram } from './adapters/telegram';
 import { slack } from './adapters/slack';
+import { whatsapp } from './adapters/whatsapp';
 
 export interface ChannelBindingsFromEnvOptions {
   /**
@@ -23,6 +24,8 @@ export interface ChannelBindingsFromEnvOptions {
  * |----------|-----------------------------------------------------------------|
  * | Telegram | `TELEGRAM_BOT_TOKEN` (+ optional `TELEGRAM_SECRET_TOKEN`)       |
  * | Slack    | `SLACK_SIGNING_SECRET` + `SLACK_BOT_TOKEN`                      |
+ * | WhatsApp | `WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` +          |
+ * |          | `WHATSAPP_APP_SECRET` + `WHATSAPP_VERIFY_TOKEN`                 |
  *
  * All bindings target `CHANNELS_WORKFORCE` (or the `workforce` option).
  * Multiple providers → one component; for per-provider routing, hand-write
@@ -66,6 +69,23 @@ export function channelBindingsFromEnv(
         botToken: env.SLACK_BOT_TOKEN,
       }),
       workforce: requireWorkforce('slack'),
+    });
+  }
+
+  if (
+    env.WHATSAPP_ACCESS_TOKEN &&
+    env.WHATSAPP_PHONE_NUMBER_ID &&
+    env.WHATSAPP_APP_SECRET &&
+    env.WHATSAPP_VERIFY_TOKEN
+  ) {
+    bindings.push({
+      adapter: whatsapp({
+        accessToken: env.WHATSAPP_ACCESS_TOKEN,
+        phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID,
+        appSecret: env.WHATSAPP_APP_SECRET,
+        verifyToken: env.WHATSAPP_VERIFY_TOKEN,
+      }),
+      workforce: requireWorkforce('whatsapp'),
     });
   }
 

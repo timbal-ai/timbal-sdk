@@ -68,10 +68,39 @@ describe('materializeChannelBindings', () => {
 
   test('providers unknown to this SDK version are skipped as such', () => {
     const { bindings, skipped } = materializeChannelBindings(
-      [{ provider: 'whatsapp', workforce: 'joi' }],
+      [{ provider: 'teams', workforce: 'joi' }],
       {},
     );
     expect(bindings).toEqual([]);
     expect(skipped[0]!.reason).toBe('unknown-provider');
+  });
+
+  test('whatsapp materializes from platform credentials or env', () => {
+    const fromCreds = materializeChannelBindings(
+      [
+        {
+          provider: 'whatsapp',
+          workforce: 'joi',
+          credentials: {
+            access_token: 'tok',
+            phone_number_id: 'pn',
+            app_secret: 'sec',
+            verify_token: 'ver',
+          },
+        },
+      ],
+      {},
+    );
+    expect(fromCreds.skipped).toEqual([]);
+    expect(fromCreds.bindings[0]!.adapter.provider).toBe('whatsapp');
+
+    const fromEnv = materializeChannelBindings([{ provider: 'whatsapp', workforce: 'joi' }], {
+      WHATSAPP_ACCESS_TOKEN: 'tok',
+      WHATSAPP_PHONE_NUMBER_ID: 'pn',
+      WHATSAPP_APP_SECRET: 'sec',
+      WHATSAPP_VERIFY_TOKEN: 'ver',
+    });
+    expect(fromEnv.skipped).toEqual([]);
+    expect(fromEnv.bindings[0]!.adapter.provider).toBe('whatsapp');
   });
 });
