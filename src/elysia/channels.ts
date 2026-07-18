@@ -416,6 +416,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
       rawBody: request.method === 'GET' ? '' : await request.text(),
       headers: request.headers,
       url: request.url,
+      method: request.method,
     };
 
     const verdict = await binding.adapter.verify(req);

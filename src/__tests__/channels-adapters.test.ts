@@ -669,13 +669,18 @@ const WA_WABA_ID = '200000000000001';
 const WA_USER = '15550001111';
 const WA_DISPLAY = '15550009999';
 
-function signedWhatsAppReq(body: unknown, secret = WA_APP_SECRET): WebhookRequest {
+function signedWhatsAppReq(
+  body: unknown,
+  secret = WA_APP_SECRET,
+  url = 'https://app.example.com/channels/joi/whatsapp',
+): WebhookRequest {
   const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
   const signature = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;
   return {
     rawBody,
     headers: new Headers({ 'x-hub-signature-256': signature }),
-    url: 'https://app.example.com/channels/joi/whatsapp',
+    url,
+    method: 'POST',
   };
 }
 
@@ -736,6 +741,7 @@ describe('whatsapp adapter', () => {
       rawBody: '',
       headers: new Headers(),
       url: `https://app.example.com/channels/joi/whatsapp?hub.mode=subscribe&hub.verify_token=${WA_VERIFY_TOKEN}&hub.challenge=12345`,
+      method: 'GET',
     };
     const verdict = adapter.verify(challengeReq);
     expect(verdict).toBeInstanceOf(Response);
@@ -748,6 +754,7 @@ describe('whatsapp adapter', () => {
       rawBody: '',
       headers: new Headers(),
       url: `https://app.example.com/channels/joi/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=12345`,
+      method: 'GET',
     };
     const verdict = adapter.verify(challengeReq);
     expect(verdict).toBeInstanceOf(Response);
@@ -762,6 +769,16 @@ describe('whatsapp adapter', () => {
     expect((adapter.verify(forged) as Response).status).toBe(401);
 
     expect(adapter.verify(req(waTextEnvelope()))).toBeInstanceOf(Response);
+  });
+
+  test('verify does not treat sticky hub.* query params on POST as a challenge', () => {
+    const sticky =
+      `https://app.example.com/channels/joi/whatsapp` +
+      `?hub.mode=subscribe&hub.verify_token=${WA_VERIFY_TOKEN}&hub.challenge=stale`;
+    // Would previously echo "stale" / 403 and never reach signature checks.
+    expect(adapter.verify(signedWhatsAppReq(waTextEnvelope(), WA_APP_SECRET, sticky))).toBe(
+      'ok',
+    );
   });
 
   test('parse normalizes a text message', () => {

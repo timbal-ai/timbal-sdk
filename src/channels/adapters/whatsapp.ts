@@ -139,9 +139,12 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
       const mode = url.searchParams.get('hub.mode');
       const token = url.searchParams.get('hub.verify_token');
       const challenge = url.searchParams.get('hub.challenge');
+      const method = (req.method ?? '').toUpperCase();
 
-      // Hub challenge (GET). Meta only sends these query params on verify.
-      if (mode === 'subscribe') {
+      // Hub challenge is GET-only. Meta sometimes leaves `hub.*` on the saved
+      // callback URL — a POST with those query params must still verify the
+      // signature and deliver messages, not echo the challenge / 403.
+      if (method === 'GET' && mode === 'subscribe') {
         if (token === verifyToken && challenge) {
           return new Response(challenge, {
             status: 200,
