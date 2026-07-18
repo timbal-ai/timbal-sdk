@@ -195,10 +195,10 @@ describe('timbalMcp transport', () => {
     ).toBe(405);
   });
 
-  test('rejects cross-origin browser requests, allows same-host and allowlisted', async () => {
-    const post = (app: Elysia, origin?: string) =>
+  test('rejects cross-origin browser requests, allows same-origin and allowlisted', async () => {
+    const post = (app: Elysia, url: string, origin?: string) =>
       app.handle(
-        new Request('http://localhost/mcp', {
+        new Request(url, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -209,14 +209,18 @@ describe('timbalMcp transport', () => {
       );
 
     const app = workforceApp();
-    expect((await post(app, 'http://evil.com')).status).toBe(403);
-    expect((await post(app, 'http://localhost')).status).toBe(200);
-    expect((await post(app)).status).toBe(200); // non-browser client, no Origin
+    expect((await post(app, 'http://localhost/mcp', 'http://evil.com')).status).toBe(403);
+    expect((await post(app, 'http://localhost/mcp', 'http://localhost')).status).toBe(200);
+    expect((await post(app, 'http://localhost/mcp')).status).toBe(200); // non-browser, no Origin
+    // Same host, different scheme is still cross-origin.
+    expect((await post(app, 'https://localhost/mcp', 'http://localhost')).status).toBe(403);
 
     const allowlisted = new Elysia().use(
       timbalMcp({ allowedOrigins: ['https://studio.acme.com'] })
     );
-    expect((await post(allowlisted, 'https://studio.acme.com')).status).toBe(200);
+    expect(
+      (await post(allowlisted, 'http://localhost/mcp', 'https://studio.acme.com')).status
+    ).toBe(200);
   });
 
   test('declares outputSchema from the response schema and returns structuredContent', async () => {
@@ -341,6 +345,29 @@ describe('timbalMcp transport', () => {
     const final = frames.at(-1)!;
     expect(final.id).toBe(7);
     expect(final.result.content[0].text).toBe('finally');
+  });
+
+  test('Accept media type matching is case-insensitive for SSE mode', async () => {
+    const app = new Elysia()
+      .use(timbalMcp({ include: ['T'], progressIntervalMs: 20 }))
+      .get('/slow', () => 'ok', { detail: { tags: ['T'] } });
+
+    const res = await app.handle(
+      new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'APPLICATION/JSON, TEXT/EVENT-STREAM',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'get_slow', arguments: {}, _meta: { progressToken: 1 } },
+        }),
+      })
+    );
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
   });
 
   test('falls back to plain JSON without SSE accept or without progressToken', async () => {

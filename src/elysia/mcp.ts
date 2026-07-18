@@ -724,7 +724,9 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
     if (!origin) return true;
     if (options.allowedOrigins?.includes(origin)) return true;
     try {
-      return new URL(origin).host === new URL(request.url).host;
+      // Full origin (scheme + host + port), not just host — http:// and
+      // https:// on the same hostname are cross-origin in browsers.
+      return new URL(origin).origin === new URL(request.url).origin;
     } catch {
       return false; // e.g. `Origin: null` (sandboxed iframe) — reject
     }
@@ -792,7 +794,7 @@ export function timbalMcp(options: TimbalMcpOptions = {}): any {
         message.id !== undefined &&
         message.id !== null &&
         typeof message.params?.name === 'string' &&
-        (request.headers.get('accept') ?? '').includes('text/event-stream')
+        (request.headers.get('accept') ?? '').toLowerCase().includes('text/event-stream')
       ) {
         const meta = message.params._meta as { progressToken?: string | number } | undefined;
         if (meta?.progressToken !== undefined) {
