@@ -14,11 +14,7 @@ import { getCachedRuntimeChannels } from '../channels/runtime';
 import { getCachedProject } from '../auth/config';
 import { registerConfigRefreshHook } from '../config/refresh';
 import type { ProjectChannelSpec } from '../types';
-import type {
-  ChannelBinding,
-  ChannelEvent,
-  WebhookRequest,
-} from '../channels/types';
+import type { ChannelBinding, ChannelEvent, WebhookRequest } from '../channels/types';
 
 /**
  * Path prefixes that must bypass `timbalAuth` ingress. Webhooks authenticate
@@ -126,10 +122,7 @@ class SessionStore {
  * segment (prefer uid) keeps multi-agent Telegram/Slack URLs distinct. A
  * future binding-id segment can extend this without breaking the prefix.
  */
-export function resolveBindingPath(
-  binding: ChannelBinding,
-  prefix = '/channels',
-): string {
+export function resolveBindingPath(binding: ChannelBinding, prefix = '/channels'): string {
   return `${prefix}${binding.path ?? `/${binding.workforce}/${binding.adapter.provider}`}`;
 }
 
@@ -164,7 +157,7 @@ export interface ResolveChannelBindingsOptions {
  */
 export async function resolveChannelBindings(
   timbal: Timbal,
-  options: ResolveChannelBindingsOptions = {},
+  options: ResolveChannelBindingsOptions = {}
 ): Promise<ChannelBinding[]> {
   if (options.bindings) return options.bindings;
   const env = options.env ?? process.env;
@@ -228,7 +221,7 @@ export async function resolveChannelBindings(
  * } from "@timbal-ai/timbal-sdk/elysia";
  *
  * const app = new Elysia()
- *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] }))
+ *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] })) // mounts config refresh
  *   .use(timbalChannels())
  *   .listen(3000);
  *
@@ -256,8 +249,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
   const prefix = options.prefix ?? '/channels';
   const dedupe = new DedupeCache(options.dedupeTtlMs);
   const sessions = options.sessionContinuity !== false ? new SessionStore() : null;
-  const errorMessage =
-    options.errorMessage ?? 'Something went wrong processing your message.';
+  const errorMessage = options.errorMessage ?? 'Something went wrong processing your message.';
 
   // Dedupe skipped-spec reports per provider:reason — dynamic mode resolves
   // on every webhook, and a misconfigured channel shouldn't spam the observer.
@@ -375,7 +367,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           try {
             options.onError?.(
               new Error('Reply file dropped: channel has no sendFile and file is a data URL'),
-              event,
+              event
             );
           } catch {
             /* observer must not take down the pipeline */
@@ -416,10 +408,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     }
   }
 
-  async function handleWebhook(
-    binding: ChannelBinding,
-    request: Request,
-  ): Promise<Response> {
+  async function handleWebhook(binding: ChannelBinding, request: Request): Promise<Response> {
     // Read the body once, as text — signature verification (Slack HMAC)
     // needs the exact raw bytes, and a Request body is single-read.
     const req: WebhookRequest = {
@@ -448,11 +437,9 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     // STATIC mode: fixed routes known at mount time. Supports custom `path`s.
     for (const binding of options.bindings) {
       const path = resolveBindingPath(binding, prefix);
-      app.post(
-        path,
-        ({ request }: { request: Request }) => handleWebhook(binding, request),
-        { detail: { hide: true } },
-      );
+      app.post(path, ({ request }: { request: Request }) => handleWebhook(binding, request), {
+        detail: { hide: true },
+      });
     }
     return app;
   }
@@ -512,14 +499,12 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         return new Response('Channel configuration error', { status: 503 });
       }
       const binding = bindings.find(
-        (b) =>
-          b.workforce === params.workforce &&
-          b.adapter.provider === params.provider,
+        b => b.workforce === params.workforce && b.adapter.provider === params.provider
       );
       if (!binding) return new Response('Unknown channel', { status: 404 });
       return handleWebhook(binding, request);
     },
-    { detail: { hide: true } },
+    { detail: { hide: true } }
   );
 
   return app;
@@ -590,7 +575,7 @@ export interface ChannelProvisionResult {
  */
 export async function registerChannelWebhooks(
   options: RegisterChannelWebhooksOptions = {},
-  origin?: string,
+  origin?: string
 ): Promise<ChannelProvisionResult> {
   const skipped: SkippedChannelSpec[] = [];
   const bindings = await resolveChannelBindings(options.timbal ?? new Timbal(), {
@@ -598,7 +583,7 @@ export async function registerChannelWebhooks(
     channelSpecs: options.channelSpecs,
     configCacheTtlMs: options.configCacheTtlMs,
     env: options.env,
-    onSkippedSpec: (s) => skipped.push(s),
+    onSkippedSpec: s => skipped.push(s),
   });
   const prefix = options.prefix ?? '/channels';
   const resolved = await resolvePublicOrigin({

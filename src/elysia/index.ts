@@ -3,6 +3,7 @@ import { Timbal } from '../lib/timbal';
 import { createAuthRoutes } from './routes';
 import { createAuthMiddleware } from './middleware';
 import { createConfigRoute, resolveConfigPath } from './config-route';
+import { timbalConfigRefresh } from './config-refresh';
 import { resolveAuthMode } from '../auth/config';
 import type { TimbalAuthOptions } from '../auth/types';
 
@@ -27,9 +28,14 @@ export {
   type ChannelProvisionResult,
 } from './channels';
 export {
-  timbalConfigRefresh,
-  type TimbalConfigRefreshOptions,
-} from './config-refresh';
+  timbalMcp,
+  deriveMcpTools,
+  type TimbalMcpOptions,
+  type McpRouteMeta,
+  type ToolCallInfo,
+  type DeriveMcpToolsOptions,
+} from './mcp';
+export { timbalConfigRefresh, type TimbalConfigRefreshOptions } from './config-refresh';
 export {
   refreshPlatformConfig,
   registerConfigRefreshHook,
@@ -45,6 +51,9 @@ export * from '../channels';
  * Registers:
  * - Auth routes at `/auth` (login, callback, OAuth, magic-link, refresh, logout)
  * - Auth middleware (token resolution from Bearer header/cookie, route guarding)
+ * - `POST /__timbal/config/refresh` (platform cache invalidation; opt out with
+ *   `configRefresh: false`)
+ * - `GET /config` in platform mode (opt out with `configRoute: false`)
  *
  * @example
  * ```ts
@@ -61,8 +70,7 @@ export function timbalAuth(options: TimbalAuthOptions = {}): any {
   const timbal = new Timbal();
 
   // `/config` is platform-mode only and opt-out via `configRoute: false`.
-  const mountConfig =
-    resolveAuthMode(options) === 'platform' && options.configRoute !== false;
+  const mountConfig = resolveAuthMode(options) === 'platform' && options.configRoute !== false;
 
   // Make `/config` public so the ingress gate never blocks it. Done here (not in
   // the shared default list) so legacy apps are completely unaffected.
@@ -73,9 +81,21 @@ export function timbalAuth(options: TimbalAuthOptions = {}): any {
       }
     : options;
 
-  const app = new Elysia({ name: 'timbal-auth' })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let app: any = new Elysia({ name: 'timbal-auth' })
     .use(createAuthMiddleware(timbal, effectiveOptions))
     .use(createAuthRoutes(timbal, effectiveOptions));
 
-  return mountConfig ? app.use(createConfigRoute(timbal, options)) : app;
+  if (mountConfig) {
+    app = app.use(createConfigRoute(timbal, options));
+  }
+
+  // Platform cache bust — always-on SDK infrastructure (same default as the
+  // blueprint used to mount explicitly). Shares the auth plugin's Timbal
+  // client so the bearer check uses the same service credential.
+  if (options.configRefresh !== false) {
+    app = app.use(timbalConfigRefresh({ timbal }));
+  }
+
+  return app;
 }

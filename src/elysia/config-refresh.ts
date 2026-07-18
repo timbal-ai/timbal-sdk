@@ -41,11 +41,19 @@ function tokenMatches(presented: string, expected: string): boolean {
  * authenticates itself with a stronger credential), so no `publicPaths`
  * entry is needed.
  *
+ * Prefer letting `timbalAuth()` mount this (default). Use the standalone
+ * plugin only when the host skips auth. A transitional `.use(timbalAuth())
+ * .use(timbalConfigRefresh())` is safe: the path-scoped plugin `name` lets
+ * Elysia dedupe the route, and `refreshPlatformConfig` single-flights the
+ * work if two handlers somehow both fire.
+ *
  * ```ts
  * new Elysia()
- *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] }))
+ *   .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] })) // mounts refresh
  *   .use(timbalChannels())
- *   .use(timbalConfigRefresh())
+ *
+ * // or, without auth:
+ * new Elysia().use(timbalConfigRefresh())
  * ```
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -53,7 +61,9 @@ export function timbalConfigRefresh(options: TimbalConfigRefreshOptions = {}): a
   const timbal = options.timbal ?? new Timbal();
   const path = options.path ?? '/__timbal/config/refresh';
 
-  return new Elysia({ name: 'timbal-config-refresh' }).post(
+  // Path-scoped name: same path → same identity → Elysia skips a second
+  // `.use(timbalConfigRefresh())` when `timbalAuth` already mounted it.
+  return new Elysia({ name: `timbal-config-refresh:${path}` }).post(
     path,
     ({ request }: { request: Request }) => {
       const header = request.headers.get('authorization') ?? '';
@@ -69,6 +79,6 @@ export function timbalConfigRefresh(options: TimbalConfigRefreshOptions = {}): a
       void refreshPlatformConfig({ timbal, warm: options.warm });
       return new Response(null, { status: 202 });
     },
-    { detail: { hide: true } },
+    { detail: { hide: true } }
   );
 }

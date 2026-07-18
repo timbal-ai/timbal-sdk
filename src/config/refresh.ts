@@ -28,10 +28,7 @@ const hooks = new Map<string, ConfigRefreshHook>();
  * the UI gets its `setWebhook`). Same-name registration replaces. Returns an
  * unregister function.
  */
-export function registerConfigRefreshHook(
-  name: string,
-  hook: ConfigRefreshHook,
-): () => void {
+export function registerConfigRefreshHook(name: string, hook: ConfigRefreshHook): () => void {
   hooks.set(name, hook);
   return () => {
     if (hooks.get(name) === hook) hooks.delete(name);
@@ -54,32 +51,47 @@ export interface RefreshPlatformConfigOptions {
 }
 
 /**
+ * In-flight refresh, if any. Concurrent callers (e.g. a transitional app that
+ * still mounts both `timbalAuth()`'s built-in refresh and an explicit
+ * `timbalConfigRefresh()`, or a platform that double-fires) join this promise
+ * instead of re-running eviction / warm / hooks.
+ */
+let inFlight: Promise<void> | null = null;
+
+/**
  * Evict every cached platform-config fetch (project payload — auth gate
  * topology and `project.channels` — plus the runtime channels/credentials
  * payload), optionally warm them, then run registered hooks.
  *
- * Hook and warm failures are swallowed: refresh is an optimization on top
- * of the TTL, it must never take the app down.
+ * Concurrent calls are single-flighted: the second joins the first's promise
+ * rather than re-running the work. Hook and warm failures are swallowed —
+ * refresh is an optimization on top of the TTL, it must never take the app
+ * down.
  */
 export async function refreshPlatformConfig(
-  options: RefreshPlatformConfigOptions = {},
+  options: RefreshPlatformConfigOptions = {}
 ): Promise<void> {
-  clearProjectAuthConfigCache();
-  clearRuntimeChannelsCache();
+  if (inFlight) return inFlight;
 
-  const { timbal } = options;
-  if (timbal && options.warm !== false) {
-    await Promise.allSettled([
-      getCachedProject(timbal),
-      getCachedRuntimeChannels(timbal),
-    ]);
-  }
+  inFlight = (async () => {
+    clearProjectAuthConfigCache();
+    clearRuntimeChannelsCache();
 
-  for (const hook of hooks.values()) {
-    try {
-      await hook();
-    } catch {
-      /* refresh must never take the app down */
+    const { timbal } = options;
+    if (timbal && options.warm !== false) {
+      await Promise.allSettled([getCachedProject(timbal), getCachedRuntimeChannels(timbal)]);
     }
-  }
+
+    for (const hook of hooks.values()) {
+      try {
+        await hook();
+      } catch {
+        /* refresh must never take the app down */
+      }
+    }
+  })().finally(() => {
+    inFlight = null;
+  });
+
+  return inFlight;
 }

@@ -1,15 +1,13 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { Elysia } from 'elysia';
-import {
-  getCachedRuntimeChannels,
-  clearRuntimeChannelsCache,
-} from '../channels/runtime';
+import { getCachedRuntimeChannels, clearRuntimeChannelsCache } from '../channels/runtime';
 import {
   refreshPlatformConfig,
   registerConfigRefreshHook,
   clearConfigRefreshHooks,
 } from '../config/refresh';
 import { timbalConfigRefresh } from '../elysia/config-refresh';
+import { timbalAuth } from '../elysia';
 import { resolveChannelBindings, timbalChannels } from '../elysia/channels';
 import { clearProjectAuthConfigCache } from '../auth/config';
 import { TimbalApiError } from '../lib/api';
@@ -17,7 +15,7 @@ import type { Timbal } from '../lib/timbal';
 import type { ProjectChannelSpec } from '../types';
 
 /** Let detached (void-ed) refresh work settle. */
-const settle = () => new Promise((r) => setTimeout(r, 10));
+const settle = () => new Promise(r => setTimeout(r, 10));
 
 /**
  * Fake platform-linked Timbal holding the service token `svc-secret`.
@@ -67,7 +65,7 @@ describe('getCachedRuntimeChannels', () => {
     ]);
     await getCachedRuntimeChannels(timbal);
     expect(r1).toEqual(r2!);
-    expect(r1!.map((s) => s.workforce)).toEqual(['a']);
+    expect(r1!.map(s => s.workforce)).toEqual(['a']);
     expect(runtimeFetchCount()).toBe(1);
   });
 
@@ -104,10 +102,10 @@ describe('getCachedRuntimeChannels', () => {
           { provider: 'telegram', workforce: 'a', enabled: false },
           { provider: '', workforce: 'a' },
           { provider: 'slack', workforce: 'b' },
-        ] as ProjectChannelSpec[],
+        ] as ProjectChannelSpec[]
     );
     const specs = await getCachedRuntimeChannels(timbal);
-    expect(specs!.map((s) => s.provider)).toEqual(['slack']);
+    expect(specs!.map(s => s.provider)).toEqual(['slack']);
   });
 });
 
@@ -117,7 +115,7 @@ describe('timbalConfigRefresh endpoint', () => {
       new Request('https://x.test/__timbal/config/refresh', {
         method: 'POST',
         headers: token ? { authorization: `Bearer ${token}` } : {},
-      }),
+      })
     );
 
   test('missing or wrong bearer → 401, caches untouched', async () => {
@@ -128,14 +126,14 @@ describe('timbalConfigRefresh endpoint', () => {
     const env = { TIMBAL_PROJECT_ID: '248' };
     const app = new Elysia().use(timbalConfigRefresh({ timbal }));
 
-    expect((await resolveChannelBindings(timbal, { env })).map((b) => b.workforce)).toEqual(['old']);
+    expect((await resolveChannelBindings(timbal, { env })).map(b => b.workforce)).toEqual(['old']);
     specs = [{ provider: 'telegram', workforce: 'new', credentials: { token: '1:x' } }];
 
     expect((await post(app)).status).toBe(401);
     expect((await post(app, 'wrong-token')).status).toBe(401);
     await settle();
     // Still the cached value — a bad call must not evict.
-    expect((await resolveChannelBindings(timbal, { env })).map((b) => b.workforce)).toEqual(['old']);
+    expect((await resolveChannelBindings(timbal, { env })).map(b => b.workforce)).toEqual(['old']);
   });
 
   test('valid service credential → 202, caches evicted, next resolve is fresh', async () => {
@@ -146,13 +144,13 @@ describe('timbalConfigRefresh endpoint', () => {
     const env = { TIMBAL_PROJECT_ID: '248' };
     const app = new Elysia().use(timbalConfigRefresh({ timbal }));
 
-    expect((await resolveChannelBindings(timbal, { env })).map((b) => b.workforce)).toEqual(['old']);
+    expect((await resolveChannelBindings(timbal, { env })).map(b => b.workforce)).toEqual(['old']);
     specs = [{ provider: 'telegram', workforce: 'new', credentials: { token: '1:x' } }];
 
     const res = await post(app, 'svc-secret');
     expect(res.status).toBe(202);
     await settle();
-    expect((await resolveChannelBindings(timbal, { env })).map((b) => b.workforce)).toEqual(['new']);
+    expect((await resolveChannelBindings(timbal, { env })).map(b => b.workforce)).toEqual(['new']);
   });
 
   test('valid refresh warms the caches and runs registered hooks', async () => {
@@ -173,6 +171,46 @@ describe('timbalConfigRefresh endpoint', () => {
     expect(hookRuns).toBe(1);
     expect(runtimeFetchCount()).toBe(1); // warmed
     expect(projectFetchCount()).toBe(1); // warmed
+  });
+
+  test('concurrent refreshPlatformConfig calls single-flight (hooks/warm once)', async () => {
+    const { timbal, runtimeFetchCount, projectFetchCount } = makeTimbal(() => []);
+    let hookRuns = 0;
+    registerConfigRefreshHook('test-hook', () => {
+      hookRuns += 1;
+    });
+
+    await Promise.all([
+      refreshPlatformConfig({ timbal }),
+      refreshPlatformConfig({ timbal }),
+      refreshPlatformConfig({ timbal }),
+    ]);
+    expect(hookRuns).toBe(1);
+    expect(runtimeFetchCount()).toBe(1);
+    expect(projectFetchCount()).toBe(1);
+  });
+
+  test('timbalAuth + explicit timbalConfigRefresh does not double-run hooks', async () => {
+    // Migration hazard: blueprint still has .use(timbalConfigRefresh()) after
+    // auth started mounting it. Must be one route, one hook run per POST.
+    const prevKey = process.env.TIMBAL_API_KEY;
+    process.env.TIMBAL_API_KEY = 'svc-secret';
+    try {
+      let hookRuns = 0;
+      registerConfigRefreshHook('test-hook', () => {
+        hookRuns += 1;
+      });
+
+      const app = new Elysia().use(timbalAuth()).use(timbalConfigRefresh());
+      expect(app.routes.filter(r => r.path === '/__timbal/config/refresh').length).toBe(1);
+
+      expect((await post(app, 'svc-secret')).status).toBe(202);
+      await settle();
+      expect(hookRuns).toBe(1);
+    } finally {
+      if (prevKey === undefined) delete process.env.TIMBAL_API_KEY;
+      else process.env.TIMBAL_API_KEY = prevKey;
+    }
   });
 });
 
@@ -200,10 +238,10 @@ describe('channels webhook re-provisioning on refresh', () => {
             TIMBAL_PROJECT_ID: '248',
             PUBLIC_ORIGIN: 'https://app.example.com',
           },
-        }),
+        })
       );
       await refreshPlatformConfig();
-      expect(calls.some((u) => u.includes('/bot7:abc/setWebhook'))).toBe(true);
+      expect(calls.some(u => u.includes('/bot7:abc/setWebhook'))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }
