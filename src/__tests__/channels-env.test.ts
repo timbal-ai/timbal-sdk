@@ -33,6 +33,29 @@ describe('channelBindingsFromEnv', () => {
     expect(bindings[0]!.adapter.provider).toBe('slack');
   });
 
+  test('whatsapp binds only when all four credentials are set', () => {
+    const partial = channelBindingsFromEnv({
+      env: {
+        WHATSAPP_ACCESS_TOKEN: 'tok',
+        WHATSAPP_PHONE_NUMBER_ID: 'pn',
+        CHANNELS_WORKFORCE: 'joi',
+      },
+    });
+    expect(partial).toEqual([]);
+
+    const bindings = channelBindingsFromEnv({
+      env: {
+        WHATSAPP_ACCESS_TOKEN: 'tok',
+        WHATSAPP_PHONE_NUMBER_ID: 'pn',
+        WHATSAPP_APP_SECRET: 'sec',
+        WHATSAPP_VERIFY_TOKEN: 'ver',
+        CHANNELS_WORKFORCE: 'joi',
+      },
+    });
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]!.adapter.provider).toBe('whatsapp');
+  });
+
   test('both channels bind to the same workforce', () => {
     const bindings = channelBindingsFromEnv({
       env: {

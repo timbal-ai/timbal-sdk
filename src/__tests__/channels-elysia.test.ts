@@ -9,6 +9,7 @@ import {
 import { clearProjectAuthConfigCache } from '../auth/config';
 import { clearRuntimeChannelsCache } from '../channels/runtime';
 import { deriveTelegramSecretToken } from '../channels/adapters/telegram';
+import { whatsapp } from '../channels/adapters/whatsapp';
 import { clearConfigRefreshHooks } from '../config/refresh';
 import { TimbalApiError } from '../lib/api';
 import type { Timbal } from '../lib/timbal';
@@ -185,6 +186,26 @@ describe('timbalChannels plugin', () => {
     expect(res.status).toBe(401);
     await settle();
     expect(invocations).toHaveLength(0);
+  });
+
+  test('whatsapp hub challenge is answered on GET', async () => {
+    const { timbal } = makeTimbal(() => []);
+    const adapter = whatsapp({
+      accessToken: 'tok',
+      phoneNumberId: 'pn',
+      appSecret: 'sec',
+      verifyToken: 'ver',
+    });
+    const app = new Elysia().use(
+      timbalChannels({ timbal, bindings: [{ adapter, workforce: 'joi' }] }),
+    );
+    const res = await app.handle(
+      new Request(
+        'http://localhost/channels/joi/whatsapp?hub.mode=subscribe&hub.verify_token=ver&hub.challenge=abc123',
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('abc123');
   });
 
   test('redelivered events are deduped by dedupeKey', async () => {
@@ -969,7 +990,7 @@ describe('timbalChannels plugin', () => {
       {
         channelSpecs: [
           { provider: 'slack', workforce: 'joi' }, // no creds in env below
-          { provider: 'whatsapp', workforce: 'joi' }, // unknown provider
+          { provider: 'teams', workforce: 'joi' }, // unknown provider
         ],
         env: {},
         fetchImpl: (async () => {
@@ -982,7 +1003,7 @@ describe('timbalChannels plugin', () => {
     expect(result.registrations).toEqual([]);
     expect(result.skipped.map((s) => [s.spec.provider, s.reason])).toEqual([
       ['slack', 'missing-credentials'],
-      ['whatsapp', 'unknown-provider'],
+      ['teams', 'unknown-provider'],
     ]);
   });
 
@@ -1223,7 +1244,7 @@ describe('resolveChannelBindings', () => {
     const { timbal } = makePlatformTimbal({
       channels: [
         { provider: 'slack', workforce: 'joi' },
-        { provider: 'whatsapp', workforce: 'joi' },
+        { provider: 'teams', workforce: 'joi' },
         { provider: 'telegram', workforce: 'joi', enabled: false },
       ],
     });
@@ -1235,7 +1256,7 @@ describe('resolveChannelBindings', () => {
     expect(bindings).toEqual([]);
     expect(skipped).toEqual([
       ['slack', 'missing-credentials'],
-      ['whatsapp', 'unknown-provider'],
+      ['teams', 'unknown-provider'],
     ]);
   });
 });

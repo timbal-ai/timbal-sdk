@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import { telegram, deriveTelegramSecretToken } from '../channels/adapters/telegram';
 import { slack } from '../channels/adapters/slack';
+import { whatsapp } from '../channels/adapters/whatsapp';
 import type { WebhookRequest } from '../channels/types';
 
 function req(body: unknown, headers: Record<string, string> = {}): WebhookRequest {
@@ -656,5 +657,216 @@ describe('slack delivery (mocked API)', () => {
     });
     await flat.delivery(event).send('answer');
     expect(requests[0]!.body).toEqual({ channel: 'C0CHAN', text: 'answer' });
+  });
+});
+
+// ── WhatsApp ──
+
+const WA_APP_SECRET = 'wa-app-secret';
+const WA_VERIFY_TOKEN = 'timbal-wa-verify';
+const WA_PHONE_ID = '100000000000001';
+const WA_WABA_ID = '200000000000001';
+const WA_USER = '15550001111';
+const WA_DISPLAY = '15550009999';
+
+function signedWhatsAppReq(
+  body: unknown,
+  secret = WA_APP_SECRET,
+  url = 'https://app.example.com/channels/joi/whatsapp',
+): WebhookRequest {
+  const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
+  const signature = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+  return {
+    rawBody,
+    headers: new Headers({ 'x-hub-signature-256': signature }),
+    url,
+    method: 'POST',
+  };
+}
+
+function waTextEnvelope(opts: {
+  from?: string;
+  body?: string;
+  messageId?: string;
+  phoneNumberId?: string;
+  contactName?: string;
+} = {}) {
+  return {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: WA_WABA_ID,
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: {
+                display_phone_number: WA_DISPLAY,
+                phone_number_id: opts.phoneNumberId ?? WA_PHONE_ID,
+              },
+              contacts: [
+                {
+                  profile: { name: opts.contactName ?? 'Dani' },
+                  wa_id: opts.from ?? WA_USER,
+                },
+              ],
+              messages: [
+                {
+                  from: opts.from ?? WA_USER,
+                  id: opts.messageId ?? 'wamid.TEST',
+                  timestamp: '1700000000',
+                  type: 'text',
+                  text: { body: opts.body ?? 'hola' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe('whatsapp adapter', () => {
+  const adapter = whatsapp({
+    accessToken: 'tok',
+    phoneNumberId: WA_PHONE_ID,
+    appSecret: WA_APP_SECRET,
+    verifyToken: WA_VERIFY_TOKEN,
+  });
+
+  test('verify answers the hub challenge on GET', async () => {
+    const challengeReq: WebhookRequest = {
+      rawBody: '',
+      headers: new Headers(),
+      url: `https://app.example.com/channels/joi/whatsapp?hub.mode=subscribe&hub.verify_token=${WA_VERIFY_TOKEN}&hub.challenge=12345`,
+      method: 'GET',
+    };
+    const verdict = adapter.verify(challengeReq);
+    expect(verdict).toBeInstanceOf(Response);
+    expect((verdict as Response).status).toBe(200);
+    expect(await (verdict as Response).text()).toBe('12345');
+  });
+
+  test('verify rejects a wrong hub verify token', () => {
+    const challengeReq: WebhookRequest = {
+      rawBody: '',
+      headers: new Headers(),
+      url: `https://app.example.com/channels/joi/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=12345`,
+      method: 'GET',
+    };
+    const verdict = adapter.verify(challengeReq);
+    expect(verdict).toBeInstanceOf(Response);
+    expect((verdict as Response).status).toBe(403);
+  });
+
+  test('verify accepts a valid signature and rejects bad/missing ones', () => {
+    expect(adapter.verify(signedWhatsAppReq(waTextEnvelope()))).toBe('ok');
+
+    const forged = signedWhatsAppReq(waTextEnvelope(), 'wrong-secret');
+    expect(adapter.verify(forged)).toBeInstanceOf(Response);
+    expect((adapter.verify(forged) as Response).status).toBe(401);
+
+    expect(adapter.verify(req(waTextEnvelope()))).toBeInstanceOf(Response);
+  });
+
+  test('verify does not treat sticky hub.* query params on POST as a challenge', () => {
+    const sticky =
+      `https://app.example.com/channels/joi/whatsapp` +
+      `?hub.mode=subscribe&hub.verify_token=${WA_VERIFY_TOKEN}&hub.challenge=stale`;
+    // Would previously echo "stale" / 403 and never reach signature checks.
+    expect(adapter.verify(signedWhatsAppReq(waTextEnvelope(), WA_APP_SECRET, sticky))).toBe(
+      'ok',
+    );
+  });
+
+  test('parse normalizes a text message', () => {
+    const events = adapter.parse(signedWhatsAppReq(waTextEnvelope({ body: 'refund?' })));
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    expect(ev.provider).toBe('whatsapp');
+    expect(ev.conversationId).toBe(WA_USER);
+    expect(ev.externalUserId).toBe(WA_USER);
+    expect(ev.userDisplayName).toBe('Dani');
+    expect(ev.text).toBe('refund?');
+    expect(ev.dedupeKey).toBe('whatsapp:wamid.TEST');
+  });
+
+  test('parse drops status callbacks, non-text, wrong phone id, and junk', () => {
+    expect(
+      adapter.parse(
+        signedWhatsAppReq({
+          object: 'whatsapp_business_account',
+          entry: [{ changes: [{ field: 'messages', value: { statuses: [{ id: 'x' }] } }] }],
+        }),
+      ),
+    ).toHaveLength(0);
+
+    const imageOnly = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: WA_PHONE_ID },
+                messages: [{ from: '1', id: 'wamid.IMG', type: 'image', image: {} }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    expect(adapter.parse(signedWhatsAppReq(imageOnly))).toHaveLength(0);
+
+    expect(adapter.parse(signedWhatsAppReq('not json'))).toHaveLength(0);
+  });
+
+  test('parse drops other phone ids only when expectedPhoneNumberId is set', () => {
+    const strict = whatsapp({
+      accessToken: 'tok',
+      phoneNumberId: WA_PHONE_ID,
+      appSecret: WA_APP_SECRET,
+      verifyToken: WA_VERIFY_TOKEN,
+      expectedPhoneNumberId: WA_PHONE_ID,
+    });
+    expect(
+      strict.parse(signedWhatsAppReq(waTextEnvelope({ phoneNumberId: 'other-phone' }))),
+    ).toHaveLength(0);
+    expect(strict.parse(signedWhatsAppReq(waTextEnvelope()))).toHaveLength(1);
+  });
+
+  test('delivery posts to Graph messages endpoint', async () => {
+    const requests: Array<{ url: string; body: unknown }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ messages: [{ id: 'wamid.OUT' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const event = adapter.parse(signedWhatsAppReq(waTextEnvelope()))[0]!;
+      const ref = await adapter.delivery(event).send('hola de vuelta');
+      expect(ref).toBe('wamid.OUT');
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toContain(`/${WA_PHONE_ID}/messages`);
+      expect(requests[0]!.body).toEqual({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: WA_USER,
+        type: 'text',
+        text: { preview_url: false, body: 'hola de vuelta' },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

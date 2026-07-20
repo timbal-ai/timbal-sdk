@@ -409,16 +409,24 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
   }
 
   async function handleWebhook(binding: ChannelBinding, request: Request): Promise<Response> {
-    // Read the body once, as text — signature verification (Slack HMAC)
-    // needs the exact raw bytes, and a Request body is single-read.
+    // Read the body once, as text — signature verification (Slack HMAC /
+    // WhatsApp X-Hub-Signature-256) needs the exact raw bytes, and a Request
+    // body is single-read. GET hub challenges (WhatsApp) have an empty body.
     const req: WebhookRequest = {
-      rawBody: await request.text(),
+      rawBody: request.method === 'GET' ? '' : await request.text(),
       headers: request.headers,
       url: request.url,
+      method: request.method,
     };
 
     const verdict = await binding.adapter.verify(req);
     if (verdict !== 'ok') return verdict;
+
+    // Hub / URL verification handshakes short-circuit above. GETs never carry
+    // inbound messages — don't parse an empty body.
+    if (request.method === 'GET') {
+      return new Response(null, { status: 200 });
+    }
 
     const events = await binding.adapter.parse(req);
     for (const event of events) {
@@ -437,9 +445,10 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     // STATIC mode: fixed routes known at mount time. Supports custom `path`s.
     for (const binding of options.bindings) {
       const path = resolveBindingPath(binding, prefix);
-      app.post(path, ({ request }: { request: Request }) => handleWebhook(binding, request), {
-        detail: { hide: true },
-      });
+      const route = { detail: { hide: true } };
+      app.post(path, ({ request }: { request: Request }) => handleWebhook(binding, request), route);
+      // WhatsApp (and similar) hub challenges arrive as GET on the same URL.
+      app.get(path, ({ request }: { request: Request }) => handleWebhook(binding, request), route);
     }
     return app;
   }
@@ -475,36 +484,52 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
       /* best-effort — TTL + next refresh retry cover it */
     });
   });
+  async function resolveDynamicBinding(
+    workforce: string,
+    provider: string,
+  ): Promise<ChannelBinding | Response> {
+    let bindings: ChannelBinding[];
+    try {
+      bindings = await resolveChannelBindings(timbal, {
+        channelSpecs: options.channelSpecs,
+        configCacheTtlMs: options.configCacheTtlMs,
+        env: options.env,
+        onSkippedSpec,
+      });
+    } catch {
+      // Env conventions throw when credentials exist without
+      // CHANNELS_WORKFORCE — loud at startup, but a per-request resolve
+      // must not 500 Slack/Telegram/WhatsApp (they'd retry forever).
+      return new Response('Channel configuration error', { status: 503 });
+    }
+    const binding = bindings.find(
+      (b) => b.workforce === workforce && b.adapter.provider === provider,
+    );
+    return binding ?? new Response('Unknown channel', { status: 404 });
+  }
+
+  // Path must be an inline template so Elysia can infer `:workforce` /
+  // `:provider` into the handler context (a string variable collapses params
+  // to `{}` and fails `tsc`).
   app.post(
     `${prefix}/:workforce/:provider`,
-    async ({
-      request,
-      params,
-    }: {
-      request: Request;
-      params: { workforce: string; provider: string };
-    }) => {
-      let bindings: ChannelBinding[];
-      try {
-        bindings = await resolveChannelBindings(timbal, {
-          channelSpecs: options.channelSpecs,
-          configCacheTtlMs: options.configCacheTtlMs,
-          env: options.env,
-          onSkippedSpec,
-        });
-      } catch {
-        // Env conventions throw when credentials exist without
-        // CHANNELS_WORKFORCE — loud at startup, but a per-request resolve
-        // must not 500 Slack/Telegram (they'd retry forever).
-        return new Response('Channel configuration error', { status: 503 });
-      }
-      const binding = bindings.find(
-        b => b.workforce === params.workforce && b.adapter.provider === params.provider
-      );
-      if (!binding) return new Response('Unknown channel', { status: 404 });
+    async ({ request, params }) => {
+      const binding = await resolveDynamicBinding(params.workforce, params.provider);
+      if (binding instanceof Response) return binding;
       return handleWebhook(binding, request);
     },
-    { detail: { hide: true } }
+    { detail: { hide: true } },
+  );
+
+  // WhatsApp hub challenge (and any future GET handshakes) on the same URL.
+  app.get(
+    `${prefix}/:workforce/:provider`,
+    async ({ request, params }) => {
+      const binding = await resolveDynamicBinding(params.workforce, params.provider);
+      if (binding instanceof Response) return binding;
+      return handleWebhook(binding, request);
+    },
+    { detail: { hide: true } },
   );
 
   return app;

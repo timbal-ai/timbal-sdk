@@ -23,6 +23,11 @@ export interface WebhookRequest {
   headers: Headers;
   /** Full request URL. */
   url: string;
+  /**
+   * HTTP method. Optional for back-compat in tests; WhatsApp hub challenges
+   * are honored only when this is `GET`.
+   */
+  method?: string;
 }
 
 /** Raw bytes + metadata of a downloaded attachment. */
