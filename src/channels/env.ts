@@ -2,6 +2,7 @@ import type { ChannelBinding } from './types';
 import { telegram } from './adapters/telegram';
 import { slack } from './adapters/slack';
 import { whatsapp } from './adapters/whatsapp';
+import { teams } from './adapters/teams';
 
 export interface ChannelBindingsFromEnvOptions {
   /**
@@ -26,6 +27,8 @@ export interface ChannelBindingsFromEnvOptions {
  * | Slack    | `SLACK_SIGNING_SECRET` + `SLACK_BOT_TOKEN`                      |
  * | WhatsApp | `WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` +          |
  * |          | `WHATSAPP_APP_SECRET` + `WHATSAPP_VERIFY_TOKEN`                 |
+ * | Teams    | `TEAMS_APP_ID` + `TEAMS_APP_PASSWORD` (+ optional               |
+ * |          | `TEAMS_TENANT_ID` for single-tenant app registrations)          |
  *
  * All bindings target `CHANNELS_WORKFORCE` (or the `workforce` option).
  * Multiple providers → one component; for per-provider routing, hand-write
@@ -86,6 +89,17 @@ export function channelBindingsFromEnv(
         verifyToken: env.WHATSAPP_VERIFY_TOKEN,
       }),
       workforce: requireWorkforce('whatsapp'),
+    });
+  }
+
+  if (env.TEAMS_APP_ID && env.TEAMS_APP_PASSWORD) {
+    bindings.push({
+      adapter: teams({
+        appId: env.TEAMS_APP_ID,
+        appPassword: env.TEAMS_APP_PASSWORD,
+        tenantId: env.TEAMS_TENANT_ID,
+      }),
+      workforce: requireWorkforce('teams'),
     });
   }
 

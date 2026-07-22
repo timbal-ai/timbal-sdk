@@ -3,6 +3,7 @@ import type { ChannelAdapter, ChannelBinding } from './types';
 import { telegram } from './adapters/telegram';
 import { slack } from './adapters/slack';
 import { whatsapp } from './adapters/whatsapp';
+import { teams } from './adapters/teams';
 
 /**
  * Platform-driven channel configuration.
@@ -85,6 +86,13 @@ function buildAdapter(
       const verifyToken = creds.verify_token || env.WHATSAPP_VERIFY_TOKEN;
       if (!accessToken || !phoneNumberId || !appSecret || !verifyToken) return null;
       return whatsapp({ accessToken, phoneNumberId, appSecret, verifyToken });
+    }
+    case 'teams': {
+      const appId = creds.app_id || env.TEAMS_APP_ID;
+      const appPassword = creds.app_password || env.TEAMS_APP_PASSWORD;
+      const tenantId = creds.tenant_id || env.TEAMS_TENANT_ID;
+      if (!appId || !appPassword) return null;
+      return teams({ appId, appPassword, tenantId });
     }
     default:
       return 'unknown';

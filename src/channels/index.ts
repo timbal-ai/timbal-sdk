@@ -40,3 +40,8 @@ export {
 } from './adapters/telegram';
 export { slack, type SlackAdapterOptions } from './adapters/slack';
 export { whatsapp, type WhatsAppAdapterOptions } from './adapters/whatsapp';
+export {
+  teams,
+  clearTeamsAdapterCaches,
+  type TeamsAdapterOptions,
+} from './adapters/teams';
