@@ -24,7 +24,7 @@ function activityFixture(overrides: Record<string, unknown> = {}) {
     serviceUrl: SERVICE_URL,
     channelId: 'msteams',
     from: { id: '29:user-abc', name: 'Dani', aadObjectId: 'aad-obj-1' },
-    recipient: { id: `28:${APP_ID}` },
+    recipient: { id: `28:${APP_ID}`, name: 'Joi' },
     conversation: { id: CONVERSATION_ID },
     ...overrides,
   };
@@ -303,6 +303,45 @@ describe('teams adapter parse', () => {
     );
     expect(events).toHaveLength(1);
     expect(events[0]!.text).toBe('hello there');
+  });
+
+  test('strips the bot mention even when another user is mentioned first', async () => {
+    const botId = `28:${APP_ID}`;
+    const events = await adapter.parse(
+      req(
+        activityFixture({
+          text: `<at id="29:marta">Marta</at> <at id="${botId}">Joi</at> hello there`,
+        }),
+      ),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.text).toBe('Marta hello there');
+  });
+
+  test('strips recipient mention via activity.entities (RemoveRecipientMention)', async () => {
+    const botId = `28:${APP_ID}`;
+    const botTag = `<at id="${botId}">Joi</at>`;
+    const events = await adapter.parse(
+      req(
+        activityFixture({
+          text: `<at id="29:marta">Marta</at> ${botTag} please help`,
+          entities: [
+            {
+              type: 'mention',
+              mentioned: { id: '29:marta', name: 'Marta' },
+              text: '<at id="29:marta">Marta</at>',
+            },
+            {
+              type: 'mention',
+              mentioned: { id: botId, name: 'Joi' },
+              text: botTag,
+            },
+          ],
+        }),
+      ),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.text).toBe('Marta please help');
   });
 
   test('drops mention-only messages that use attributed <at> tags', async () => {

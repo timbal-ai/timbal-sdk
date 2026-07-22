@@ -92,17 +92,69 @@ interface TeamsActivity {
   serviceUrl?: string;
   channelId?: string;
   from?: { id?: string; name?: string; aadObjectId?: string; role?: string };
-  recipient?: { id?: string };
+  recipient?: { id?: string; name?: string };
   conversation?: { id?: string; conversationType?: string };
+  entities?: TeamsMentionEntity[];
 }
 
-/** Strip Teams `<at>` / `<at id="…">` mention markup to plain display names. */
-function cleanTeamsMentionText(text: string): string {
-  return text
-    // Leading bot @mention in channel posts (optional id attr).
-    .replace(/^\s*<at(?:\s[^>]*)?>[^<]*<\/at>\s*/i, '')
-    // Remaining inline mentions → display name.
+interface TeamsMentionEntity {
+  type?: string;
+  text?: string;
+  mentioned?: { id?: string; name?: string };
+}
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Remove the bot's @mention (anywhere in the text) and unwrap other `<at>`
+ * tags to display names — Bot Framework `RemoveRecipientMention` semantics.
+ *
+ * Channel posts often put another user before the bot (`@Marta @Bot hi`);
+ * stripping only a *leading* `<at>` leaves the bot's display name in the
+ * prompt. Prefer `entities` (exact `entity.text` match on recipient id),
+ * then `<at id="{recipient}">` tags, then a leading tag whose inner text
+ * matches the recipient name (bare tags with no entities).
+ */
+function cleanTeamsMentionText(
+  text: string,
+  opts: {
+    recipientId?: string;
+    recipientName?: string;
+    entities?: TeamsMentionEntity[];
+  },
+): string {
+  let out = text;
+  const recipientId = opts.recipientId;
+
+  if (recipientId && opts.entities) {
+    for (const entity of opts.entities) {
+      if (entity?.type !== 'mention' || entity.mentioned?.id !== recipientId) continue;
+      if (typeof entity.text === 'string' && entity.text.length > 0) {
+        out = out.split(entity.text).join('');
+      }
+    }
+  }
+
+  if (recipientId) {
+    const id = escapeRegExp(recipientId);
+    out = out.replace(
+      new RegExp(`\\s*<at\\s[^>]*\\bid=(["']?)${id}\\1[^>]*>[^<]*</at>\\s*`, 'gi'),
+      ' ',
+    );
+  }
+
+  // Bare leading `<at>BotName</at>` when Teams omitted entities / id attrs.
+  if (opts.recipientName) {
+    const name = escapeRegExp(opts.recipientName);
+    out = out.replace(
+      new RegExp(`^\\s*<at(?:\\s[^>]*)?>\\s*@?${name}\\s*</at>\\s*`, 'i'),
+      '',
+    );
+  }
+
+  return out
     .replace(/<at(?:\s[^>]*)?>([^<]*)<\/at>/gi, '$1')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
@@ -330,9 +382,13 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
         return [];
       }
 
-      // Strip leading bot @-mention (`<at id="…">Bot</at> text` or bare
-      // `<at>Bot</at>`), then unwrap remaining mention tags to display names.
-      const text = cleanTeamsMentionText(activity.text ?? '');
+      // Strip the bot @-mention wherever it appears, then unwrap other
+      // mention tags to display names (see cleanTeamsMentionText).
+      const text = cleanTeamsMentionText(activity.text ?? '', {
+        recipientId: activity.recipient?.id,
+        recipientName: activity.recipient?.name,
+        entities: activity.entities,
+      });
       if (!text) return [];
 
       return [
