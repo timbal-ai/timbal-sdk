@@ -91,9 +91,19 @@ interface TeamsActivity {
   text?: string;
   serviceUrl?: string;
   channelId?: string;
-  from?: { id?: string; name?: string; aadObjectId?: string };
+  from?: { id?: string; name?: string; aadObjectId?: string; role?: string };
   recipient?: { id?: string };
   conversation?: { id?: string; conversationType?: string };
+}
+
+/** Strip Teams `<at>` / `<at id="…">` mention markup to plain display names. */
+function cleanTeamsMentionText(text: string): string {
+  return text
+    // Leading bot @mention in channel posts (optional id attr).
+    .replace(/^\s*<at(?:\s[^>]*)?>[^<]*<\/at>\s*/i, '')
+    // Remaining inline mentions → display name.
+    .replace(/<at(?:\s[^>]*)?>([^<]*)<\/at>/gi, '$1')
+    .trim();
 }
 
 /**
@@ -310,16 +320,18 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       const conversationId = activity.conversation?.id;
       const fromId = activity.from?.id;
       if (!conversationId || !fromId) return [];
-      // Our own echoes: replying to ourselves would loop.
-      if (activity.recipient?.id && fromId === activity.recipient.id) return [];
+      // Drop bot-authored activities (our echoes and other bots). Role is the
+      // Bot Framework signal; from===recipient covers self-echoes without it.
+      if (
+        activity.from?.role === 'bot' ||
+        (activity.recipient?.id && fromId === activity.recipient.id)
+      ) {
+        return [];
+      }
 
-      // Strip the leading bot @-mention (`<at>Bot</at> text`), then unwrap
-      // any remaining mention tags to their display name — same cleanup the
-      // Slack adapter does for `<@U…>`.
-      const text = (activity.text ?? '')
-        .replace(/^\s*<at>[^<]*<\/at>\s*/i, '')
-        .replace(/<at>([^<]*)<\/at>/gi, '$1')
-        .trim();
+      // Strip leading bot @-mention (`<at id="…">Bot</at> text` or bare
+      // `<at>Bot</at>`), then unwrap remaining mention tags to display names.
+      const text = cleanTeamsMentionText(activity.text ?? '');
       if (!text) return [];
 
       return [

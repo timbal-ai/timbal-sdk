@@ -276,6 +276,26 @@ describe('teams adapter parse', () => {
     expect(events[0]!.text).toBe('ask Marta about this');
   });
 
+  test('strips <at id="…"> leading bot mentions used in channel payloads', async () => {
+    const events = await adapter.parse(
+      req(
+        activityFixture({
+          text: `<at id="28:${APP_ID}">Joi</at> hello there`,
+        }),
+      ),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.text).toBe('hello there');
+  });
+
+  test('drops mention-only messages that use attributed <at> tags', async () => {
+    expect(
+      await adapter.parse(
+        req(activityFixture({ text: `<at id="28:${APP_ID}">Joi</at>` })),
+      ),
+    ).toHaveLength(0);
+  });
+
   test('drops non-message activities, bot echoes, empty text, and junk', async () => {
     expect(await adapter.parse(req(activityFixture({ type: 'conversationUpdate' })))).toHaveLength(0);
     expect(await adapter.parse(req(activityFixture({ type: 'messageReaction' })))).toHaveLength(0);
@@ -283,6 +303,16 @@ describe('teams adapter parse', () => {
     expect(
       await adapter.parse(
         req(activityFixture({ from: { id: `28:${APP_ID}` } })),
+      ),
+    ).toHaveLength(0);
+    // Other bots (from.role === 'bot', different from/recipient ids).
+    expect(
+      await adapter.parse(
+        req(
+          activityFixture({
+            from: { id: '28:other-bot', name: 'OtherBot', role: 'bot' },
+          }),
+        ),
       ),
     ).toHaveLength(0);
     // Mention-only message → nothing to run.
