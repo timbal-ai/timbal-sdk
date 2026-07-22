@@ -68,7 +68,7 @@ describe('materializeChannelBindings', () => {
 
   test('providers unknown to this SDK version are skipped as such', () => {
     const { bindings, skipped } = materializeChannelBindings(
-      [{ provider: 'teams', workforce: 'joi' }],
+      [{ provider: 'discord', workforce: 'joi' }],
       {},
     );
     expect(bindings).toEqual([]);
@@ -102,5 +102,31 @@ describe('materializeChannelBindings', () => {
     });
     expect(fromEnv.skipped).toEqual([]);
     expect(fromEnv.bindings[0]!.adapter.provider).toBe('whatsapp');
+  });
+
+  test('teams materializes from platform credentials or env', () => {
+    const fromCreds = materializeChannelBindings(
+      [
+        {
+          provider: 'teams',
+          workforce: 'joi',
+          credentials: {
+            app_id: 'app-1',
+            app_password: 'secret',
+            tenant_id: 'tenant-1',
+          },
+        },
+      ],
+      {},
+    );
+    expect(fromCreds.skipped).toEqual([]);
+    expect(fromCreds.bindings[0]!.adapter.provider).toBe('teams');
+
+    const fromEnv = materializeChannelBindings([{ provider: 'teams', workforce: 'joi' }], {
+      TEAMS_APP_ID: 'app-1',
+      TEAMS_APP_PASSWORD: 'secret',
+    });
+    expect(fromEnv.skipped).toEqual([]);
+    expect(fromEnv.bindings[0]!.adapter.provider).toBe('teams');
   });
 });

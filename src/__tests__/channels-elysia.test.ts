@@ -990,7 +990,7 @@ describe('timbalChannels plugin', () => {
       {
         channelSpecs: [
           { provider: 'slack', workforce: 'joi' }, // no creds in env below
-          { provider: 'teams', workforce: 'joi' }, // unknown provider
+          { provider: 'discord', workforce: 'joi' }, // unknown provider
         ],
         env: {},
         fetchImpl: (async () => {
@@ -1003,7 +1003,7 @@ describe('timbalChannels plugin', () => {
     expect(result.registrations).toEqual([]);
     expect(result.skipped.map((s) => [s.spec.provider, s.reason])).toEqual([
       ['slack', 'missing-credentials'],
-      ['teams', 'unknown-provider'],
+      ['discord', 'unknown-provider'],
     ]);
   });
 
@@ -1244,7 +1244,7 @@ describe('resolveChannelBindings', () => {
     const { timbal } = makePlatformTimbal({
       channels: [
         { provider: 'slack', workforce: 'joi' },
-        { provider: 'teams', workforce: 'joi' },
+        { provider: 'discord', workforce: 'joi' },
         { provider: 'telegram', workforce: 'joi', enabled: false },
       ],
     });
@@ -1256,7 +1256,7 @@ describe('resolveChannelBindings', () => {
     expect(bindings).toEqual([]);
     expect(skipped).toEqual([
       ['slack', 'missing-credentials'],
-      ['teams', 'unknown-provider'],
+      ['discord', 'unknown-provider'],
     ]);
   });
 });

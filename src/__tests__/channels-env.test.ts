@@ -56,6 +56,23 @@ describe('channelBindingsFromEnv', () => {
     expect(bindings[0]!.adapter.provider).toBe('whatsapp');
   });
 
+  test('teams binds when app id and password are set (tenant optional)', () => {
+    const partial = channelBindingsFromEnv({
+      env: { TEAMS_APP_ID: 'app-1', CHANNELS_WORKFORCE: 'joi' },
+    });
+    expect(partial).toEqual([]);
+
+    const bindings = channelBindingsFromEnv({
+      env: {
+        TEAMS_APP_ID: 'app-1',
+        TEAMS_APP_PASSWORD: 'secret',
+        CHANNELS_WORKFORCE: 'joi',
+      },
+    });
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]!.adapter.provider).toBe('teams');
+  });
+
   test('both channels bind to the same workforce', () => {
     const bindings = channelBindingsFromEnv({
       env: {
