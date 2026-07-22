@@ -286,17 +286,18 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       }
 
       // The token pins the serviceUrl replies must go to; the activity body
-      // carries the one delivery will use. A mismatch means a signed
-      // activity replayed against a forged reply target.
+      // carries the one delivery will use. When the claim is present, require
+      // a matching body serviceUrl — omitting it would skip the binding and
+      // let a signed token authorize an activity that replies elsewhere.
       if (typeof payload.serviceurl === 'string') {
         let activity: TeamsActivity | null = null;
         try {
           activity = JSON.parse(req.rawBody) as TeamsActivity;
         } catch {
-          /* non-JSON body — parse() will drop it */
+          return unauthorized();
         }
         if (
-          typeof activity?.serviceUrl === 'string' &&
+          typeof activity?.serviceUrl !== 'string' ||
           trimTrailingSlash(activity.serviceUrl) !== trimTrailingSlash(payload.serviceurl)
         ) {
           return unauthorized();

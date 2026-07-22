@@ -225,6 +225,23 @@ describe('teams adapter verify', () => {
     expect((res as Response).status).toBe(401);
   });
 
+  test('rejects when the serviceurl claim is present but the body omits serviceUrl', async () => {
+    const adapter = makeAdapter();
+    const jwt = await signJwt(keyPair.privateKey, claims());
+    const { serviceUrl: _drop, ...withoutServiceUrl } = activityFixture();
+    const res = await adapter.verify(
+      req(withoutServiceUrl, { authorization: `Bearer ${jwt}` }),
+    );
+    expect((res as Response).status).toBe(401);
+  });
+
+  test('rejects non-JSON bodies when the token carries a serviceurl claim', async () => {
+    const adapter = makeAdapter();
+    const jwt = await signJwt(keyPair.privateKey, claims());
+    const res = await adapter.verify(req('not json', { authorization: `Bearer ${jwt}` }));
+    expect((res as Response).status).toBe(401);
+  });
+
   test('trailing-slash differences in serviceurl are not a mismatch', async () => {
     const adapter = makeAdapter();
     const jwt = await signJwt(
