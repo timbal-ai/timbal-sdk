@@ -121,6 +121,61 @@ export interface TempFile {
   expires_at: string;
 }
 
+// ── Content (signed URLs) ──
+//
+// Stored-content objects (KB files, temp files, screenshots, …) are served
+// through the CDN with CloudFront-style signing params on the query string:
+// `Expires` (epoch seconds), `Signature`, `Key-Pair-Id`, `Hash-Algorithm`.
+// Signed URLs go stale; `POST /orgs/{org}/content/sign` mints a fresh pair
+// without re-fetching the whole parent resource.
+
+/** Per-call options for content-signing requests. */
+export interface SignContentOptions {
+  /** Override the org (defaults to client config / `TIMBAL_ORG_ID`). */
+  orgId?: string;
+}
+
+/** Options for `content.ensureFresh` — signing options plus a freshness margin. */
+export interface EnsureFreshUrlOptions extends SignContentOptions {
+  /**
+   * Freshness margin in milliseconds: URLs expiring within this window are
+   * treated as already expired and re-signed. Defaults to 60 000 (1 min) so a
+   * URL handed to a downstream consumer doesn't die mid-flight.
+   */
+  skewMs?: number;
+}
+
+/**
+ * A freshly-minted CDN URL pair for a stored content object
+ * (`SignContentResponse` in the OpenAPI spec).
+ */
+export interface SignedContent {
+  /**
+   * CloudFront signed URL for private content. Omitted/`null` when the object
+   * is public or signing is unavailable — fall back to `url`.
+   */
+  signed_url?: string | null;
+  /** Legacy unsigned CDN URL. Prefer `signed_url` when present. */
+  url: string;
+}
+
+/**
+ * CloudFront-style signing parameters parsed off a content URL's query string.
+ * All fields are `null` for unsigned URLs and non-URL inputs (bare object keys).
+ */
+export interface SignedUrlInfo {
+  /** True when the URL carries a `Signature` param. */
+  signed: boolean;
+  /** Expiry parsed from `Expires` (epoch seconds), or `null` when absent. */
+  expiresAt: Date | null;
+  /** Raw `Signature` param. */
+  signature: string | null;
+  /** Raw `Key-Pair-Id` param (CloudFront key pair used to sign). */
+  keyPairId: string | null;
+  /** Raw `Hash-Algorithm` param (e.g. `SHA256`). */
+  hashAlgorithm: string | null;
+}
+
 // ── Knowledge Base ──
 //
 // IDs (`KbInfo.id`, `K2File.id`, `K2File.kb_id`) are typed as `string` because

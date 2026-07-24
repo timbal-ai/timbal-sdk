@@ -7,3 +7,4 @@ export * from './kb';
 export * from './workforce';
 export * from './integrations';
 export * from './tools';
+export * from './content';

@@ -516,6 +516,48 @@ const fromBuf = await timbal.uploadTempFileFromBuffer(
 
 > **Deprecated:** `timbal.uploadFile` / `timbal.uploadFileFromBuffer` hit an undocumented org-bucket route. They still work and now return `{ id: string, ... }` (numeric IDs are coerced at the boundary), but new code should pick between `uploadTempFile` and `kb.files.upload`.
 
+## Content URLs (re-signing)
+
+Content URLs returned by the platform (KB files, temp files, screenshots, …) are CloudFront-signed and **go stale** — the query string carries `Expires` (epoch seconds), `Signature`, `Key-Pair-Id`, and `Hash-Algorithm`. `timbal.content` wraps `POST /orgs/{org}/content/sign`, which resolves a previously returned URL (signed or unsigned) or a bare object key back to a known object, re-checks your access, and mints a fresh URL — no need to re-fetch the whole parent resource.
+
+```typescript
+// The one-liner: returns the input unchanged while fresh, re-signs when
+// expired or expiring within the next minute (no network call when fresh).
+const usable = await timbal.content.ensureFresh(stored.url);
+
+// Force a new URL regardless of freshness (best URL string back)
+const url = await timbal.content.refresh(stored.url);
+
+// Raw endpoint: full { signed_url, url } pair. Prefer signed_url when present;
+// url is the legacy unsigned CDN URL kept for backwards compatibility.
+const pair = await timbal.content.sign(stored.url);
+const best = pair.signed_url ?? pair.url;
+
+// Bare object keys work too — the server resolves them to a real URL
+await timbal.content.sign("orgs/1/k2/{kb}/files/{id}/source.xlsx");
+```
+
+Inspect the signing params locally (pure, no network):
+
+```typescript
+timbal.content.isExpired(stored.url);          // exact expiry check
+timbal.content.isExpired(stored.url, 60_000);  // treat "dies within 1 min" as expired
+
+const info = timbal.content.parse(stored.url);
+// { signed: true, expiresAt: Date, signature, keyPairId, hashAlgorithm }
+// Unsigned URLs and bare keys → { signed: false, expiresAt: null, ... } (never expire)
+```
+
+Per-call org override and freshness margin:
+
+```typescript
+await timbal.content.ensureFresh(url, { orgId: "10", skewMs: 5 * 60_000 });
+```
+
+The standalone functions are also exported for tree-shakeable use: `signContentUrl(client, url, opts?)`, `parseSignedContentUrl(url)`, `isSignedContentUrlExpired(url, skewMs?)`.
+
+> **Errors:** 400 — the body/URL couldn't be resolved to a known object; 403 — the object exists but your token has no access to it.
+
 ## Session & Project
 
 ```typescript

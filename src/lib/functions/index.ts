@@ -51,3 +51,8 @@ export {
   deleteSharedConnection,
 } from './integrations';
 export { executeToolProxy, listToolManifest, getToolDetail } from './tools';
+export {
+  signContentUrl,
+  parseSignedContentUrl,
+  isSignedContentUrlExpired,
+} from './content';
