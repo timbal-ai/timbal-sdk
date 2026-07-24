@@ -17,6 +17,7 @@ import { KbsSection } from './kb';
 import { WorkforceSection } from './workforce';
 import { IntegrationsSection } from './integrations';
 import { ToolsSection } from './tools';
+import { ContentSection } from './content';
 import {
   query as queryFn,
   uploadTempFile as uploadTempFileFn,
@@ -46,6 +47,7 @@ export class Timbal {
   private _workforce?: WorkforceSection;
   private _integrations?: IntegrationsSection;
   private _tools?: ToolsSection;
+  private _content?: ContentSection;
 
   constructor(config: TimbalConfig = {}) {
     this.apiClient = new ApiClient(config);
@@ -139,6 +141,29 @@ export class Timbal {
   get tools(): ToolsSection {
     if (!this._tools) this._tools = new ToolsSection(this.apiClient);
     return this._tools;
+  }
+
+  // ── Content (signed URLs) ──
+
+  /**
+   * Stored-content URL accessor. Content URLs returned by the platform are
+   * CloudFront-signed (`Expires`/`Signature`/`Key-Pair-Id`/`Hash-Algorithm`
+   * query params) and go stale — this section re-signs them via
+   * `POST /orgs/{org}/content/sign` and inspects their signing params locally.
+   *
+   * - `timbal.content.sign(url)` — mint a fresh `{ signed_url, url }` pair
+   * - `timbal.content.refresh(url)` — always re-sign; returns the usable URL string
+   * - `timbal.content.ensureFresh(url)` — re-sign only when expired / near expiry
+   * - `timbal.content.parse(url)` / `.isExpired(url)` — local inspection, no network
+   *
+   * Minted URLs are memoized per `(org, object path)` until their own expiry;
+   * invalidate with `timbal.content.clearCache()`.
+   *
+   * Lazy singleton on this `Timbal` instance.
+   */
+  get content(): ContentSection {
+    if (!this._content) this._content = new ContentSection(this.apiClient);
+    return this._content;
   }
 
   // ── Project ──
