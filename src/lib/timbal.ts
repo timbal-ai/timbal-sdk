@@ -156,6 +156,9 @@ export class Timbal {
    * - `timbal.content.ensureFresh(url)` — re-sign only when expired / near expiry
    * - `timbal.content.parse(url)` / `.isExpired(url)` — local inspection, no network
    *
+   * Minted URLs are memoized per `(org, object path)` until their own expiry;
+   * invalidate with `timbal.content.clearCache()`.
+   *
    * Lazy singleton on this `Timbal` instance.
    */
   get content(): ContentSection {

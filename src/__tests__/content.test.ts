@@ -262,6 +262,84 @@ describe('Timbal.content', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
+  test('ensureFresh() should serve repeated calls on the same bare key from the mint cache', async () => {
+    const timbal = makeTimbal();
+    const key = 'orgs/1/k2/kb/files/f/source.xlsx';
+
+    const first = await timbal.content.ensureFresh(key);
+    const second = await timbal.content.ensureFresh(key);
+
+    expect(first).toBe(freshSigned);
+    expect(second).toBe(freshSigned);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('ensureFresh() should serve repeated calls on the same stale URL from the mint cache', async () => {
+    const timbal = makeTimbal();
+    const stale = signedUrl(oneHourAgo());
+
+    await timbal.content.ensureFresh(stale);
+    const second = await timbal.content.ensureFresh(stale);
+
+    expect(second).toBe(freshSigned);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('ensureFresh() should re-sign when the cached mint is itself near expiry', async () => {
+    // Server mints URLs that die in 30s — inside the default 1-min skew, so
+    // the cached entry is never considered servable.
+    const shortLived = signedUrl(Math.floor(Date.now() / 1000) + 30);
+    mockFetch.mockImplementation(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ signed_url: shortLived, url: OBJECT_URL }),
+      })
+    );
+    const timbal = makeTimbal();
+    const stale = signedUrl(oneHourAgo());
+
+    await timbal.content.ensureFresh(stale);
+    await timbal.content.ensureFresh(stale);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('refresh() should always hit the network but feed the cache for ensureFresh()', async () => {
+    const timbal = makeTimbal();
+    const stale = signedUrl(oneHourAgo());
+
+    await timbal.content.refresh(stale);
+    const viaCache = await timbal.content.ensureFresh(stale);
+
+    expect(viaCache).toBe(freshSigned);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await timbal.content.refresh(stale); // forced — bypasses the cache
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('clearCache() should force the next ensureFresh() to re-sign', async () => {
+    const timbal = makeTimbal();
+    const key = 'orgs/1/k2/kb/files/f/source.xlsx';
+
+    await timbal.content.ensureFresh(key);
+    timbal.content.clearCache();
+    await timbal.content.ensureFresh(key);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('mint cache should be keyed per org', async () => {
+    const timbal = makeTimbal();
+    const key = 'orgs/1/k2/kb/files/f/source.xlsx';
+
+    await timbal.content.ensureFresh(key, { orgId: 'org-1' });
+    await timbal.content.ensureFresh(key, { orgId: 'other-org' });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   test('parse() and isExpired() should work through the section', () => {
     const timbal = makeTimbal();
     const stale = signedUrl(oneHourAgo());

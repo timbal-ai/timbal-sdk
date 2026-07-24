@@ -554,6 +554,8 @@ Per-call org override and freshness margin:
 await timbal.content.ensureFresh(url, { orgId: "10", skewMs: 5 * 60_000 });
 ```
 
+Minted URLs are **memoized** per `(org, object path)` until their own expiry, so hammering `ensureFresh` with the same stale URL or bare object key pays the round-trip once per expiry window — call it right before every use without worrying about cost. `refresh()` always hits the network (it's the "force" path) but feeds the cache. Invalidate manually with `timbal.content.clearCache()`. Caching changes nothing security-wise: a minted signed URL stays valid until its `Expires` whether or not the SDK remembers it.
+
 The standalone functions are also exported for tree-shakeable use: `signContentUrl(client, url, opts?)`, `parseSignedContentUrl(url)`, `isSignedContentUrlExpired(url, skewMs?)`.
 
 > **Errors:** 400 — the body/URL couldn't be resolved to a known object; 403 — the object exists but your token has no access to it.
