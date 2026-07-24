@@ -332,6 +332,7 @@ describe('timbalAuth Elysia plugin', () => {
 
   describe('platform mode /config', () => {
     const originalOrgId = process.env.TIMBAL_ORG_ID;
+    const originalApiKey = process.env.TIMBAL_API_KEY;
     let originalFetch: typeof global.fetch;
 
     const rawProject = (overrides: Record<string, unknown> = {}) => ({
@@ -366,6 +367,11 @@ describe('timbalAuth Elysia plugin', () => {
     beforeEach(() => {
       process.env.TIMBAL_PROJECT_ID = '248';
       process.env.TIMBAL_ORG_ID = '10';
+      // The plugin's service client (`new Timbal()`) needs a configured token
+      // to reach the (mocked) platform — without one, ApiClient throws
+      // AUTH_ERROR before fetch fires and every test here 503s/401s. A fake
+      // value keeps the suite hermetic instead of depending on the shell env.
+      process.env.TIMBAL_API_KEY = 'test-service-key';
       originalFetch = global.fetch;
       clearProjectAuthConfigCache();
     });
@@ -377,6 +383,8 @@ describe('timbalAuth Elysia plugin', () => {
       else delete process.env.TIMBAL_PROJECT_ID;
       if (originalOrgId !== undefined) process.env.TIMBAL_ORG_ID = originalOrgId;
       else delete process.env.TIMBAL_ORG_ID;
+      if (originalApiKey !== undefined) process.env.TIMBAL_API_KEY = originalApiKey;
+      else delete process.env.TIMBAL_API_KEY;
     });
 
     test('GET /config is public (no token) and returns PublicAppConfig', async () => {
@@ -809,6 +817,7 @@ describe('timbalAuth Elysia plugin', () => {
 
   describe('platform mode end-to-end (real project fetch)', () => {
     const originalOrgId = process.env.TIMBAL_ORG_ID;
+    const originalApiKey = process.env.TIMBAL_API_KEY;
     let originalFetch: typeof global.fetch;
     let meCalls = 0;
 
@@ -860,6 +869,9 @@ describe('timbalAuth Elysia plugin', () => {
     beforeEach(() => {
       process.env.TIMBAL_PROJECT_ID = '248';
       process.env.TIMBAL_ORG_ID = '10';
+      // See the /config describe: the service client needs a token or the
+      // project fetch dies with AUTH_ERROR before the mocked fetch is hit.
+      process.env.TIMBAL_API_KEY = 'test-service-key';
       originalFetch = global.fetch;
       clearProjectAuthConfigCache();
     });
@@ -871,6 +883,8 @@ describe('timbalAuth Elysia plugin', () => {
       else delete process.env.TIMBAL_PROJECT_ID;
       if (originalOrgId !== undefined) process.env.TIMBAL_ORG_ID = originalOrgId;
       else delete process.env.TIMBAL_ORG_ID;
+      if (originalApiKey !== undefined) process.env.TIMBAL_API_KEY = originalApiKey;
+      else delete process.env.TIMBAL_API_KEY;
     });
 
     test('auth_enabled:true, no token → 401', async () => {
