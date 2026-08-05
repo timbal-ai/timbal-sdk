@@ -23,6 +23,10 @@
       "import": "./dist/elysia/index.esm.js",
       "require": "./dist/elysia/index.cjs",
       "types": "./dist/elysia/index.d.ts"
+    },
+    "./voice": {
+      "types": "./dist/voice/index.d.ts",
+      "import": "./dist/voice/index.js"
     }
   },
   "peerDependencies": {
@@ -35,7 +39,7 @@
   },
   "scripts": {
     "build": "bun run clean && bun run build:js && bun run build:types",
-    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs && bun build src/index.ts --outdir dist --target browser --format esm && mv dist/index.js dist/index.browser.js && mkdir -p dist/elysia && bun build src/elysia/index.ts --outdir dist/elysia --target node --format esm --external elysia && mv dist/elysia/index.js dist/elysia/index.esm.js && bun build src/elysia/index.ts --outdir dist/elysia --target node --format cjs --external elysia && mv dist/elysia/index.js dist/elysia/index.cjs",
+    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs && bun build src/index.ts --outdir dist --target browser --format esm && mv dist/index.js dist/index.browser.js && mkdir -p dist/elysia && bun build src/elysia/index.ts --outdir dist/elysia --target node --format esm --external elysia && mv dist/elysia/index.js dist/elysia/index.esm.js && bun build src/elysia/index.ts --outdir dist/elysia --target node --format cjs --external elysia && mv dist/elysia/index.js dist/elysia/index.cjs && mkdir -p dist/voice && bun build src/voice/index.ts --outdir dist/voice --target browser --format esm",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "clean": "rm -rf dist",
     "test": "SKIP_INTEGRATION_TESTS=true TIMBAL_CONFIG_DIR=/tmp/timbal-test-empty bun test src/__tests__",

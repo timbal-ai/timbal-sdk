@@ -184,6 +184,45 @@ Mint tickets **immediately before** connecting (never on page load), and mint a 
 
 Routing follows the same environment detection as `call`/`stream`: deployed endpoints by default, the studio **preview** transport (branch worktree, no deployment needed) when `TIMBAL_STUDIO` is set, and the local `timbal.server` box under `TIMBAL_START_WORKFORCE`. Pass `{ preview: true | false }` to override auto-detection either way. Preview connects after a source edit perform a cold runtime sync — allow a generous `timeoutMs` or none at all.
 
+#### Browser client (`@timbal-ai/timbal-sdk/voice`)
+
+The subpath export is a browser-only WebRTC client that turns the transport above into a talking agent: mic capture, peer connection, agent audio playback, and a typed view over the session's event stream. No Timbal credential ever reaches the browser — signaling goes through **your** API route, which relays via `wf.voice.rtc(offer)` (see above).
+
+```typescript
+import { VoiceSession } from "@timbal-ai/timbal-sdk/voice";
+
+const session = await VoiceSession.start({
+  // Your backend route; it forwards the offer with wf.voice.rtc(offer).
+  signal: (offer) =>
+    fetch("/api/voice/offer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(offer),
+    }),
+
+  onMode: (mode) => {},                 // "listening" | "thinking" | "speaking"
+  onUserTranscript: ({ text, final }) => {},
+  onAgentText: ({ delta, done }) => {},
+  onInterrupted: ({ heardText }) => {}, // barge-in: rewrite the reply to what was actually spoken
+  onAudioBlocked: () => {},             // autoplay policy — show a control that calls resumeAudio()
+  onError: (err) => {},
+});
+
+session.muted = true;                   // mic mute (track stays alive)
+session.setVolume(0.5);                 // agent audio volume
+session.inputVolume;                    // 0–1 levels for VU meters
+session.outputVolume;
+await session.resumeAudio();            // from a click/tap handler, after onAudioBlocked
+session.end();
+```
+
+Notes:
+
+- **TTS arrives as a real audio track** — the browser handles decode, jitter and clock, and the server paces its own playback, so barge-in truncation is exact. Events ride a WebRTC data channel. There is no audio-frame plumbing in the client.
+- Requires the target workforce to run **`timbal[voice] >= 2.3.2`** (a 501 from signaling means it doesn't).
+- Raw server events (`session_started`, `filler`, `session_transcript`, future types) are all available via `onEvent`; `session.send({...})` is the escape hatch in the other direction.
+- The session captures mic with echo cancellation, noise suppression, and auto gain on — the server's barge-in gates assume browser AEC. Override via `audioConstraints` only if you know why.
+
 ### Cache
 
 Invalidate the cached workforce list when deployments change mid-session:
