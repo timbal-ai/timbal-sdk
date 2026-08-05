@@ -6,13 +6,13 @@ function nodeRequire(id: string): any { try { return require(id); } catch { retu
 
 // ── Context resolution ──
 
-interface ResolvedContext {
+export interface ResolvedContext {
   orgId?: string;
   projectId?: string;
   rev: string;
 }
 
-function resolveContext(client: ApiClient, ctx?: PlatformContext): ResolvedContext {
+export function resolveContext(client: ApiClient, ctx?: PlatformContext): ResolvedContext {
   const config = client.getConfig();
   return {
     orgId: ctx?.orgId || config.orgId || undefined,
@@ -21,7 +21,7 @@ function resolveContext(client: ApiClient, ctx?: PlatformContext): ResolvedConte
   };
 }
 
-function requireRemoteContext(resolved: ResolvedContext): { orgId: string; projectId: string; rev: string } {
+export function requireRemoteContext(resolved: ResolvedContext): { orgId: string; projectId: string; rev: string } {
   if (!resolved.orgId) throw new Error('orgId is required. Provide it in context or set TIMBAL_ORG_ID env var.');
   if (!resolved.projectId) throw new Error('projectId is required. Provide it in context or set TIMBAL_PROJECT_ID env var.');
   return { orgId: resolved.orgId, projectId: resolved.projectId, rev: resolved.rev };
@@ -29,11 +29,11 @@ function requireRemoteContext(resolved: ResolvedContext): { orgId: string; proje
 
 // ── Environment detection ──
 
-function isLocalEnvironment(): boolean {
+export function isLocalEnvironment(): boolean {
   return !!(process.env.TIMBAL_START_WORKFORCE ?? process.env.TIMBAL_WORKFORCE);
 }
 
-function isStudioEnvironment(): boolean {
+export function isStudioEnvironment(): boolean {
   return !!process.env.TIMBAL_STUDIO;
 }
 
@@ -50,13 +50,13 @@ function parseWorkforceEnv(): Map<string, number> {
   return map;
 }
 
-function resolveLocalDeployment(manifestId: string): string | null {
+export function resolveLocalDeployment(manifestId: string): string | null {
   const workforceMap = parseWorkforceEnv();
   const port = workforceMap.get(manifestId);
   return port ? `http://localhost:${port}` : null;
 }
 
-async function resolveLocalWorkforceItem(identifier: string): Promise<WorkforceItem> {
+export async function resolveLocalWorkforceItem(identifier: string): Promise<WorkforceItem> {
   const items = await listLocalWorkforces();
   const found = items.find(w => w.uid === identifier || w.name === identifier || w.id === identifier);
   return found ?? { uid: identifier, name: identifier, id: identifier };

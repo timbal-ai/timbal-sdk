@@ -399,6 +399,90 @@ export interface WorkforceItem {
   deleted_at?: number | null;
 }
 
+// ── Voice ──
+
+/**
+ * Ephemeral single-use credential for opening a workforce voice WebSocket
+ * from a client that can't set `Authorization` on the upgrade (a browser).
+ *
+ * Tickets live ~60 seconds and may be used exactly once — mint right before
+ * connecting, never on page load, and mint a fresh one for every retry (a
+ * failed connect still burns the ticket).
+ */
+export interface VoiceTicket {
+  /**
+   * Opaque ticket. Present it on the WebSocket connect as `?ticket=…` or a
+   * `timbal.ticket.<ticket>` subprotocol entry.
+   */
+  ticket: string;
+  /** Expiry, epoch milliseconds. */
+  expiresAt: number;
+  /** Ticket lifetime in seconds (informational). */
+  ttlSecs: number;
+}
+
+/**
+ * Context for voice operations. Same org/project/rev resolution as the rest
+ * of the workforce surface, plus the preview-transport switch.
+ */
+export interface VoiceContext extends PlatformContext {
+  /**
+   * Route through the studio preview transport (`…/voice/preview`), which
+   * runs voice against the branch worktree with no deployment required.
+   * Defaults to auto-detection: preview when `TIMBAL_STUDIO` is set,
+   * deployed endpoints (`…/voice/ws` / `…/voice/rtc`) otherwise. Pass an
+   * explicit boolean to override either way.
+   */
+  preview?: boolean;
+}
+
+export interface VoiceWsUrlOptions extends VoiceContext {
+  /** Ticket to embed as `?ticket=…` (e.g. from `voice.ticket()`). */
+  ticket?: string;
+}
+
+/**
+ * How `voice.connect()` authenticates the WebSocket upgrade.
+ *
+ * - `'bearer'` — the configured SDK token rides a `timbal.bearer.<token>`
+ *   subprotocol entry (works for API keys and OAuth tokens alike).
+ * - `'ticket'` — a single-use voice ticket rides `?ticket=…`; minted
+ *   just-in-time unless one is supplied.
+ * - `'none'` — no credential (local `timbal.server` targets only).
+ */
+export type VoiceAuthMode = 'bearer' | 'ticket' | 'none';
+
+export interface VoiceConnectOptions extends VoiceContext {
+  /**
+   * Defaults to `'ticket'` when {@link ticket} is supplied, `'none'` for
+   * local targets, `'bearer'` otherwise.
+   */
+  auth?: VoiceAuthMode;
+  /** Pre-minted ticket to dial with. Implies `auth: 'ticket'`. */
+  ticket?: string;
+  /** Extra WebSocket subprotocols to announce alongside `timbal.v1`. */
+  protocols?: string[];
+  /**
+   * Reject if the socket hasn't opened within this budget (the socket is
+   * closed). Default: no SDK-side limit — a preview connect after a source
+   * edit performs a cold runtime sync and can legitimately take a while.
+   */
+  timeoutMs?: number;
+}
+
+export interface VoiceRtcOptions extends VoiceContext {
+  /** Content type of a string offer body. Defaults to `application/json`. */
+  contentType?: string;
+  /** Abort signal for the signaling request. */
+  signal?: AbortSignal;
+  /**
+   * Convenience timeout for the signaling request; ignored when {@link signal}
+   * is provided. Default: none — preview signaling after a source edit
+   * performs a cold runtime sync and can exceed typical fetch budgets.
+   */
+  timeoutMs?: number;
+}
+
 // ── Project ──
 
 export interface WorkforcePreview {
