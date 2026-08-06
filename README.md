@@ -152,6 +152,77 @@ const res = await wf.stream({ message: "Hello!" });
 
 `events()` yields `Record<string, unknown>` — the exact shape is component-specific. Key off your known fields (`type`, `delta`, `output`, etc.). `[DONE]` sentinels and comment/heartbeat lines are filtered out.
 
+### Voice
+
+`wf.voice` covers live voice sessions (STT → agent loop → TTS) against a workforce, over two transports. The SDK is transport-level: it mints credentials, builds URLs, opens the socket, relays SDP — the voice wire protocol itself (binary audio frames + JSON events) belongs to the timbal framework.
+
+```typescript
+const wf = timbal.workforce.get("my-agent");
+
+// Browser handoff — the main pattern. Browsers can't set Authorization on a
+// WebSocket upgrade, so vend a single-use ticket (~60s TTL, one connect,
+// pinned to this workforce + rev) from your API and let the browser dial
+// the platform directly:
+const { ticket } = await wf.voice.ticket();
+const url = await wf.voice.wsUrl();
+// → browser: new WebSocket(`${url}&ticket=${encodeURIComponent(ticket)}`, ["timbal.v1"])
+
+// Server-side dial (e2e tests, telephony bridges). Resolves once open;
+// bearer-subprotocol auth with the SDK's credential by default,
+// `auth: "ticket"` to mint-and-dial instead.
+const ws = await wf.voice.connect();
+ws.addEventListener("message", (ev) => { /* voice protocol frames */ });
+ws.close();
+
+// WebRTC signaling relay: forward an end-user's SDP offer under your API's
+// credential, hand the answer back to the browser's setRemoteDescription.
+const resp = await wf.voice.rtc({ sdp: offer.sdp, type: "offer" });
+const answer = await resp.json();
+```
+
+Mint tickets **immediately before** connecting (never on page load), and mint a fresh one per retry — a failed connect still burns the ticket.
+
+Routing follows the same environment detection as `call`/`stream`: deployed endpoints by default, the studio **preview** transport (branch worktree, no deployment needed) when `TIMBAL_STUDIO` is set, and the local `timbal.server` box under `TIMBAL_START_WORKFORCE`. Pass `{ preview: true | false }` to override auto-detection either way. Preview connects after a source edit perform a cold runtime sync — allow a generous `timeoutMs` or none at all.
+
+#### Browser client (`@timbal-ai/timbal-sdk/voice`)
+
+The subpath export is a browser-only WebRTC client that turns the transport above into a talking agent: mic capture, peer connection, agent audio playback, and a typed view over the session's event stream. No Timbal credential ever reaches the browser — signaling goes through **your** API route, which relays via `wf.voice.rtc(offer)` (see above).
+
+```typescript
+import { VoiceSession } from "@timbal-ai/timbal-sdk/voice";
+
+const session = await VoiceSession.start({
+  // Your backend route; it forwards the offer with wf.voice.rtc(offer).
+  signal: (offer) =>
+    fetch("/api/voice/offer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(offer),
+    }),
+
+  onMode: (mode) => {},                 // "listening" | "thinking" | "speaking"
+  onUserTranscript: ({ text, final }) => {},
+  onAgentText: ({ delta, done }) => {},
+  onInterrupted: ({ heardText }) => {}, // barge-in: rewrite the reply to what was actually spoken
+  onAudioBlocked: () => {},             // autoplay policy — show a control that calls resumeAudio()
+  onError: (err) => {},
+});
+
+session.muted = true;                   // mic mute (track stays alive)
+session.setVolume(0.5);                 // agent audio volume
+session.inputVolume;                    // 0–1 levels for VU meters
+session.outputVolume;
+await session.resumeAudio();            // from a click/tap handler, after onAudioBlocked
+session.end();
+```
+
+Notes:
+
+- **TTS arrives as a real audio track** — the browser handles decode, jitter and clock, and the server paces its own playback, so barge-in truncation is exact. Events ride a WebRTC data channel. There is no audio-frame plumbing in the client.
+- Requires the target workforce to run **`timbal[voice] >= 2.3.2`** (a 501 from signaling means it doesn't).
+- Raw server events (`session_started`, `filler`, `session_transcript`, future types) are all available via `onEvent`; `session.send({...})` is the escape hatch in the other direction.
+- The session captures mic with echo cancellation, noise suppression, and auto gain on — the server's barge-in gates assume browser AEC. Override via `audioConstraints` only if you know why.
+
 ### Cache
 
 Invalidate the cached workforce list when deployments change mid-session:

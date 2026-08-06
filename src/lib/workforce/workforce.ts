@@ -6,6 +6,7 @@ import {
   getWorkforceItem as getWorkforceItemFn,
 } from '../functions/workforce';
 import { streamEvents, type WorkforceEvent } from './events';
+import { WorkforceVoice } from './voice';
 
 /**
  * A typed, scoped view onto a single workforce component (agent / workflow /
@@ -19,10 +20,27 @@ import { streamEvents, type WorkforceEvent } from './events';
  * the shared client, not duplicated per view.
  */
 export class Workforce {
+  private _voice?: WorkforceVoice;
+
   constructor(
     public readonly apiClient: ApiClient,
     public readonly identifier: string,
   ) {}
+
+  /**
+   * Voice surface: live voice sessions against this workforce.
+   *
+   * - `voice.ticket()` — single-use browser connect credential
+   * - `voice.wsUrl()` — the WebSocket URL to dial
+   * - `voice.connect()` — server-side dial, resolves an open `WebSocket`
+   * - `voice.rtc(offer)` — WebRTC SDP signaling relay
+   *
+   * Lazy singleton on this view; no network on access.
+   */
+  get voice(): WorkforceVoice {
+    if (!this._voice) this._voice = new WorkforceVoice(this.apiClient, this.identifier);
+    return this._voice;
+  }
 
   /**
    * Resolve this view's identifier to the full `WorkforceItem` — id, uid,

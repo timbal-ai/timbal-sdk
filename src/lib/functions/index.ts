@@ -15,6 +15,14 @@ export {
   streamWorkforce,
   clearWorkforceCache,
 } from './workforce';
+export {
+  mintVoiceTicket,
+  voiceWsUrl,
+  connectVoice,
+  rtcVoice,
+  VOICE_SUBPROTOCOL,
+  VOICE_BEARER_SUBPROTOCOL_PREFIX,
+} from './voice';
 export { parseSSELine } from './sse';
 export {
   listKbs,

@@ -41,6 +41,8 @@ export default [
         TextEncoder: 'readonly',
         TextDecoder: 'readonly',
         ReadableStream: 'readonly',
+        WebSocket: 'readonly',
+        queueMicrotask: 'readonly',
 
         crypto: 'readonly',
 
