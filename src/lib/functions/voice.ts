@@ -148,11 +148,28 @@ export async function voiceWsUrl(
 function waitOpen(ws: WebSocket, url: string, timeoutMs?: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
     const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
       if (timer !== undefined) clearTimeout(timer);
       fn();
     };
-    ws.addEventListener('open', () => settle(resolve), { once: true });
+    ws.addEventListener(
+      'open',
+      () => {
+        // The handshake can race the timeout: `close()` on a CONNECTING
+        // socket is best-effort, so `open` may still fire after the promise
+        // rejected. At that point no caller holds this (authenticated)
+        // socket — close it instead of leaking it open.
+        if (settled) {
+          ws.close();
+          return;
+        }
+        settle(resolve);
+      },
+      { once: true },
+    );
     // The error event carries nothing useful cross-runtime; the close that
     // follows has the code/reason. Listen to both, first rejection wins.
     ws.addEventListener(
@@ -173,10 +190,14 @@ function waitOpen(ws: WebSocket, url: string, timeoutMs?: number): Promise<void>
       { once: true },
     );
     if (timeoutMs !== undefined) {
-      timer = setTimeout(() => {
-        ws.close();
-        reject(new Error(`Voice WebSocket did not open within ${timeoutMs}ms`));
-      }, timeoutMs);
+      timer = setTimeout(
+        () =>
+          settle(() => {
+            ws.close();
+            reject(new Error(`Voice WebSocket did not open within ${timeoutMs}ms`));
+          }),
+        timeoutMs,
+      );
     }
   });
 }

@@ -39,6 +39,7 @@ class FakeWebSocket {
   protocols?: string | string[];
   binaryType = 'blob';
   closed = false;
+  closeCalls = 0;
   private listeners = new Map<string, ((ev: any) => void)[]>();
 
   constructor(url: string, protocols?: string | string[]) {
@@ -65,6 +66,7 @@ class FakeWebSocket {
 
   close(): void {
     this.closed = true;
+    this.closeCalls += 1;
   }
 }
 
@@ -250,6 +252,29 @@ describe('connectVoice', () => {
       connectVoice(makeApiClient(), 'my-agent', { timeoutMs: 10 }),
     ).rejects.toThrow(/did not open within 10ms/);
     expect(FakeWebSocket.instances[0]!.closed).toBe(true);
+  });
+
+  test('a late open after a timeout rejection closes the socket instead of leaking it', async () => {
+    FakeWebSocket.behavior = 'silent';
+    await expect(
+      connectVoice(makeApiClient(), 'my-agent', { timeoutMs: 10 }),
+    ).rejects.toThrow(/did not open within 10ms/);
+    const dial = FakeWebSocket.instances[0]!;
+    expect(dial.closeCalls).toBe(1); // the timeout's own close()
+    // close() during CONNECTING is best-effort — the handshake can still
+    // complete. Nobody holds the socket anymore, so it must be closed again.
+    dial.dispatch('open', {});
+    expect(dial.closeCalls).toBe(2);
+  });
+
+  test('close after a timeout rejection does not double-settle', async () => {
+    FakeWebSocket.behavior = 'silent';
+    await expect(
+      connectVoice(makeApiClient(), 'my-agent', { timeoutMs: 10 }),
+    ).rejects.toThrow(/did not open within 10ms/);
+    // The close event that follows the timeout's ws.close() must be a no-op
+    // (guarded by settle), not a second rejection path.
+    FakeWebSocket.instances[0]!.dispatch('close', { code: 1006, reason: '' });
   });
 });
 
