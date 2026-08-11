@@ -23,9 +23,11 @@ class FakeStream {
 }
 
 class FakeDataChannel {
-  readyState = 'open';
+  static initialReadyState = 'open';
+  readyState = FakeDataChannel.initialReadyState;
   sent: string[] = [];
   onmessage: ((ev: { data: unknown }) => void) | null = null;
+  onopen: (() => void) | null = null;
   closed = false;
   send(data: string) {
     this.sent.push(data);
@@ -121,6 +123,7 @@ function makeGlobals(overrides: Record<string, unknown> = {}) {
   FakePeerConnection.instances = [];
   FakePeerConnection.autoConnect = true;
   FakePeerConnection.gatheringComplete = true;
+  FakeDataChannel.initialReadyState = 'open';
   FakeAudio.playRejects = false;
   const micStream = new FakeStream();
   const getUserMedia = mock(() => Promise.resolve(micStream));
@@ -239,6 +242,70 @@ describe('VoiceSession.start', () => {
       }),
     ).rejects.toThrow(/did not establish within 10ms/);
     expect(env.micStream.tracks[0]!.stopped).toBe(true);
+  });
+
+  test('connect timeout error diagnoses ICE and points at TURN', async () => {
+    const env = makeGlobals();
+    FakePeerConnection.autoConnect = false;
+    await expect(
+      VoiceSession.start({
+        signal: () => Promise.resolve(answer),
+        globals: env.globals,
+        connectTimeoutMs: 10,
+      }),
+    ).rejects.toThrow(/connectionState=new.*ICE\/media-path failure.*TURN/s);
+  });
+
+  test('custom iceServers and iceTransportPolicy reach the peer connection config', async () => {
+    const env = makeGlobals();
+    const turn = [{ urls: ['turn:turn.timbal.ai:3478'], username: 'u', credential: 'c' }];
+    await VoiceSession.start({
+      signal: () => Promise.resolve(answer),
+      globals: env.globals,
+      iceServers: turn,
+      iceTransportPolicy: 'relay',
+    });
+    expect((env.pc().config as any).iceServers).toEqual(turn);
+    expect((env.pc().config as any).iceTransportPolicy).toBe('relay');
+  });
+
+  test('iceTransportPolicy is omitted from the config by default', async () => {
+    const env = makeGlobals();
+    await VoiceSession.start({ signal: () => Promise.resolve(answer), globals: env.globals });
+    expect('iceTransportPolicy' in (env.pc().config as any)).toBe(false);
+  });
+
+  test('data channel watchdog errors when the channel never opens after connect', async () => {
+    const env = makeGlobals();
+    FakeDataChannel.initialReadyState = 'connecting';
+    const errors: Error[] = [];
+    const session = await VoiceSession.start({
+      signal: () => Promise.resolve(answer),
+      globals: env.globals,
+      connectTimeoutMs: 10,
+      onError: (e) => errors.push(e),
+    });
+    expect(session.status).toBe('connected');
+    await new Promise((r) => setTimeout(r, 30));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toMatch(/data channel did not open within 10ms/);
+  });
+
+  test('data channel watchdog stays quiet when the channel opens in time', async () => {
+    const env = makeGlobals();
+    FakeDataChannel.initialReadyState = 'connecting';
+    const errors: Error[] = [];
+    await VoiceSession.start({
+      signal: () => Promise.resolve(answer),
+      globals: env.globals,
+      connectTimeoutMs: 10,
+      onError: (e) => errors.push(e),
+    });
+    const dc = env.pc().dc!;
+    dc.readyState = 'open';
+    dc.onopen?.();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(errors).toHaveLength(0);
   });
 
   test('clear error outside a browser', async () => {

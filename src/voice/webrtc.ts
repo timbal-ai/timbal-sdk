@@ -22,6 +22,7 @@ export interface VoiceRTCSessionDescriptionInit {
 export interface VoiceRTCDataChannel {
   readonly readyState: string;
   onmessage: ((ev: { data: unknown }) => void) | null;
+  onopen?: (() => void) | null;
   send(data: string): void;
   close(): void;
 }
@@ -44,6 +45,7 @@ export interface VoiceRTCTrackEvent {
 
 export interface VoiceRTCPeerConnection {
   readonly connectionState: string;
+  readonly iceConnectionState?: string;
   readonly iceGatheringState: string;
   readonly localDescription: { sdp: string } | null;
   onconnectionstatechange: (() => void) | null;
@@ -79,9 +81,14 @@ export interface VoiceAudioContext {
   createMediaStreamSource(stream: VoiceMediaStream): { connect(node: VoiceAnalyserNode): void };
 }
 
+export interface VoiceRTCConfiguration {
+  iceServers?: VoiceRTCIceServer[];
+  iceTransportPolicy?: 'all' | 'relay';
+}
+
 /** The browser globals `VoiceSession` resolves off `globalThis` (overridable via `VoiceSessionOptions.globals`). */
 export interface VoiceBrowserGlobals {
-  RTCPeerConnection: new (config?: { iceServers?: VoiceRTCIceServer[] }) => VoiceRTCPeerConnection;
+  RTCPeerConnection: new (config?: VoiceRTCConfiguration) => VoiceRTCPeerConnection;
   Audio: new () => VoiceAudioElement;
   AudioContext?: new () => VoiceAudioContext;
   webkitAudioContext?: new () => VoiceAudioContext;

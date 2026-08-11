@@ -200,6 +200,13 @@ const session = await VoiceSession.start({
       body: JSON.stringify(offer),
     }),
 
+  // ICE: platform answers are relay-only (media goes browser ↔ TURN ↔ box).
+  // The STUN-only default works only when the client NAT accepts
+  // TURN-originated checks — for production, mint ephemeral TURN credentials
+  // on your backend, return them alongside the answer, and match policy:
+  // iceServers: [{ urls: ["turn:turn.timbal.ai:3478"], username, credential }],
+  // iceTransportPolicy: "relay",
+
   onMode: (mode) => {},                 // "listening" | "thinking" | "speaking"
   onUserTranscript: ({ text, final }) => {},
   onAgentText: ({ delta, done }) => {},
@@ -220,6 +227,7 @@ Notes:
 
 - **TTS arrives as a real audio track** — the browser handles decode, jitter and clock, and the server paces its own playback, so barge-in truncation is exact. Events ride a WebRTC data channel. There is no audio-frame plumbing in the client.
 - Requires the target workforce to run **`timbal[voice] >= 2.3.2`** (a 501 from signaling means it doesn't).
+- **ICE defaults are best-effort.** With no `iceServers`, the session gathers srflx candidates via Timbal's STUN only. Because platform answers are relay-only, some NATs never complete the srflx↔relay checks: signaling returns 200, then the call dies at `connectTimeoutMs` (default 15s) with an ICE/media-path error. Passing TURN servers **with credentials** (plus `iceTransportPolicy: "relay"`) removes that failure mode. Two related errors are surfaced distinctly: the connect timeout reports the peer-connection state (ICE never connected), and a separate error fires when the transport connects but the events data channel never opens (agent would stay silent and the server ends the session).
 - Raw server events (`session_started`, `filler`, `session_transcript`, future types) are all available via `onEvent`; `session.send({...})` is the escape hatch in the other direction.
 - The session captures mic with echo cancellation, noise suppression, and auto gain on — the server's barge-in gates assume browser AEC. Override via `audioConstraints` only if you know why.
 
