@@ -86,6 +86,7 @@ export class VoiceSession {
   private audioCtx: VoiceAudioContext | null = null;
   private inputAnalyser: VoiceAnalyserNode | null = null;
   private outputAnalyser: VoiceAnalyserNode | null = null;
+  private dcWatchdog: ReturnType<typeof setTimeout> | null = null;
   private userEnded = false;
 
   private constructor(opts: VoiceSessionOptions, g: VoiceBrowserGlobals) {
@@ -122,7 +123,10 @@ export class VoiceSession {
     const micTrack = this.micStream.getAudioTracks()[0];
     if (!micTrack) throw new Error('getUserMedia returned a stream with no audio track');
 
-    const pc = new g.RTCPeerConnection({ iceServers: opts.iceServers ?? DEFAULT_ICE_SERVERS });
+    const pc = new g.RTCPeerConnection({
+      iceServers: opts.iceServers ?? DEFAULT_ICE_SERVERS,
+      ...(opts.iceTransportPolicy && { iceTransportPolicy: opts.iceTransportPolicy }),
+    });
     this.pc = pc;
     pc.addTrack(micTrack, this.micStream);
 
@@ -164,7 +168,7 @@ export class VoiceSession {
       if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
         if (this.status === 'ended' || this.status === 'error') return;
         if (!this.userEnded && pc.connectionState === 'failed') {
-          opts.onError?.(new Error('Voice connection failed'));
+          opts.onError?.(new Error('Voice connection failed (ICE/DTLS transport dropped)'));
         }
         this.teardown();
         this.setStatus('ended');
@@ -197,7 +201,9 @@ export class VoiceSession {
     if (this.userEnded) return; // end() raced the signaling round-trip
     await pc.setRemoteDescription(answer);
 
-    await this.waitConnected(pc, opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
+    const connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    await this.waitConnected(pc, connectTimeoutMs);
+    this.watchDataChannel(dc, connectTimeoutMs);
   }
 
   /** Accept both shapes from `signal`: a parsed answer object, or the raw `Response`. */
@@ -229,9 +235,19 @@ export class VoiceSession {
 
   private waitConnected(pc: VoiceRTCPeerConnection, timeoutMs: number): Promise<void> {
     if (pc.connectionState === 'connected') return Promise.resolve();
+    const iceState = () => (pc.iceConnectionState ? `, iceConnectionState=${pc.iceConnectionState}` : '');
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`Voice connection did not establish within ${timeoutMs}ms`)),
+        () =>
+          reject(
+            new Error(
+              `Voice connection did not establish within ${timeoutMs}ms ` +
+                `(connectionState=${pc.connectionState}${iceState()}). ` +
+                'Signaling succeeded, so this is an ICE/media-path failure, not an auth or agent problem. ' +
+                'Platform answers are relay-only — if this recurs, pass TURN server(s) with credentials via ' +
+                'options.iceServers (the STUN-only default cannot always reach the relay).',
+            ),
+          ),
         timeoutMs,
       );
       pc.addEventListener('connectionstatechange', () => {
@@ -240,10 +256,42 @@ export class VoiceSession {
           resolve();
         } else if (['failed', 'closed'].includes(pc.connectionState)) {
           clearTimeout(timer);
-          reject(new Error(`Voice connection ${pc.connectionState} during setup`));
+          const hint =
+            pc.connectionState === 'failed'
+              ? ` (ICE/DTLS failure${iceState()} — check TURN reachability and iceServers credentials)`
+              : '';
+          reject(new Error(`Voice connection ${pc.connectionState} during setup${hint}`));
         }
       });
     });
+  }
+
+  /**
+   * "Agent silent" watchdog: the transport reached `connected` but the
+   * `events` data channel never opened — the server tears the box down after
+   * its own ~15s wait (`voice_rtc_no_datachannel`), so surface it as a
+   * first-class error instead of a mute call.
+   */
+  private watchDataChannel(dc: VoiceRTCDataChannel, timeoutMs: number): void {
+    if (dc.readyState === 'open') return;
+    this.dcWatchdog = setTimeout(() => {
+      this.dcWatchdog = null;
+      if (this.dc !== dc || dc.readyState === 'open' || this.status !== 'connected') return;
+      this.opts.onError?.(
+        new Error(
+          `Voice transport connected but the events data channel did not open within ${timeoutMs}ms ` +
+            `(readyState=${dc.readyState}) — the agent cannot hear or speak and the server will end the session.`,
+        ),
+      );
+    }, timeoutMs);
+    dc.onopen = () => this.clearDcWatchdog();
+  }
+
+  private clearDcWatchdog(): void {
+    if (this.dcWatchdog !== null) {
+      clearTimeout(this.dcWatchdog);
+      this.dcWatchdog = null;
+    }
   }
 
   // ── Server events ──
@@ -406,8 +454,10 @@ export class VoiceSession {
   }
 
   private teardown(): void {
+    this.clearDcWatchdog();
     if (this.dc) {
       this.dc.onmessage = null;
+      this.dc.onopen = null;
       try {
         this.dc.close();
       } catch {

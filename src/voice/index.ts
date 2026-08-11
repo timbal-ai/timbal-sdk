@@ -17,6 +17,7 @@ export type {
 } from './types';
 export type {
   VoiceBrowserGlobals,
+  VoiceRTCConfiguration,
   VoiceRTCIceServer,
   VoiceRTCSessionDescriptionInit,
 } from './webrtc';

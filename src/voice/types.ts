@@ -74,8 +74,28 @@ export interface VoiceSessionOptions {
   /** Session config overrides (model, `stt_provider`, `filler`, …) — deep-merged server-side. */
   config?: Record<string, unknown>;
 
-  /** ICE servers. Defaults to Timbal's STUN (`stun:turn.timbal.ai:3478`) — platform answers are relay-only and need the offer to carry srflx candidates. */
+  /**
+   * ICE servers. Defaults to Timbal's STUN only (`stun:turn.timbal.ai:3478`).
+   *
+   * ⚠️ The STUN-only default is best-effort against the platform: platform
+   * answers are **relay-only** (media goes browser ↔ TURN ↔ session box), and
+   * srflx↔relay checks fail on NATs that drop TURN-originated traffic — the
+   * session then dies at {@link connectTimeoutMs} with no audio. For reliable
+   * connectivity, pass TURN server(s) **with credentials** here (mint
+   * ephemeral ones on your backend and return them from your `signal`/ticket
+   * route), ideally together with `iceTransportPolicy: "relay"`.
+   */
   iceServers?: VoiceRTCIceServer[];
+
+  /**
+   * `RTCPeerConnection` ICE transport policy. Use `"relay"` when
+   * {@link iceServers} includes TURN credentials: platform answers are
+   * relay-only anyway, so restricting the browser to relay candidates matches
+   * server policy and skips doomed host/srflx pairs. Has no effect worth
+   * having with the STUN-only default (nothing to relay through). Defaults to
+   * the browser's `"all"`.
+   */
+  iceTransportPolicy?: 'all' | 'relay';
 
   /** Microphone device to capture. Omit for the browser default. */
   inputDeviceId?: string;
