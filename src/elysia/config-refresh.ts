@@ -1,7 +1,7 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { Elysia } from 'elysia';
 import { Timbal } from '../lib/timbal';
 import { refreshPlatformConfig } from '../config/refresh';
+import { hasServiceBearer } from './service-auth';
 
 export interface TimbalConfigRefreshOptions {
   /**
@@ -14,13 +14,6 @@ export interface TimbalConfigRefreshOptions {
   path?: string;
   /** Warm (refetch) the caches after eviction. @default true */
   warm?: boolean;
-}
-
-/** Constant-time bearer comparison; hashing first equalizes lengths. */
-function tokenMatches(presented: string, expected: string): boolean {
-  const a = createHash('sha256').update(presented).digest();
-  const b = createHash('sha256').update(expected).digest();
-  return timingSafeEqual(a, b);
 }
 
 /**
@@ -66,11 +59,7 @@ export function timbalConfigRefresh(options: TimbalConfigRefreshOptions = {}): a
   return new Elysia({ name: `timbal-config-refresh:${path}` }).post(
     path,
     ({ request }: { request: Request }) => {
-      const header = request.headers.get('authorization') ?? '';
-      const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
-      const expected = timbal.apiClient.getConfig().token;
-
-      if (!expected || !presented || !tokenMatches(presented, expected)) {
+      if (!hasServiceBearer(request, timbal)) {
         return new Response('Unauthorized', { status: 401 });
       }
 

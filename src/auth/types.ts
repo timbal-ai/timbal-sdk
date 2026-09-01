@@ -133,4 +133,15 @@ export interface TimbalAuthOptions {
    * @default true
    */
   configRefresh?: boolean;
+
+  /**
+   * Mount `GET /__timbal/cron` and `POST /__timbal/cron/:name/trigger` — the
+   * platform's view onto `@elysiajs/cron` jobs so scheduling can move out of
+   * the process (`TIMBAL_CRON_MODE=platform`). Behaviour-neutral in the
+   * default `local` mode. The standalone `timbalCron()` plugin remains for
+   * hosts that skip `timbalAuth`.
+   *
+   * @default true
+   */
+  cron?: boolean;
 }

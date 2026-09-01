@@ -57,6 +57,7 @@
     "prepublishOnly": "bun run build && bun run test && bun run typecheck"
   },
   "devDependencies": {
+    "@elysiajs/cron": "^1.4.2",
     "@eslint/js": "^9.32.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/bun": "latest",

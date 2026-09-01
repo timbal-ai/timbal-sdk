@@ -8,6 +8,14 @@ Official TypeScript/JavaScript SDK for the [Timbal](https://timbal.ai) platform.
 npm install @timbal-ai/timbal-sdk
 ```
 
+Three entry points:
+
+| Import | What it is |
+| --- | --- |
+| `@timbal-ai/timbal-sdk` | The `Timbal` client — knowledge bases, workforce, integrations, tools, files, content URLs, sessions |
+| `@timbal-ai/timbal-sdk/elysia` | [Elysia](https://elysiajs.com) plugins — `timbalAuth`, `timbalChannels`, `timbalCron`, `timbalMcp` (needs `elysia` as a peer) |
+| `@timbal-ai/timbal-sdk/voice` | Browser-only WebRTC `VoiceSession` client |
+
 ## Quick Start
 
 ```typescript
@@ -22,9 +30,15 @@ const kb = timbal.kbs.get(process.env.TIMBAL_KB_ID!);
 const { rows } = await kb.query("SELECT * FROM orders LIMIT 10");
 
 // Call a workforce agent
-const res = await timbal.callWorkforce("my-agent", { message: "Hello!" });
+const res = await timbal.workforce.get("my-agent").call({ message: "Hello!" });
 const data = await res.json();
 ```
+
+## Contents
+
+- Client: [Knowledge Bases](#knowledge-bases) · [Workforce](#workforce) (streaming, voice) · [Integrations](#integrations) · [Tools](#tools) · [Files](#files) · [Content URLs](#content-urls-re-signing) · [Session & Project](#session--project) · [Scoped clients](#scoped-clients)
+- Elysia: [Auth](#elysia-auth-plugin) · [Cron](#elysia-cron-plugin) · [Channels](#elysia-channels-plugin) · [MCP](#elysia-mcp-plugin)
+- [Error Handling](#error-handling) · [Configuration](#configuration)
 
 ## Knowledge Bases
 
@@ -163,7 +177,7 @@ const wf = timbal.workforce.get("my-agent");
 // WebSocket upgrade, so vend a single-use ticket (~60s TTL, one connect,
 // pinned to this workforce + rev) from your API and let the browser dial
 // the platform directly:
-const { ticket } = await wf.voice.ticket();
+const { ticket, iceServers, iceTransportPolicy } = await wf.voice.ticket();
 const url = await wf.voice.wsUrl();
 // → browser: new WebSocket(`${url}&ticket=${encodeURIComponent(ticket)}`, ["timbal.v1"])
 
@@ -182,7 +196,7 @@ const answer = await resp.json();
 
 Mint tickets **immediately before** connecting (never on page load), and mint a fresh one per retry — a failed connect still burns the ticket.
 
-Routing follows the same environment detection as `call`/`stream`: deployed endpoints by default, the studio **preview** transport (branch worktree, no deployment needed) when `TIMBAL_STUDIO` is set, and the local `timbal.server` box under `TIMBAL_START_WORKFORCE`. Pass `{ preview: true | false }` to override auto-detection either way. Preview connects after a source edit perform a cold runtime sync — allow a generous `timeoutMs` or none at all.
+Routing follows the same environment detection as `call`/`stream`: deployed endpoints by default, the studio **preview** transport (branch worktree, no deployment needed) when `TIMBAL_STUDIO` is set, and a locally running framework server when `TIMBAL_START_WORKFORCE` is set. Pass `{ preview: true | false }` to override auto-detection either way. Preview connects after a source edit perform a cold runtime sync — allow a generous `timeoutMs` or none at all.
 
 #### Browser client (`@timbal-ai/timbal-sdk/voice`)
 
@@ -202,10 +216,12 @@ const session = await VoiceSession.start({
 
   // ICE: platform answers are relay-only (media goes browser ↔ TURN ↔ box).
   // The STUN-only default works only when the client NAT accepts
-  // TURN-originated checks — for production, mint ephemeral TURN credentials
-  // on your backend, return them alongside the answer, and match policy:
-  // iceServers: [{ urls: ["turn:turn.timbal.ai:3478"], username, credential }],
-  // iceTransportPolicy: "relay",
+  // TURN-originated checks — for production, fetch a ticket on your backend
+  // (wf.voice.ticket() returns ephemeral TURN creds as iceServers +
+  // iceTransportPolicy on platforms that mint them), hand those to the
+  // browser BEFORE signaling, and pass them through:
+  // iceServers: ticketIce.iceServers,
+  // iceTransportPolicy: ticketIce.iceTransportPolicy,  // "relay"
 
   onMode: (mode) => {},                 // "listening" | "thinking" | "speaking"
   onUserTranscript: ({ text, final }) => {},
@@ -228,6 +244,7 @@ Notes:
 - **TTS arrives as a real audio track** — the browser handles decode, jitter and clock, and the server paces its own playback, so barge-in truncation is exact. Events ride a WebRTC data channel. There is no audio-frame plumbing in the client.
 - Requires the target workforce to run **`timbal[voice] >= 2.3.2`** (a 501 from signaling means it doesn't).
 - **ICE defaults are best-effort.** With no `iceServers`, the session gathers srflx candidates via Timbal's STUN only. Because platform answers are relay-only, some NATs never complete the srflx↔relay checks: signaling returns 200, then the call dies at `connectTimeoutMs` (default 15s) with an ICE/media-path error. Passing TURN servers **with credentials** (plus `iceTransportPolicy: "relay"`) removes that failure mode. Two related errors are surfaced distinctly: the connect timeout reports the peer-connection state (ICE never connected), and a separate error fires when the transport connects but the events data channel never opens (agent would stay silent and the server ends the session).
+- **Where TURN creds come from:** `wf.voice.ticket()` on your backend. Platforms that mint ephemeral TURN return `iceServers` + `iceTransportPolicy` on the ticket; expose them to the browser from your ticket/offer route and pass them into `VoiceSession.start`. They must reach the browser **before** signaling — the peer connection gathers candidates before `signal` runs, so ICE config arriving with the SDP answer is too late.
 - Raw server events (`session_started`, `filler`, `session_transcript`, future types) are all available via `onEvent`; `session.send({...})` is the escape hatch in the other direction.
 - The session captures mic with echo cancellation, noise suppression, and auto gain on — the server's barge-in gates assume browser AEC. Override via `audioConstraints` only if you know why.
 
@@ -575,6 +592,48 @@ const sref     = new SharedConnectionRef(timbal.apiClient, "10");
 const pref     = new PersonalConnectionRef(timbal.apiClient, "15");
 ```
 
+## Tools
+
+`timbal.tools` is the **action** plane, the complement to `timbal.integrations` (the **credential** plane): tools are what you run, integrations are the connections they consume, and a tool's `provider` is the join key between the two. Execution goes through the platform proxy, so provider credentials never reach your process.
+
+```typescript
+// Fire by name when you already know the tool and its params
+const result = await timbal.tools.run("gmail_send_email", {
+  to: "ada@example.com",
+  subject: "Hi",
+  body: "…",
+});
+
+// Discover: lightweight descriptors from the manifest (cached per org)
+const tools = await timbal.tools.list({ provider: "gmail" }); // RemoteTool[]
+// [{ name, description, provider, providerLogo, available, connection, ... }]
+
+// One tool with its parameter schema hydrated
+const tool = await timbal.tools.get("gmail_send_email");
+tool.parameters; // JSON Schema
+
+await tool.run({ to: "…" }); // same proxy call, bound to this tool
+```
+
+### Handing tools to a model
+
+```typescript
+// Function-tool specs in the provider's native shape (schemas hydrated)
+const openai    = await timbal.tools.specs({ format: "openai", tools: ["gmail_send_email"] });
+const anthropic = await timbal.tools.specs({ format: "anthropic" }); // whole manifest
+
+// Agent-loop glue: model `tool_use` → proxy → `tool_result` keyed to the same id
+for (const block of message.content) {
+  if (block.type === "tool_use") {
+    results.push(await timbal.tools.dispatch(block));
+  }
+}
+```
+
+A list-only `RemoteTool` has no schema until `await tool.load()` (or `tools.get()`); `toOpenAI()` / `toAnthropic()` return an empty `parameters` object otherwise. Per-call options (`ToolRunOptions`): `orgId`, `connectionId` (pin a specific integration row — admin/UI flows, never agents), `signal` (proxy calls have no client-side timeout), `runId` / `callId` (trace correlation).
+
+Tool execution is deliberately **not retried** (a retried `generate_image` would double-charge) and has **no client-side timeout** — bound long runs with `signal`. When the tool's provider has no usable connection, `run` / `dispatch` throw `ToolProxyUnavailableError` (`toolName`, `provider`) — the fix lives in `timbal.integrations`: enable the provider in the catalog and connect it. A personal connection whose consent lapsed surfaces as the same `IntegrationConsentRequiredError` the credential plane throws, so one catch handles both. Invalidate the manifest cache after registering tools server-side with `timbal.tools.clearCache()`.
+
 ## Files
 
 Short-lived binary handoff for agents and workflows. Hits the stateless `POST /files` endpoint — no org scope, no DB row, signed URL expires in ~24h. For durable, parsed, searchable storage use `kb.files.upload` instead.
@@ -583,7 +642,7 @@ Short-lived binary handoff for agents and workflows. Hits the stateless `POST /f
 const tmp = await timbal.uploadTempFile("/path/to/report.pdf");
 // { name, url, content_type, content_length, created_at, expires_at }
 
-await timbal.callWorkforce("summarize", { file_url: tmp.url });
+await timbal.workforce.get("summarize").call({ file_url: tmp.url });
 
 // or from a buffer
 const fromBuf = await timbal.uploadTempFileFromBuffer(
@@ -691,6 +750,8 @@ Registers:
 - `POST /auth/magic-link` — send passwordless login email
 - `POST /auth/refresh` — refresh access token
 - `POST /auth/logout` — clear cookie and redirect
+- `GET /config` — public app config, platform mode only (see [`GET /config`](#get-config))
+- `POST /__timbal/config/refresh`, `GET /__timbal/cron`, `POST /__timbal/cron/:name/trigger` — platform-facing infrastructure, authenticated with the project service credential (see [Platform endpoints](#platform-endpoints-__timbal))
 
 All other routes are protected automatically. The middleware injects `token`, `timbal` (a user-scoped SDK instance), `session`, and `project` into every route handler — resolved in a single platform call per request:
 
@@ -698,14 +759,19 @@ All other routes are protected automatically. The middleware injects `token`, `t
 app.get("/me", ({ session, project }) => ({ session, project }));
 ```
 
+Always public, no configuration needed: `/`, anything under `/auth/`, `/healthcheck`, and anything under `/__timbal/` (an optional `/api` prefix is stripped before matching). Everything else needs a user token unless listed in `publicPaths`.
+
 ### Options
 
 ```typescript
 app.use(timbalAuth({
   afterLoginRedirect: "/",   // where to go after login (default: "/")
-  publicPaths: ["/webhook"], // extra paths that skip auth
+  publicPaths: ["/webhook"], // extra path prefixes that skip auth
+  loginPage: "./login.html", // custom login page, or false (see below)
 }));
 ```
+
+Platform-mode options (`authMode`, `authConfig`, `authConfigCacheTtlMs`, `configRoute`) and the infrastructure toggles (`configRefresh`, `cron`) are covered in their own sections below.
 
 ### Custom login page
 
@@ -783,13 +849,203 @@ app.use(timbalAuth({
   authConfig: { enabled: true, providers: ["email", "google"] }, // override; skips the fetch (tests/local)
   authConfigCacheTtlMs: 60_000,                                  // config cache TTL (default 60s)
   configRoute: "/config",                                        // path, or false to disable
-  configRefresh: true,                                           // POST /__timbal/config/refresh (default on)
 }));
 ```
 
-`timbalAuth` also mounts `POST /__timbal/config/refresh` by default — the platform cache-invalidation endpoint used by auth config and channel bindings. Apps do not need a separate `.use(timbalConfigRefresh())`. Opt out with `configRefresh: false`; the standalone plugin remains for hosts that skip auth entirely.
+### Platform endpoints (`/__timbal/*`)
+
+Besides user-facing auth, `timbalAuth` mounts a small set of routes the **platform** calls into your app. They are exempt from the user-token gate and instead require `Authorization: Bearer <project service credential>` — the same `TIMBAL_PROJECT_SECRET` the SDK's own client holds, compared in constant time. Anything else is 401. Both are on by default in every auth mode and share the auth plugin's `Timbal` client:
+
+```typescript
+app.use(timbalAuth({
+  configRefresh: true, // POST /__timbal/config/refresh   (default on)
+  cron: true,          // GET  /__timbal/cron + POST /__timbal/cron/:name/trigger (default on)
+}));
+```
+
+- **`POST /__timbal/config/refresh`** — cache invalidation. The platform fires it after any project-config mutation the SDK consumes (channel writes, auth mode/provider changes) so they go live immediately instead of on the 60s TTL. Responds 202 and evicts + re-warms the cached project payload and runtime channel credentials, then runs any hooks registered with `registerConfigRefreshHook(name, fn)` (`timbalChannels` uses this to re-provision webhooks). Apps do not need a separate `.use(timbalConfigRefresh())` — the standalone plugin exists for hosts that skip `timbalAuth`, and mounting both is safe (same route, deduped).
+- **`GET /__timbal/cron`** / **`POST /__timbal/cron/:name/trigger`** — the platform's view onto your `@elysiajs/cron` jobs. Documented in full under [Elysia Cron Plugin](#elysia-cron-plugin).
 
 Requires `elysia` as a peer dependency.
+
+## Elysia Cron Plugin
+
+In-process cron has three problems on the platform: nothing outside the process can see whether a job ran or failed, it dies with the process (so an API can never be put to sleep while a job is pending), and it double-fires when the same app runs on more than one host. `timbalCron()` fixes this **without changing user code** — you keep writing `@elysiajs/cron` jobs exactly as before, and the SDK exposes them so the platform can observe them and, when told to, own their clock.
+
+```typescript
+import { Elysia } from "elysia";
+import { cron } from "@elysiajs/cron";
+import { timbalAuth } from "@timbal-ai/timbal-sdk/elysia";
+
+const app = new Elysia()
+  .use(timbalAuth()) // mounts timbalCron() by default
+  .use(cron({
+    name: "nightly-report",
+    pattern: "0 3 * * *",
+    timezone: "Europe/Madrid",
+    protect: true,
+    run: async () => { /* ... */ },
+  }))
+  .listen(3000);
+```
+
+`timbalAuth` mounts it by default; opt out with `timbalAuth({ cron: false })`, or mount it standalone on a host without auth:
+
+```typescript
+import { timbalCron } from "@timbal-ai/timbal-sdk/elysia";
+
+app.use(timbalCron({
+  path: "/__timbal/cron", // base path (default)
+  mode: "platform",       // override TIMBAL_CRON_MODE (default: read from env, else "local")
+  timbal,                 // client whose service credential authenticates callers
+}));
+```
+
+Order doesn't matter — jobs are read lazily from `store.cron`, so `cron()` can be mounted before or after the plugin.
+
+### Routes
+
+Both require the project service credential as a bearer (401 otherwise) and are hidden from swagger.
+
+**`GET /__timbal/cron`** — the manifest:
+
+```jsonc
+{
+  "version": 1,
+  "mode": "local",                     // or "platform"
+  "jobs": [
+    {
+      "name": "nightly-report",
+      "pattern": "0 3 * * *",          // null when scheduled from a date
+      "timezone": "Europe/Madrid",     // null when unset
+      "protect": true,
+      "catch": false,
+      "state": "scheduled",            // "scheduled" | "paused" | "stopped"
+      "busy": false,                   // a run is in flight right now
+      "next_run": "2026-09-02T01:00:00.000Z",
+      "previous_run": null,
+      "platform_eligible": true,
+      "platform_ineligible_reason": null
+    }
+  ]
+}
+```
+
+**`POST /__timbal/cron/:name/trigger?wait=20000`** — run the job now and wait up to `wait` ms (default 20000, clamped to 0–60000) for the outcome:
+
+| Status | Body | When |
+| --- | --- | --- |
+| `200` | `{ "status": "done", "duration_ms" }` | `run()` resolved within `wait` |
+| `500` | `{ "status": "error", "duration_ms", "error" }` | `run()` threw within `wait` — `error` is the first line of the message, ≤500 chars, no stack |
+| `202` | `{ "status": "running", "waited_ms" }` | still running after `wait`; the outcome arrives as a stdout line (below) |
+| `409` | `{ "status": "busy" }` | the job has `protect` set and a run is already in flight |
+| `404` | `{ "error": "unknown_job" }` | no job registered under that name |
+
+Triggering goes through croner's own `trigger()`, so `previousRun` / `isBusy()` stay accurate and the user's `catch` callback still runs. Two things the SDK adds on top: `protect` is enforced before triggering (croner's `trigger()` ignores it), and the outcome is captured even when `catch` is set (croner swallows the rejection in that case).
+
+### Run log line
+
+Every run — scheduled by croner or triggered by the platform — prints exactly one line to stdout when it finishes:
+
+```
+[timbal-cron] name=nightly-report status=done duration_ms=1834
+[timbal-cron] name=nightly-report status=error duration_ms=12 error="ECONNREFUSED 10.0.0.4:5432"
+```
+
+The platform's log tee parses these, which is how a `202 running` trigger gets its final status and how local-mode jobs become visible at all. `error` is JSON-quoted; `name` is printed raw, so avoid whitespace in job names. On `listen()` the plugin also prints a one-off summary: `[timbal-cron] mode=… jobs=N stopped=N names=a,b`.
+
+### Modes
+
+`TIMBAL_CRON_MODE` is set by the platform per deployment; the plugin never changes behaviour on its own.
+
+| | `local` (default) | `platform` |
+| --- | --- | --- |
+| Who fires jobs | croner's in-process timer, as today | the platform dispatcher, via the trigger route (ticks every 10–15s) |
+| Local timers | untouched | `stop()` is called on every **eligible** job on start — they become pure trigger endpoints. Ineligible jobs keep their timer |
+| Manifest / trigger routes | available — the platform observes; a trigger runs the job alongside the local timer | available — the only way eligible jobs run |
+| Behaviour change for users | none | job precision becomes ±one dispatcher tick; jobs survive process sleep/crash and fire once across hosts |
+
+Stopping happens on `listen()` (via `onStart`) and again lazily on the first request to either route, so hosts that never call `listen()` (tests using `app.handle()`) behave the same.
+
+### Platform eligibility
+
+The dispatcher can't honour anything finer than its tick or any run-count/window semantics, so those jobs stay local and the manifest says why:
+
+| Pattern / option | Eligible | `platform_ineligible_reason` |
+| --- | --- | --- |
+| Any 5-field pattern (`0 3 * * *`, `*/5 * * * *`), `@hourly`-style nicknames | yes | — |
+| 6-field with a literal or `*/n` (n ≥ 10) seconds field (`0 * * * * *`, `*/30 * * * * *`) | yes | — |
+| Seconds field `*` or `*/n` with n < 10 (`* * * * * *`, `*/5 * * * * *`) | no | `sub_10s_pattern` |
+| Seconds field with a list or range (`0,30 * * * * *`, `0-59/10 * * * * *`) | no | `sub_10s_pattern` |
+| Scheduled from a `Date` / ISO string instead of a pattern | no | `no_pattern` |
+| `maxRuns`, `startAt`, `stopAt`, or `interval` set | no | `unsupported_options` |
+
+The same logic is exported for your own checks: `classifyCronPattern(pattern)` returns the reason or `null`, and `evaluatePlatformEligibility(job)` returns `{ eligible, reason }` for a croner instance. `resolveCronMode(options?)` returns the effective mode.
+
+### Types
+
+`CronManifest`, `CronJobManifest`, `CronRunOutcome`, `CronIneligibleReason`, `TimbalCronMode`, `TimbalCronOptions`, and `CronJobLike` (the structural subset of a croner `Cron` the plugin relies on — the SDK has no dependency on croner) are exported from `@timbal-ai/timbal-sdk/elysia`.
+
+## Elysia Channels Plugin
+
+Connect messaging channels — **Telegram, Slack, WhatsApp, Microsoft Teams** — to workforce components. One plugin mounts the webhook routes and runs a channel-agnostic pipeline: **verify → ack → dedupe → parse → workforce → reply**. The webhook is acked immediately (Slack's 3-second deadline), then the workforce run and the reply happen detached.
+
+```typescript
+import { Elysia } from "elysia";
+import { timbalAuth, timbalChannels, CHANNELS_PUBLIC_PATHS } from "@timbal-ai/timbal-sdk/elysia";
+
+const app = new Elysia()
+  .use(timbalAuth({ publicPaths: [...CHANNELS_PUBLIC_PATHS] })) // webhooks authenticate via provider signatures, not user tokens
+  .use(timbalChannels())
+  .listen(3000);
+```
+
+### Dynamic vs static bindings
+
+With no options the plugin runs in **dynamic mode**: bindings come from the platform (the project's configured channels and their runtime credentials, fetched with the service credential and cached with a 60s TTL), one `POST` + `GET` route serves them all at `/channels/:workforce/:provider`, and a `/__timbal/config/refresh` hook re-resolves bindings when the platform pushes a change. On mount it also fire-and-forgets webhook provisioning (Telegram `setWebhook`; Slack/Teams/WhatsApp register their URL in the provider console). Unlinked apps (no `TIMBAL_PROJECT_ID`) fall back to env-convention bindings: `CHANNELS_WORKFORCE` plus the provider's credential variables (`TELEGRAM_BOT_TOKEN`, `SLACK_BOT_TOKEN` + `SLACK_SIGNING_SECRET`, `WHATSAPP_*`, `TEAMS_*`).
+
+Pass `bindings` for **static mode** — you own the adapters, credentials, and URLs; nothing is fetched or provisioned:
+
+```typescript
+import { timbalChannels, telegram, slack } from "@timbal-ai/timbal-sdk/elysia";
+
+app.use(timbalChannels({
+  bindings: [
+    { adapter: telegram({ botToken }), workforce: "support-agent" },              // POST /channels/support-agent/telegram
+    { adapter: slack({ signingSecret, botToken }), workforce: "sales-agent" },    // POST /channels/sales-agent/slack
+    {
+      adapter: telegram({ botToken: otherToken }),
+      workforce: "concierge",
+      path: "/vip",                                                               // POST /channels/vip
+      buildInput: (event) => ({ prompt: event.text, user: event.externalUserId }),
+      streaming: true,
+    },
+  ],
+}));
+```
+
+The default workforce input is `{ prompt: event.text }`; events with attachments (Telegram photos/documents) are re-uploaded to Timbal temp storage and sent as prompt content parts (`{ prompt: [{ type: "text", … }, { type: "file", file: url }] }`) — the same shape the platform chat UI produces. `buildInput` takes full control, including attachments via `event.attachments`; `event.conversationId` (Slack `channel:thread_ts`, Telegram `chat.id`, Teams `conversation.id`) is the key for anything conversation-scoped.
+
+### Options
+
+```typescript
+app.use(timbalChannels({
+  prefix: "/channels",        // route prefix
+  timbal,                     // service client (default: new Timbal())
+  sessionContinuity: true,    // thread multi-turn: remembers the last run id per provider:conversationId and passes it as context.parent_id (in-memory)
+  streaming: false,           // progressive message edits while the agent generates (experimental; per-binding override)
+  editIntervalMs: 1000,       // min interval between streaming edits
+  dedupeTtlMs: 900_000,       // idempotency window for webhook redelivery (15 min)
+  errorMessage: "Something went wrong processing your message.", // posted on failure; false to stay silent
+  onError: (err, event) => {}, // observe pipeline failures (they never throw past the pipeline)
+  configCacheTtlMs: 60_000,   // dynamic mode: platform channel config TTL
+  channelSpecs: [...],        // dynamic mode: override the platform's channel specs (tests/local)
+  onSkippedSpec: ({ spec, reason }) => {}, // dynamic mode: "missing-credentials" | "unknown-provider"
+  env: process.env,           // injectable env for credentials / origin
+}));
+```
+
+Webhook URLs need a public origin: `PUBLIC_ORIGIN` if set, else derived from `TIMBAL_PROJECT_ENV_ID` on deployed apps. Helpers exported alongside the plugin: `registerChannelWebhooks(options)` (run provisioning yourself), `resolveChannelBindings(timbal, options)` (see what the plugin would mount), `resolveBindingPath(binding, prefix)`, the adapters `telegram` / `slack` / `whatsapp` / `teams`, and the lower-level building blocks (`StreamingReply`, `DedupeCache`, `channelBindingsFromEnv`, `ChannelAdapter` / `ChannelBinding` / `ChannelEvent` types) for custom adapters.
 
 ## Elysia MCP Plugin
 
@@ -908,6 +1164,8 @@ try {
     if (err.isServerError())  /* 5xx */;
     if (err.isTimeout())      /* SDK aborted before the wire */;
     if (err.isNetworkError()) /* DNS/connection failure */;
+    if (err.isMissingAuth())  /* no credential resolved at all */;
+    if (err.isClientError())  /* any 4xx */;
   }
 }
 ```
@@ -915,9 +1173,10 @@ try {
 Resource-specific subclasses are thrown for known failure modes — all still match `instanceof TimbalApiError`:
 
 - `KbFileAlreadyExistsError`, `KbFileNotFoundError`, `KbDirectoryConflictError` — `kb.files.*`
-- `IntegrationNotFoundError` — `timbal.integrations.catalog.{enable,disable}`
+- `IntegrationNotFoundError`, `IntegrationConsentRequiredError` — `timbal.integrations.*`
+- `ToolProxyUnavailableError` — `timbal.tools.run` / `dispatch` when the tool's provider has no usable connection
 
-The SDK retries automatically on 5xx errors, timeouts, and network errors (3 attempts by default).
+The SDK retries automatically on 5xx errors, timeouts, and network errors — 3 attempts with linear backoff (1s, 2s, 3s) by default; tune with `retryAttempts` / `retryDelay` in the `Timbal` config. 4xx responses are never retried.
 
 ---
 
@@ -925,29 +1184,42 @@ The SDK retries automatically on 5xx errors, timeouts, and network errors (3 att
 
 The SDK resolves each config field in order, using the first value found:
 
-1. **Explicit options** passed to `new Timbal({ ... })`
+1. **Explicit options** passed to `new Timbal({ ... })` — `token`, `orgId`, `projectId`, `rev`, `kbId`, `baseUrl`, `timeout`, `retryAttempts`, `retryDelay`
 2. **Environment variables**
-3. `**~/.timbal/` profile files** (managed by `timbal configure`)
+3. **`~/.timbal/` profile files** (managed by `timbal configure`)
 4. **Defaults**
 
 If you've run `timbal configure`, the SDK picks up your credentials automatically — no env vars or explicit config needed. Select a non-default profile with `TIMBAL_PROFILE=staging`.
 
 ### Environment variables
 
+Client:
 
-| Variable             | Description                                          |
-| -------------------- | ---------------------------------------------------- |
-| `TIMBAL_API_KEY`     | API key / token                                      |
+| Variable                | Description                                          |
+| ----------------------- | ---------------------------------------------------- |
+| `TIMBAL_API_KEY`        | API key / token                                      |
 | `TIMBAL_PROJECT_SECRET` | Platform-minted, project-scoped service key (auto-injected into deployed open projects; preferred over `TIMBAL_API_KEY`) |
-| `TIMBAL_BASE_URL`    | API base URL                                         |
-| `TIMBAL_ORG_ID`      | Organization ID                                      |
-| `TIMBAL_PROJECT_ID`  | Project ID                                           |
-| `TIMBAL_AUTH_MODE`   | Force Elysia plugin auth mode: `legacy` / `platform` (default: inferred from `TIMBAL_PROJECT_ID`) |
-| `TIMBAL_PROJECT_REV` | Git branch (default: `main`)                         |
-| `TIMBAL_KB_ID`       | Knowledge base ID                                    |
-| `TIMBAL_PROFILE`     | Profile to load from `~/.timbal/` files              |
-| `TIMBAL_CONFIG_DIR`  | Override the config directory (default: `~/.timbal`) |
-| `TIMBAL_DEBUG`       | Set to `1` to log every request/response             |
+| `TIMBAL_BASE_URL`       | API base URL (`TIMBAL_API_HOST` is accepted as a bare host) |
+| `TIMBAL_ORG_ID`         | Organization ID                                      |
+| `TIMBAL_PROJECT_ID`     | Project ID — also what marks an app as platform-linked |
+| `TIMBAL_PROJECT_REV`    | Git branch (default: `main`)                         |
+| `TIMBAL_KB_ID`          | Knowledge base ID                                    |
+| `TIMBAL_PROFILE`        | Profile to load from `~/.timbal/` files              |
+| `TIMBAL_CONFIG_DIR`     | Override the config directory (default: `~/.timbal`) |
+| `TIMBAL_DEBUG`          | Set to `1` to log every request/response             |
+| `TIMBAL_STUDIO`         | Set inside studio sessions — routes workforce `call` / `stream` / `voice` to the preview transport |
+| `TIMBAL_START_WORKFORCE` | `id:port,id:port` map set by the local framework runner — routes workforce calls to those local servers (`TIMBAL_WORKFORCE` is an alias) |
+
+Set by the platform on deployed apps (you normally never set these yourself):
+
+| Variable                | Description                                          |
+| ----------------------- | ---------------------------------------------------- |
+| `TIMBAL_AUTH_MODE`      | Force Elysia auth mode: `legacy` / `platform` (default: inferred from `TIMBAL_PROJECT_ID`) |
+| `TIMBAL_CRON_MODE`      | `local` (default) or `platform` — who fires `@elysiajs/cron` jobs, see [Elysia Cron Plugin](#elysia-cron-plugin) |
+| `TIMBAL_PROJECT_ENV_ID` | Deployment environment id; used to derive the public webhook origin when `PUBLIC_ORIGIN` is unset |
+| `PUBLIC_ORIGIN`         | Explicit public origin for channel webhook URLs      |
+
+Channels, when running unlinked with env-convention bindings: `CHANNELS_WORKFORCE`, `TELEGRAM_BOT_TOKEN` / `TELEGRAM_SECRET_TOKEN`, `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET`, `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_APP_SECRET` / `WHATSAPP_VERIFY_TOKEN`, `TEAMS_APP_ID` / `TEAMS_APP_PASSWORD` / `TEAMS_TENANT_ID`.
 
 
 ## License
