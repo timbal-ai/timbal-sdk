@@ -89,7 +89,9 @@ export function classifyCronPattern(pattern: string): CronIneligibleReason | nul
   if (fields.length < 6 || seconds === undefined) return null;
   if (seconds === '*') return 'sub_10s_pattern';
   if (seconds.includes(',') || seconds.includes('-')) return 'sub_10s_pattern';
-  const step = /^\*\/(\d+)$/.exec(seconds);
+  // `*/n` and `n/m` (croner: start at n, every m seconds) share a period of
+  // the step. `0/5` === `*/5`; only the step size decides eligibility.
+  const step = /^(?:\*|\d+)\/(\d+)$/.exec(seconds);
   if (step) return Number(step[1]) < 10 ? 'sub_10s_pattern' : null;
   return null;
 }

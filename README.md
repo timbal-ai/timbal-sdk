@@ -974,8 +974,8 @@ The dispatcher can't honour anything finer than its tick or any run-count/window
 | Pattern / option | Eligible | `platform_ineligible_reason` |
 | --- | --- | --- |
 | Any 5-field pattern (`0 3 * * *`, `*/5 * * * *`), `@hourly`-style nicknames | yes | — |
-| 6-field with a literal or `*/n` (n ≥ 10) seconds field (`0 * * * * *`, `*/30 * * * * *`) | yes | — |
-| Seconds field `*` or `*/n` with n < 10 (`* * * * * *`, `*/5 * * * * *`) | no | `sub_10s_pattern` |
+| 6-field with a literal or `*/n` / `n/m` (step ≥ 10) seconds field (`0 * * * * *`, `*/30 * * * * *`, `0/10 * * * * *`) | yes | — |
+| Seconds field `*` or a step < 10 (`* * * * * *`, `*/5 * * * * *`, `0/5 * * * * *`, `1/5 * * * * *`) | no | `sub_10s_pattern` |
 | Seconds field with a list or range (`0,30 * * * * *`, `0-59/10 * * * * *`) | no | `sub_10s_pattern` |
 | Scheduled from a `Date` / ISO string instead of a pattern | no | `no_pattern` |
 | `maxRuns`, `startAt`, `stopAt`, or `interval` set | no | `unsupported_options` |
