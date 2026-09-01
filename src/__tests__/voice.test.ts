@@ -99,6 +99,26 @@ describe('mintVoiceTicket', () => {
     expect(t).toEqual({ ticket: 'eyJ.ticket.sig', expiresAt: 1754000000000, ttlSecs: 60 });
   });
 
+  test('surfaces ticket ICE servers and transport policy when the platform mints them', async () => {
+    const iceServers = [
+      { urls: 'stun:turn.timbal.ai:3478' },
+      { urls: ['turn:turn.timbal.ai:3478'], username: '1754000060:voice', credential: 'hmac' },
+    ];
+    const client = makeApiClient();
+    (client.post as any).mockImplementation(() =>
+      Promise.resolve({ data: { ...rawTicket, ice_servers: iceServers, ice_transport_policy: 'relay' } }),
+    );
+    const t = await mintVoiceTicket(client, 'my-agent');
+    expect(t.iceServers).toEqual(iceServers);
+    expect(t.iceTransportPolicy).toBe('relay');
+  });
+
+  test('omits ICE fields entirely on pre-ICE platform responses', async () => {
+    const t = await mintVoiceTicket(makeApiClient(), 'my-agent');
+    expect('iceServers' in t).toBe(false);
+    expect('iceTransportPolicy' in t).toBe(false);
+  });
+
   test('ctx rev overrides the configured rev', async () => {
     const client = makeApiClient();
     await mintVoiceTicket(client, 'my-agent', { rev: 'feature/x' });

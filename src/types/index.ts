@@ -419,6 +419,27 @@ export interface VoiceTicket {
   expiresAt: number;
   /** Ticket lifetime in seconds (informational). */
   ttlSecs: number;
+  /**
+   * ICE servers for the browser's `RTCPeerConnection`, when the platform
+   * mints them (ephemeral TURN credentials scoped to this session). Hand
+   * these to `VoiceSession.start({ iceServers })` — platform RTC answers are
+   * relay-only, and the STUN-only client default cannot always reach the
+   * relay. Absent on platforms that predate ticket-ICE minting.
+   */
+  iceServers?: VoiceTicketIceServer[];
+  /**
+   * ICE transport policy the platform asks the browser to use (`"relay"`
+   * when the answer will be relay-only). Pass through to
+   * `VoiceSession.start({ iceTransportPolicy })`.
+   */
+  iceTransportPolicy?: 'all' | 'relay';
+}
+
+/** One ICE server entry on a {@link VoiceTicket} (same shape as `RTCIceServer`). */
+export interface VoiceTicketIceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
 }
 
 /**
