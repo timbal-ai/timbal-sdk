@@ -82,6 +82,9 @@ interface RawVoiceTicket {
   ticket: string;
   expires_at: number;
   ttl_secs: number;
+  /** Ephemeral ICE servers (TURN creds), when the platform mints them. */
+  ice_servers?: { urls: string | string[]; username?: string; credential?: string }[];
+  ice_transport_policy?: 'all' | 'relay';
 }
 
 /**
@@ -111,6 +114,8 @@ export async function mintVoiceTicket(
     ticket: res.data.ticket,
     expiresAt: res.data.expires_at,
     ttlSecs: res.data.ttl_secs,
+    ...(res.data.ice_servers && { iceServers: res.data.ice_servers }),
+    ...(res.data.ice_transport_policy && { iceTransportPolicy: res.data.ice_transport_policy }),
   };
 }
 

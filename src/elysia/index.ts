@@ -4,6 +4,7 @@ import { createAuthRoutes } from './routes';
 import { createAuthMiddleware } from './middleware';
 import { createConfigRoute, resolveConfigPath } from './config-route';
 import { timbalConfigRefresh } from './config-refresh';
+import { timbalCron } from './cron';
 import { resolveAuthMode } from '../auth/config';
 import type { TimbalAuthOptions } from '../auth/types';
 
@@ -37,6 +38,19 @@ export {
 } from './mcp';
 export { timbalConfigRefresh, type TimbalConfigRefreshOptions } from './config-refresh';
 export {
+  timbalCron,
+  classifyCronPattern,
+  evaluatePlatformEligibility,
+  resolveCronMode,
+  type TimbalCronOptions,
+  type TimbalCronMode,
+  type CronManifest,
+  type CronJobManifest,
+  type CronJobLike,
+  type CronRunOutcome,
+  type CronIneligibleReason,
+} from './cron';
+export {
   refreshPlatformConfig,
   registerConfigRefreshHook,
   clearConfigRefreshHooks,
@@ -53,6 +67,8 @@ export * from '../channels';
  * - Auth middleware (token resolution from Bearer header/cookie, route guarding)
  * - `POST /__timbal/config/refresh` (platform cache invalidation; opt out with
  *   `configRefresh: false`)
+ * - `GET /__timbal/cron` + `POST /__timbal/cron/:name/trigger` (platform-owned
+ *   scheduling for `@elysiajs/cron` jobs; opt out with `cron: false`)
  * - `GET /config` in platform mode (opt out with `configRoute: false`)
  *
  * @example
@@ -95,6 +111,12 @@ export function timbalAuth(options: TimbalAuthOptions = {}): any {
   // client so the bearer check uses the same service credential.
   if (options.configRefresh !== false) {
     app = app.use(timbalConfigRefresh({ timbal }));
+  }
+
+  // Cron manifest + trigger — lets the platform own scheduling for
+  // `@elysiajs/cron` jobs. Behaviour-neutral unless TIMBAL_CRON_MODE=platform.
+  if (options.cron !== false) {
+    app = app.use(timbalCron({ timbal }));
   }
 
   return app;
