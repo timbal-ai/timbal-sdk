@@ -366,3 +366,79 @@ describe('Workforce.voice', () => {
     expect(t.ticket).toBe('eyJ.ticket.sig');
   });
 });
+
+// Platform browser sessions use LiveKit; legacy methods above remain compatible.
+describe('WorkforceVoice.createSession', () => {
+  const dial = {
+    transport: 'livekit',
+    url: 'wss://livekit.example',
+    token: 'caller',
+    room: 'room',
+    identity: 'caller-1',
+  };
+  function liveClient() {
+    const client = makeApiClient();
+    (client.fetch as any).mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(dial), {
+          headers: { 'x-timbal-voice-session-id': 'session-1' },
+        })
+      )
+    );
+    return client;
+  }
+  test('returns typed caller material and session ID without changing raw rtc()', async () => {
+    const client = liveClient();
+    const voice = new WorkforceVoice(client, 'my-agent');
+    expect(await voice.createSession({ config: { language: 'ar' }, rev: 'feature' })).toEqual({
+      ...dial,
+      sessionId: 'session-1',
+    });
+    const [endpoint, init] = (client.fetch as any).mock.calls[0];
+    expect(endpoint).toBe('orgs/org1/projects/proj1/workforce/my-agent/voice/rtc?rev=feature');
+    expect(JSON.parse(init.body)).toEqual({ transport: 'livekit', config: { language: 'ar' } });
+    expect(await voice.rtc({ transport: 'livekit' })).toBeInstanceOf(Response);
+  });
+  test('studio routes to preview and explicit preview false routes to deployment', async () => {
+    process.env.TIMBAL_STUDIO = '1';
+    const client = liveClient();
+    const voice = new WorkforceVoice(client, 'agent');
+    await voice.createSession();
+    await voice.createSession({ preview: false });
+    expect((client.fetch as any).mock.calls[0][0]).toContain('/voice/preview?');
+    expect((client.fetch as any).mock.calls[1][0]).toContain('/voice/rtc?');
+  });
+  test('passes AbortSignal through', async () => {
+    const client = liveClient();
+    const signal = new AbortController().signal;
+    await new WorkforceVoice(client, 'agent').createSession({ signal });
+    expect((client.fetch as any).mock.calls[0][1].signal).toBe(signal);
+  });
+  test('rejects pure-local minting, but explicit platform preview works', async () => {
+    process.env.TIMBAL_START_WORKFORCE = 'uid-1:7100';
+    const client = liveClient();
+    const voice = new WorkforceVoice(client, 'agent');
+    await expect(voice.createSession()).rejects.toThrow(
+      'standalone servers do not mint caller tokens'
+    );
+    expect(client.fetch).not.toHaveBeenCalled();
+    expect(await voice.createSession({ preview: true })).toEqual({
+      ...dial,
+      sessionId: 'session-1',
+    });
+  });
+  test('rejects malformed success and propagates platform errors', async () => {
+    const client = liveClient();
+    const voice = new WorkforceVoice(client, 'agent');
+    for (const value of [{}, { ...dial, token: '' }, { ...dial, transport: 'webrtc' }]) {
+      (client.fetch as any).mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify(value)))
+      );
+      await expect(voice.createSession()).rejects.toThrow('Invalid voice connection');
+    }
+    (client.fetch as any).mockImplementation(() =>
+      Promise.resolve(new Response('{"message":"Voice disabled"}', { status: 409 }))
+    );
+    await expect(voice.createSession()).rejects.toThrow('Voice disabled');
+  });
+});
