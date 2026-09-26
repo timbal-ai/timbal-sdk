@@ -1,6 +1,7 @@
 import {
   Room,
   RoomEvent,
+  ConnectionState,
   Track,
   createLocalAudioTrack,
   createAudioAnalyser,
@@ -63,6 +64,7 @@ export class LiveKitVoiceSession {
   private volume = 1;
   private closed = false;
   private published = false;
+  private disconnectedAgents = new Set<string>();
   private controller = new AbortController();
   private decoder = new VoiceEventDecoder();
   private resolveReady!: () => void;
@@ -182,15 +184,30 @@ export class LiveKitVoiceSession {
       if (this.audioBlocked) opts.onAudioBlocked?.();
     });
     this.listen(RoomEvent.Reconnecting, () => this.setStatus('reconnecting'));
-    this.listen(RoomEvent.Reconnected, () =>
-      this.setStatus(this.info && this.published ? 'ready' : 'initializing')
-    );
+    this.listen(RoomEvent.SignalReconnecting, () => this.setStatus('reconnecting'));
+    this.listen(RoomEvent.Reconnected, () => {
+      // LiveKit has applied the new room snapshot before emitting Reconnected.
+      if (this.checkDisconnectedAgents())
+        this.setStatus(this.info && this.published ? 'ready' : 'initializing');
+    });
     this.listen(RoomEvent.Disconnected, () => {
       if (!this.closed) this.fail(new Error('Voice room disconnected'));
     });
     this.listen(RoomEvent.ParticipantDisconnected, (participant: { identity: string }) => {
-      if (participant.identity.startsWith('agent-') && !this.closed)
-        this.fail(new Error('Voice agent disconnected'));
+      if (!participant.identity.startsWith('agent-') || this.closed) return;
+      this.disconnectedAgents.add(participant.identity);
+      // A full restart removes participants synchronously BEFORE changing room
+      // state and emitting Reconnecting. Decide after that transition finishes.
+      queueMicrotask(() => {
+        if (
+          this.closed ||
+          this.status === 'reconnecting' ||
+          room.state === ConnectionState.Reconnecting ||
+          room.state === ConnectionState.SignalReconnecting
+        )
+          return;
+        this.checkDisconnectedAgents();
+      });
     });
 
     // Ask for mic permission before creating a billable platform session.
@@ -236,6 +253,18 @@ export class LiveKitVoiceSession {
   ): void {
     this.room.on(event, callback);
     this.listeners.push(() => this.room.off(event, callback));
+  }
+
+  private checkDisconnectedAgents(): boolean {
+    if (this.closed) return false;
+    for (const identity of this.disconnectedAgents) {
+      if (!this.room.remoteParticipants.has(identity)) {
+        this.fail(new Error('Voice agent disconnected'));
+        return false;
+      }
+    }
+    this.disconnectedAgents.clear();
+    return true;
   }
 
   private checkReady(): void {
@@ -390,6 +419,7 @@ export class LiveKitVoiceSession {
     void this.outputMeter?.cleanup().catch(() => {});
     this.tracks.forEach(track => track.detach().forEach(element => element.remove()));
     this.tracks.clear();
+    this.disconnectedAgents.clear();
     this.decoder.clear();
     void this.room.disconnect().catch(() => {});
   }

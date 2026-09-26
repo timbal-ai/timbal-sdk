@@ -1,5 +1,5 @@
 import { describe, test, expect, mock } from 'bun:test';
-import { RoomEvent } from 'livekit-client';
+import { ConnectionState, RoomEvent } from 'livekit-client';
 import { LiveKitVoiceSession } from '../voice/livekit';
 import { VoiceEventDecoder } from '../voice/livekit/events';
 import { resolveVoiceSessionConnection, type VoiceSessionConnection } from '../voice/connection';
@@ -32,6 +32,8 @@ function fixture() {
     }),
   };
   const room = {
+    state: ConnectionState.Connected,
+    remoteParticipants: new Map([['agent-session', { identity: 'agent-session' }]]),
     on: (event: string, listener: (...args: any[]) => void) => {
       if (!listeners.has(event)) listeners.set(event, new Set());
       listeners.get(event)!.add(listener);
@@ -224,6 +226,85 @@ describe('LiveKitVoiceSession', () => {
     expect(s.status).toBe('ready');
     f.emit(RoomEvent.Disconnected);
     expect(s.status).toBe('error');
+    expect(f.mic.stop).toHaveBeenCalledTimes(1);
+  });
+  test('full restart participant removal before Reconnecting preserves the call', async () => {
+    const f = fixture();
+    const errors = mock(() => {});
+    const s = await LiveKitVoiceSession.start({ ...f.options, onError: errors });
+    const agent = f.room.remoteParticipants.get('agent-session')!;
+    // Match LiveKit handleRestarting: delete/emit participants first, then state/event.
+    f.room.remoteParticipants.delete(agent.identity);
+    f.emit(RoomEvent.ParticipantDisconnected, agent);
+    f.room.state = ConnectionState.Reconnecting;
+    f.emit(RoomEvent.Reconnecting);
+    await tick();
+    expect(s.status).toBe('reconnecting');
+    expect(f.mic.stop).not.toHaveBeenCalled();
+    expect(f.room.disconnect).not.toHaveBeenCalled();
+    expect(errors).not.toHaveBeenCalled();
+    f.room.remoteParticipants.set(agent.identity, agent);
+    f.room.state = ConnectionState.Connected;
+    f.emit(RoomEvent.Reconnected);
+    expect(s.status).toBe('ready');
+    s.end();
+  });
+  test('a real agent departure still fails and cleans up', async () => {
+    const f = fixture();
+    const errors = mock(() => {});
+    const s = await LiveKitVoiceSession.start({ ...f.options, onError: errors });
+    f.room.remoteParticipants.delete('agent-session');
+    f.emit(RoomEvent.ParticipantDisconnected, { identity: 'agent-session' });
+    await tick();
+    expect(s.status).toBe('error');
+    expect(errors.mock.calls[0]![0].message).toBe('Voice agent disconnected');
+    expect(f.mic.stop).toHaveBeenCalledTimes(1);
+  });
+  test('agent missing from reconnected room snapshot cannot become ready', async () => {
+    const f = fixture();
+    const s = await LiveKitVoiceSession.start(f.options);
+    f.room.remoteParticipants.delete('agent-session');
+    f.emit(RoomEvent.ParticipantDisconnected, { identity: 'agent-session' });
+    f.room.state = ConnectionState.Reconnecting;
+    f.emit(RoomEvent.Reconnecting);
+    await tick();
+    f.room.state = ConnectionState.Connected;
+    f.emit(RoomEvent.Reconnected);
+    expect(s.status).toBe('error');
+    expect(f.mic.stop).toHaveBeenCalledTimes(1);
+  });
+  test('signal reconnect and same-turn participant restoration are recoverable', async () => {
+    const f = fixture();
+    const s = await LiveKitVoiceSession.start(f.options);
+    const agent = f.room.remoteParticipants.get('agent-session')!;
+    f.room.state = ConnectionState.SignalReconnecting;
+    f.emit(RoomEvent.SignalReconnecting);
+    f.room.remoteParticipants.delete(agent.identity);
+    f.emit(RoomEvent.ParticipantDisconnected, agent);
+    await tick();
+    expect(s.status).toBe('reconnecting');
+    f.room.remoteParticipants.set(agent.identity, agent);
+    f.room.state = ConnectionState.Connected;
+    f.emit(RoomEvent.Reconnected);
+    expect(s.status).toBe('ready');
+    // Also cover synchronous room moves that replace participants without a reconnect event.
+    f.room.remoteParticipants.delete(agent.identity);
+    f.emit(RoomEvent.ParticipantDisconnected, agent);
+    f.room.remoteParticipants.set(agent.identity, agent);
+    await tick();
+    expect(s.status).toBe('ready');
+    s.end();
+  });
+  test('ending before the deferred departure check does not report an error', async () => {
+    const f = fixture();
+    const errors = mock(() => {});
+    const s = await LiveKitVoiceSession.start({ ...f.options, onError: errors });
+    f.room.remoteParticipants.delete('agent-session');
+    f.emit(RoomEvent.ParticipantDisconnected, { identity: 'agent-session' });
+    s.end();
+    await tick();
+    expect(s.status).toBe('ended');
+    expect(errors).not.toHaveBeenCalled();
     expect(f.mic.stop).toHaveBeenCalledTimes(1);
   });
   test('autoplay blocking is recoverable and remote elements are detached', async () => {
