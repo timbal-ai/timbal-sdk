@@ -20,6 +20,7 @@ export {
   voiceWsUrl,
   connectVoice,
   rtcVoice,
+  createVoiceSession,
   VOICE_SUBPROTOCOL,
   VOICE_BEARER_SUBPROTOCOL_PREFIX,
 } from './voice';

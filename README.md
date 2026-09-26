@@ -14,7 +14,8 @@ Three entry points:
 | --- | --- |
 | `@timbal-ai/timbal-sdk` | The `Timbal` client — knowledge bases, workforce, integrations, tools, files, content URLs, sessions |
 | `@timbal-ai/timbal-sdk/elysia` | [Elysia](https://elysiajs.com) plugins — `timbalAuth`, `timbalChannels`, `timbalCron`, `timbalMcp` (needs `elysia` as a peer) |
-| `@timbal-ai/timbal-sdk/voice` | Browser-only WebRTC `VoiceSession` client |
+| `@timbal-ai/timbal-sdk/voice/livekit` | Browser LiveKit client for current Timbal platform voice |
+| `@timbal-ai/timbal-sdk/voice` | Legacy SDP `VoiceSession` client for compatible standalone servers |
 
 ## Quick Start
 
@@ -168,6 +169,66 @@ const res = await wf.stream({ message: "Hello!" });
 
 ### Voice
 
+Current Timbal platform browser sessions use **LiveKit**. Use `wf.voice.createSession()` on your backend and `LiveKitVoiceSession` in the browser. The SDK adds these APIs without changing the existing SDP/WebSocket methods; those older browser transports are sunset on the platform (`409 WORKFORCE_VOICE_SDP_SUNSET`).
+
+#### Platform voice (LiveKit)
+
+Install the optional browser dependency in your frontend:
+
+```sh
+bun add @timbal-ai/timbal-sdk livekit-client@^2.22.3
+```
+
+Backend route (authenticate your app's user and authorize access to this workforce):
+
+```typescript
+// POST /api/voice/session — platform credentials stay on the server.
+const connection = await timbal.workforce.get("support").voice.createSession({
+  // preview is detected automatically in Studio; org/project/rev use SDK context.
+  // Normally inherit the Agent's voice_config without overrides.
+});
+return Response.json(connection);
+```
+
+Browser, from a user click:
+
+```typescript
+import { LiveKitVoiceSession } from "@timbal-ai/timbal-sdk/voice/livekit";
+
+const abort = new AbortController();
+const session = await LiveKitVoiceSession.start({
+  signal: abort.signal,
+  connect: signal => fetch("/api/voice/session", { method: "POST", signal }),
+  onStatus: status => setCallStatus(status),
+  onUserTranscript: transcript => updateUserCaption(transcript),
+  onAgentText: text => updateAgentCaption(text),
+  onInterrupted: ({ heardText }) => replaceAgentCaption(heardText),
+  onAudioBlocked: () => showEnableAudioButton(),
+  onError: error => showCallError(error.message),
+});
+// start() resolves after mic publication AND Timbal's session_started event.
+// With no greeting configured, show "Ready — start speaking".
+await session.setMuted(true);
+await session.setMuted(false);
+// Call from a click/tap if autoplay was blocked:
+await session.resumeAudio();
+// session.inputVolume / outputVolume expose 0–1 meter readings.
+// session.sessionId can be included in a support/debug report (never log tokens).
+session.end(); // idempotent; also abort.abort() on unmount or while start() is pending
+```
+
+`onStatus` distinguishes `connecting`, `initializing`, `ready`, `reconnecting`, `ended`, and `error`. Merely connecting to the room or seeing a participant does not make the agent ready. Startup has a configurable `startupTimeoutMs` budget (120 seconds by default, including preview cold starts). Microphone permission is requested before creating a platform session; cancellation releases late microphone/room resources.
+
+The client consumes **`timbal.events`**, not LiveKit Agents' `lk.transcription` or `lk.agent.state`. It reassembles both Timbal chunk formats, preserves final text/run IDs and interruption replacements, and exposes complete transcripts through `onTranscript(entries, startedAt)`. `onEvent` retains metrics, usage, interaction/approval and future events. Use `session.send(...)` for Timbal interaction answers. Client transcript delivery is best-effort on disconnect; use platform session storage for durable history. Missing speech commits are not inferred from microphone levels.
+
+Provider errors during startup reject `start()`. Later turn errors reach `onError` without automatically ending the call, since the framework event does not distinguish fatal errors from recoverable turn errors. An unexpected room/agent disconnect ends the call with an error. No greeting, filler, background sound or provider defaults are overridden by this client.
+
+The LiveKit dependency is isolated to this new subpath; importing the main SDK or legacy `/voice` does not load it. `createSession()` supports deployed and preview platform routes. A standalone local framework server cannot mint platform caller tokens, so pure-local mode gives an explicit error; use platform preview for worktrees.
+
+#### Legacy WebSocket and SDP transports
+
+The following APIs are retained for compatible older or standalone servers. Do not use these recipes for new platform browser calls.
+
 `wf.voice` covers live voice sessions (STT → agent loop → TTS) against a workforce, over two transports. The SDK is transport-level: it mints credentials, builds URLs, opens the socket, relays SDP — the voice wire protocol itself (binary audio frames + JSON events) belongs to the timbal framework.
 
 ```typescript
@@ -198,7 +259,7 @@ Mint tickets **immediately before** connecting (never on page load), and mint a 
 
 Routing follows the same environment detection as `call`/`stream`: deployed endpoints by default, the studio **preview** transport (branch worktree, no deployment needed) when `TIMBAL_STUDIO` is set, and a locally running framework server when `TIMBAL_START_WORKFORCE` is set. Pass `{ preview: true | false }` to override auto-detection either way. Preview connects after a source edit perform a cold runtime sync — allow a generous `timeoutMs` or none at all.
 
-#### Browser client (`@timbal-ai/timbal-sdk/voice`)
+#### Legacy browser client (`@timbal-ai/timbal-sdk/voice`)
 
 The subpath export is a browser-only WebRTC client that turns the transport above into a talking agent: mic capture, peer connection, agent audio playback, and a typed view over the session's event stream. No Timbal credential ever reaches the browser — signaling goes through **your** API route, which relays via `wf.voice.rtc(offer)` (see above).
 

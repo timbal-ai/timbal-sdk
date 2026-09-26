@@ -1,3 +1,4 @@
+import { resolveVoiceSessionConnection } from '../../voice/connection';
 import type { ApiClient } from '../api';
 import type {
   VoiceTicket,
@@ -297,4 +298,27 @@ export async function rtcVoice(
     body,
     ...(signal && { signal }),
   });
+}
+
+/** Mint LiveKit caller connection material. Never expose the SDK's platform credential. */
+export async function createVoiceSession(
+  client: ApiClient,
+  identifier: string,
+  opts: import('../../types').VoiceSessionCreateOptions = {}
+): Promise<import('../../types').VoiceSessionConnection> {
+  if (useLocal(opts)) {
+    throw new Error(
+      'LiveKit session creation requires the Timbal platform. Use preview: true for a studio worktree; standalone servers do not mint caller tokens.'
+    );
+  }
+  const response = await rtcVoice(
+    client,
+    identifier,
+    {
+      transport: 'livekit',
+      ...(opts.config && { config: opts.config }),
+    },
+    opts
+  );
+  return resolveVoiceSessionConnection(response);
 }

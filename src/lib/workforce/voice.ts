@@ -5,37 +5,36 @@ import type {
   VoiceWsUrlOptions,
   VoiceConnectOptions,
   VoiceRtcOptions,
+  VoiceSessionCreateOptions,
+  VoiceSessionConnection,
 } from '../../types';
 import {
   mintVoiceTicket as mintVoiceTicketFn,
   voiceWsUrl as voiceWsUrlFn,
   connectVoice as connectVoiceFn,
   rtcVoice as rtcVoiceFn,
+  createVoiceSession,
 } from '../functions/voice';
 
 /**
  * Voice surface of a single workforce — reached via
  * `timbal.workforce.get(identifier).voice`.
  *
- * Two transports, both live against either the component's running
- * deployment or (in studio / with `preview: true`) the branch worktree with
- * no deployment at all:
- *
- * - **WebSocket** — {@link connect} (server-side dial) or
- *   {@link ticket} + {@link wsUrl} (hand a browser everything it needs;
- *   browsers can't set `Authorization` on the upgrade, hence tickets).
- * - **WebRTC** — {@link rtc} relays SDP signaling; media then flows
- *   peer-to-platform directly.
- *
- * Transport-level by design: the SDK moves you a live socket / an SDP
- * answer, it does not speak the voice wire protocol (audio frames + JSON
- * events) — that contract belongs to the timbal framework.
+ * Current platform browsers use {@link createSession} and the optional
+ * `@timbal-ai/timbal-sdk/voice/livekit` client. The legacy WebSocket and SDP
+ * helpers remain available for compatible servers; platform browser WS/SDP
+ * requests are sunset. {@link rtc} remains the raw signaling escape hatch.
  */
 export class WorkforceVoice {
   constructor(
     public readonly apiClient: ApiClient,
     public readonly identifier: string,
   ) {}
+
+  /** Create a LiveKit session using the platform's supported browser transport. */
+  createSession(opts?: VoiceSessionCreateOptions): Promise<VoiceSessionConnection> {
+    return createVoiceSession(this.apiClient, this.identifier, opts);
+  }
 
   /**
    * Mint an ephemeral single-use ticket for opening this workforce's voice

@@ -27,19 +27,27 @@
     "./voice": {
       "types": "./dist/voice/index.d.ts",
       "import": "./dist/voice/index.js"
+    },
+    "./voice/livekit": {
+      "types": "./dist/voice/livekit/index.d.ts",
+      "import": "./dist/voice/livekit/index.js"
     }
   },
   "peerDependencies": {
-    "elysia": ">=1.0.0"
+    "elysia": ">=1.0.0",
+    "livekit-client": "^2.22.3"
   },
   "peerDependenciesMeta": {
     "elysia": {
+      "optional": true
+    },
+    "livekit-client": {
       "optional": true
     }
   },
   "scripts": {
     "build": "bun run clean && bun run build:js && bun run build:types",
-    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs && bun build src/index.ts --outdir dist --target browser --format esm && mv dist/index.js dist/index.browser.js && mkdir -p dist/elysia && bun build src/elysia/index.ts --outdir dist/elysia --target node --format esm --external elysia && mv dist/elysia/index.js dist/elysia/index.esm.js && bun build src/elysia/index.ts --outdir dist/elysia --target node --format cjs --external elysia && mv dist/elysia/index.js dist/elysia/index.cjs && mkdir -p dist/voice && bun build src/voice/index.ts --outdir dist/voice --target browser --format esm",
+    "build:js": "bun build src/index.ts --outdir dist --target node --format esm && mv dist/index.js dist/index.esm.js && bun build src/index.ts --outdir dist --target node --format cjs && mv dist/index.js dist/index.cjs && bun build src/index.ts --outdir dist --target browser --format esm && mv dist/index.js dist/index.browser.js && mkdir -p dist/elysia && bun build src/elysia/index.ts --outdir dist/elysia --target node --format esm --external elysia && mv dist/elysia/index.js dist/elysia/index.esm.js && bun build src/elysia/index.ts --outdir dist/elysia --target node --format cjs --external elysia && mv dist/elysia/index.js dist/elysia/index.cjs && mkdir -p dist/voice && bun build src/voice/index.ts --outdir dist/voice --target browser --format esm && mkdir -p dist/voice/livekit && bun build src/voice/livekit/index.ts --outdir dist/voice/livekit --target browser --format esm --external livekit-client",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "clean": "rm -rf dist",
     "test": "SKIP_INTEGRATION_TESTS=true TIMBAL_CONFIG_DIR=/tmp/timbal-test-empty bun test src/__tests__",
@@ -65,6 +73,7 @@
     "@typescript-eslint/parser": "^8.39.0",
     "elysia": "latest",
     "eslint": "^9.32.0",
+    "livekit-client": "2.22.3",
     "prettier": "^3.0.0",
     "typescript": "^5"
   },

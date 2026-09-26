@@ -1145,3 +1145,12 @@ export interface AnthropicToolSpec {
 }
 
 export type ToolSpecFormat = 'openai' | 'anthropic';
+
+export type { VoiceSessionConnection } from '../voice/connection';
+
+/** Create a platform-managed LiveKit session (deployed or studio preview). */
+export interface VoiceSessionCreateOptions extends VoiceContext {
+  config?: Record<string, unknown>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
