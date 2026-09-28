@@ -728,7 +728,7 @@ to authorize unsigned input instead of treating it as public. It only skips that
 request for a recognized fresh signed URL. For other delivery providers, resolve
 the file through its KB API; do not construct storage hosts or object keys.
 
-Content URLs returned by the platform (KB files, temp files, screenshots, …) are CloudFront-signed and **go stale** — the query string carries `Expires` (epoch seconds), `Signature`, `Key-Pair-Id`, and `Hash-Algorithm`. `timbal.content` wraps `POST /orgs/{org}/content/sign`, which resolves a previously returned URL (signed or unsigned) or a bare object key back to a known object, re-checks your access, and mints a fresh URL — no need to re-fetch the whole parent resource.
+Private content URLs using CloudFront delivery are signed and **go stale** — the query string carries `Expires` (epoch seconds), `Signature`, `Key-Pair-Id`, and `Hash-Algorithm`. `timbal.content` wraps `POST /orgs/{org}/content/sign`, which resolves a previously returned URL (signed or unsigned) or a bare object key back to a known object, re-checks your access, and mints a fresh URL — no need to re-fetch the whole parent resource.
 
 ```typescript
 // The one-liner: returns the input unchanged while fresh, re-signs when

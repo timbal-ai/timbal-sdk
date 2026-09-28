@@ -27,8 +27,7 @@ interface CachedMint {
 /**
  * Stored-content URL plane — reached via `timbal.content`.
  *
- * Content URLs returned by the platform (KB files, temp files, screenshots, …)
- * are CloudFront-signed and go stale: the query string carries `Expires`
+ * Private content URLs using CloudFront delivery expire: the query string carries `Expires`
  * (epoch seconds), `Signature`, `Key-Pair-Id`, and `Hash-Algorithm`. This
  * section wraps `POST /orgs/{org}/content/sign` — which resolves a previously
  * returned URL (or bare object key) back to a known object, re-checks access,
@@ -36,8 +35,8 @@ interface CachedMint {
  *
  * - `sign(url)` — raw endpoint call, returns the `{ signed_url, url }` pair.
  * - `refresh(url)` — always re-sign; returns the authorized URL string.
- * - `ensureFresh(url)` — re-sign **only** when expired or expiring soon;
- *   otherwise returns the input unchanged (no network call).
+ * - `ensureFresh(url)` — reuse a recognized fresh signed URL; otherwise
+ *   authorize it through the platform. Unknown expiry is never cached forever.
  * - `parse(url)` / `isExpired(url)` — local inspection, no network.
  *
  * Minted URLs are memoized per `(org, object path)` until their own expiry,
