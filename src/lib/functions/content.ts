@@ -69,15 +69,16 @@ export function isSignedContentUrlExpired(url: string, skewMs = 0): boolean {
  * URL has expired and you want a new one without re-fetching the whole parent
  * resource.
  *
- * Prefer `signed_url` from the response when present; `url` is the legacy
- * unsigned CDN URL kept for backwards compatibility.
+ * Use `signed_url` from the response. Missing signing must be handled as an
+ * error, never by falling back to another URL field.
  *
  * @throws {TimbalApiError} 400 on a malformed body, 403 when the caller has
  *   no access to the resolved object.
  *
  * @example
  * const fresh = await signContentUrl(client, staleFile.url);
- * const usable = fresh.signed_url ?? fresh.url;
+ * if (!fresh.signed_url) throw new Error("Content signing is unavailable");
+ * const usable = fresh.signed_url;
  */
 export async function signContentUrl(
   client: ApiClient,
