@@ -45,8 +45,8 @@ export function parseSignedContentUrl(url: string): SignedUrlInfo {
 /**
  * Whether a signed content URL is expired (or expires within `skewMs`).
  *
- * URLs without an `Expires` param (public/unsigned content) are never
- * considered expired.
+ * Returns false without a recognized `Expires` value. This means expiry is
+ * unknown, not that the URL is public or valid indefinitely.
  *
  * @param skewMs - Freshness margin: treat URLs expiring within this window as
  *   already expired. Defaults to 0 (exact expiry check).

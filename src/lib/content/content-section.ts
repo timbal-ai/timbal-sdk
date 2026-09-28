@@ -126,7 +126,8 @@ export class ContentSection {
 
   /**
    * Whether a content URL is expired (or expires within `skewMs`).
-   * URLs without an `Expires` param never expire. Pure — no network.
+   * Returns false when expiry is unknown; that is not evidence of public access
+   * or indefinite validity. Pure — no network.
    */
   isExpired(url: string, skewMs?: number): boolean {
     return isSignedContentUrlExpired(url, skewMs);

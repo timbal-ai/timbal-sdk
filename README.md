@@ -735,7 +735,7 @@ Private content URLs using CloudFront delivery are signed and **go stale** — t
 // expired or expiring within the next minute (no network call when fresh).
 const usable = await timbal.content.ensureFresh(stored.url);
 
-// Force a new URL regardless of freshness (best URL string back)
+// Force a fresh authorized URL regardless of freshness
 const url = await timbal.content.refresh(stored.url);
 
 // Raw endpoint: require the authorized URL; fail closed if signing is unavailable.
@@ -743,8 +743,8 @@ const pair = await timbal.content.sign(stored.url);
 if (!pair.signed_url) throw new Error("Content signing is unavailable");
 const authorizedUrl = pair.signed_url;
 
-// Bare object keys work too — the server resolves them to a real URL
-await timbal.content.sign("orgs/1/k2/{kb}/files/{id}/source.xlsx");
+// Legacy object references may be resolved by the server. Do not construct
+// storage keys; persist KB/file IDs and resolve through the owning KB instead.
 ```
 
 Inspect the signing params locally (pure, no network):
@@ -755,7 +755,8 @@ timbal.content.isExpired(stored.url, 60_000);  // treat "dies within 1 min" as e
 
 const info = timbal.content.parse(stored.url);
 // { signed: true, expiresAt: Date, signature, keyPairId, hashAlgorithm }
-// Unsigned URLs and bare keys → { signed: false, expiresAt: null, ... } (never expire)
+// Unrecognized signing → { signed: false, expiresAt: null, ... }
+// Unknown expiry does not establish public access or indefinite validity.
 ```
 
 Per-call org override and freshness margin:
