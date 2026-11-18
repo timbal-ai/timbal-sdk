@@ -1,5 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { getOAuthUrl, sendMagicLink, refreshToken } from '../lib/functions/auth';
+import {
+  getOAuthUrl,
+  sendMagicLink,
+  refreshToken,
+  RefreshTokenInvalidError,
+} from '../lib/functions/auth';
+import { RefreshTokenInvalidError as ExportedRefreshTokenInvalidError } from '../lib/functions';
 import { Timbal } from '../lib/timbal';
 
 // ── getOAuthUrl ──
@@ -201,7 +207,7 @@ describe('refreshToken', () => {
     expect(tokens.refresh_token).toBe('new-refresh-token');
   });
 
-  test('should throw on non-ok response', async () => {
+  test('401 with no OAuth body is a terminal RefreshTokenInvalidError', async () => {
     mockFetch = mock(() =>
       Promise.resolve({
         ok: false,
@@ -210,8 +216,155 @@ describe('refreshToken', () => {
     );
     global.fetch = mockFetch as unknown as typeof global.fetch;
 
-    await expect(refreshToken(mockApiClient, 'expired-token'))
-      .rejects.toThrow('Token refresh failed');
+    const err = await refreshToken(mockApiClient, 'expired-token').catch(e => e);
+    expect(err).toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err).toBeInstanceOf(ExportedRefreshTokenInvalidError);
+    expect(err.message).toBe('Token refresh failed');
+    expect(err.status).toBe(401);
+    expect(err.oauthError).toBe('invalid_grant');
+    expect(err.name).toBe('RefreshTokenInvalidError');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('400 invalid_grant surfaces the OAuth description and does not retry', async () => {
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        json: () =>
+          Promise.resolve({
+            error: 'invalid_grant',
+            error_description: 'Token signed with unknown key',
+          }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'dead-refresh-token-value').catch(e => e);
+    expect(err).toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.status).toBe(400);
+    expect(err.oauthError).toBe('invalid_grant');
+    expect(err.message).toBe('Token signed with unknown key');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('401 invalid_client is terminal and keeps the OAuth code', async () => {
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () =>
+          Promise.resolve({
+            error: 'invalid_client',
+            error_description: 'Client authentication failed',
+          }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'some-refresh-token').catch(e => e);
+    expect(err).toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.oauthError).toBe('invalid_client');
+    expect(err.status).toBe(401);
+  });
+
+  test('invalid_grant on a non-400 status is still terminal', async () => {
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 500,
+        json: () =>
+          Promise.resolve({
+            error: 'invalid_grant',
+            error_description: 'Token signed with unknown key',
+          }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'dead-refresh-token-value').catch(e => e);
+    expect(err).toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.status).toBe(500);
+    expect(err.oauthError).toBe('invalid_grant');
+  });
+
+  test('5xx without an OAuth rejection stays a generic transient error', async () => {
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ error: 'temporarily_unavailable' }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'still-valid-token').catch(e => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.message).toBe('Token refresh failed');
+  });
+
+  test('429 is transient', async () => {
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 429,
+        json: () => Promise.resolve({ error: 'slow_down' }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'still-valid-token').catch(e => e);
+    expect(err).not.toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.message).toBe('Token refresh failed');
+  });
+
+  test('non-JSON 400 is still terminal', async () => {
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        json: () => Promise.reject(new Error('not json')),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'dead-refresh-token-value').catch(e => e);
+    expect(err).toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.message).toBe('Token refresh failed');
+    expect(err.oauthError).toBe('invalid_grant');
+  });
+
+  test('network failures propagate and are not RefreshTokenInvalidError', async () => {
+    const network = new TypeError('network down');
+    mockFetch = mock(() => Promise.reject(network));
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, 'dead-refresh-token-value').catch(e => e);
+    expect(err).toBe(network);
+    expect(err).not.toBeInstanceOf(RefreshTokenInvalidError);
+  });
+
+  test('does not echo the refresh token in the error', async () => {
+    const secret = 'eyJhbGciOiJSUzI1NiIsImtpZCI6Im9sZCJ9.payload.signature';
+    mockFetch = mock(() =>
+      Promise.resolve({
+        ok: false,
+        status: 400,
+        json: () =>
+          Promise.resolve({
+            error: 'invalid_grant',
+            error_description: `rejected ${secret}`,
+          }),
+      })
+    );
+    global.fetch = mockFetch as unknown as typeof global.fetch;
+
+    const err = await refreshToken(mockApiClient, secret).catch(e => e);
+    expect(err).toBeInstanceOf(RefreshTokenInvalidError);
+    expect(err.message).toBe('Token refresh failed');
+    expect(err.message).not.toContain(secret);
+    expect(String(err.oauthError)).not.toContain(secret);
   });
 });
 

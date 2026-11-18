@@ -182,6 +182,19 @@ export class Timbal {
     return sendMagicLinkFn(this.apiClient, email, redirectUri);
   }
 
+  /**
+   * Exchange a refresh token for a new access token.
+   *
+   * A rejected refresh token throws `RefreshTokenInvalidError` (HTTP 400/401
+   * or OAuth `invalid_grant` / `invalid_client`). That is terminal: drop the
+   * stored refresh token and send the user through login again. Do not retry,
+   * and do not mint a browser session from `TIMBAL_PROJECT_SECRET` or
+   * `TIMBAL_API_KEY`. Those credentials are sent only as client authentication
+   * on the token request.
+   *
+   * Transient failures (HTTP 5xx, 429, network) are a generic `Error` or the
+   * fetch rejection. They are not `RefreshTokenInvalidError`.
+   */
   async refreshToken(refreshToken: string): Promise<TokenPair> {
     return refreshTokenFn(this.apiClient, refreshToken);
   }

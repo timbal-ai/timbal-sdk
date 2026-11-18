@@ -10,6 +10,15 @@ import {
 import { renderLoginPage } from '../auth/templates/login';
 import { renderCallbackPage } from '../auth/templates/callback';
 import { setAuthCookie, clearAuthCookie } from './middleware';
+import { RefreshTokenInvalidError } from '../lib/functions/auth';
+import { getRejectedRefresh, rememberRejectedRefresh } from './refresh-denylist';
+
+function oauthTokenError(error: string, description: string): Response {
+  return new Response(
+    JSON.stringify({ error, error_description: description }),
+    { status: 400, headers: { 'Content-Type': 'application/json' } },
+  );
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createAuthRoutes(
@@ -189,6 +198,14 @@ export function createAuthRoutes(
     .post(
       '/refresh',
       async ({ body, cookie }) => {
+        // Already rejected in this process. Do not call the monolith again,
+        // and do not fall back to the project service credential.
+        const rejected = getRejectedRefresh(body.refresh_token);
+        if (rejected) {
+          clearAuthCookie(cookie);
+          return oauthTokenError(rejected.error, rejected.description);
+        }
+
         try {
           const tokens = await timbal.refreshToken(body.refresh_token);
           setAuthCookie(cookie, tokens.access_token);
@@ -197,8 +214,15 @@ export function createAuthRoutes(
             access_token: tokens.access_token,
             refresh_token: tokens.refresh_token || body.refresh_token,
           };
-        } catch {
+        } catch (err) {
           clearAuthCookie(cookie);
+          if (err instanceof RefreshTokenInvalidError) {
+            const stored = rememberRejectedRefresh(body.refresh_token, {
+              error: err.oauthError || 'invalid_grant',
+              description: err.message || 'Token refresh failed',
+            });
+            return oauthTokenError(stored.error, stored.description);
+          }
           return new Response(JSON.stringify({ error: 'Refresh failed' }), {
             status: 401,
             headers: { 'Content-Type': 'application/json' },

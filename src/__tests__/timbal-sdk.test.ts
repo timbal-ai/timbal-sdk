@@ -1,5 +1,16 @@
 import { test, expect, describe, beforeEach, mock, afterEach } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { Timbal } from '../lib/timbal';
+import { SDK_VERSION } from '../constants';
+
+describe('SDK_VERSION', () => {
+  test('matches package.json', () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { version: string };
+    expect(SDK_VERSION).toBe(pkg.version);
+  });
+});
 
 describe('Timbal', () => {
   let timbal: Timbal;
