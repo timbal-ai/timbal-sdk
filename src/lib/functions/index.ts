@@ -7,7 +7,12 @@ export {
 } from './file';
 export { getSession } from './session';
 export { getProject } from './project';
-export { getOAuthUrl, sendMagicLink, refreshToken } from './auth';
+export {
+  getOAuthUrl,
+  sendMagicLink,
+  refreshToken,
+  RefreshTokenInvalidError,
+} from './auth';
 export {
   listWorkforces,
   getWorkforceItem,

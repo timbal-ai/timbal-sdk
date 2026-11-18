@@ -10,6 +10,8 @@ import { resolveAuthConfig, resolveAuthMode } from '../auth/config';
 import { getPrefix } from '../auth/helpers';
 
 const COOKIE_NAME = 'timbal_project_access_token';
+/** Not set by this SDK (refresh tokens live in localStorage). Cleared anyway if a host set it. */
+const REFRESH_COOKIE_NAME = 'timbal_project_refresh_token';
 
 export function setAuthCookie(
   cookie: Record<string, any>,
@@ -25,8 +27,8 @@ export function setAuthCookie(
   });
 }
 
-export function clearAuthCookie(cookie: Record<string, any>) {
-  cookie[COOKIE_NAME]?.set({
+function expireCookie(cookie: Record<string, any>, name: string) {
+  cookie[name]?.set({
     value: '',
     httpOnly: true,
     secure: true,
@@ -34,6 +36,11 @@ export function clearAuthCookie(cookie: Record<string, any>) {
     path: '/',
     maxAge: 0,
   });
+}
+
+export function clearAuthCookie(cookie: Record<string, any>) {
+  expireCookie(cookie, COOKIE_NAME);
+  expireCookie(cookie, REFRESH_COOKIE_NAME);
 }
 
 /**
