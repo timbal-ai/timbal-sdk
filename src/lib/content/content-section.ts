@@ -20,24 +20,23 @@ const MAX_CACHE_ENTRIES = 1_000;
 /** One memoized mint: the fresh URL and when it stops being servable. */
 interface CachedMint {
   url: string;
-  /** Epoch ms from the minted URL's own `Expires`; `null` = never expires (unsigned). */
-  expiresAtMs: number | null;
+  /** Epoch ms from the minted URL's recognized expiry. */
+  expiresAtMs: number;
 }
 
 /**
  * Stored-content URL plane — reached via `timbal.content`.
  *
- * Content URLs returned by the platform (KB files, temp files, screenshots, …)
- * are CloudFront-signed and go stale: the query string carries `Expires`
+ * Private content URLs using CloudFront delivery expire: the query string carries `Expires`
  * (epoch seconds), `Signature`, `Key-Pair-Id`, and `Hash-Algorithm`. This
  * section wraps `POST /orgs/{org}/content/sign` — which resolves a previously
  * returned URL (or bare object key) back to a known object, re-checks access,
  * and mints a fresh URL — plus pure helpers to inspect the signing params.
  *
  * - `sign(url)` — raw endpoint call, returns the `{ signed_url, url }` pair.
- * - `refresh(url)` — always re-sign; returns the best usable URL string.
- * - `ensureFresh(url)` — re-sign **only** when expired or expiring soon;
- *   otherwise returns the input unchanged (no network call).
+ * - `refresh(url)` — always re-sign; returns the authorized URL string.
+ * - `ensureFresh(url)` — reuse a recognized fresh signed URL; otherwise
+ *   authorize it through the platform. Unknown expiry is never cached forever.
  * - `parse(url)` / `isExpired(url)` — local inspection, no network.
  *
  * Minted URLs are memoized per `(org, object path)` until their own expiry,
@@ -56,8 +55,7 @@ export class ContentSection {
    * (`POST /orgs/{org}/content/sign`).
    *
    * Accepts a content URL previously returned by the API (signed or
-   * unsigned) or a bare object key. Prefer `signed_url` from the response
-   * when present; `url` is the legacy unsigned CDN URL.
+   * unsigned) or a bare object key. Use `signed_url`; an absent value is a signing failure, not a public fallback.
    *
    * @throws {TimbalApiError} 400 on a malformed body, 403 when the caller
    *   has no access to the resolved object.
@@ -67,8 +65,8 @@ export class ContentSection {
   }
 
   /**
-   * Unconditionally re-sign and return the best usable URL string
-   * (`signed_url` when present, legacy `url` otherwise).
+   * Unconditionally re-sign and return the authorized URL string
+   * from `signed_url`. Rejects missing signing instead of downgrading access.
    *
    * Always hits the network (never *reads* the cache), but the minted URL is
    * memoized for subsequent {@link ensureFresh} calls. Use `ensureFresh`
@@ -76,18 +74,21 @@ export class ContentSection {
    */
   async refresh(url: string, opts?: SignContentOptions): Promise<string> {
     const fresh = await this.sign(url, opts);
-    const best = fresh.signed_url ?? fresh.url;
+    const best = fresh.signed_url;
+    if (typeof best !== 'string' || !best.trim()) {
+      throw new Error('Content signing is unavailable; no authorized URL was returned');
+    }
     this.remember(this.cacheKey(url, opts), best);
     return best;
   }
 
   /**
-   * Return a usable URL, re-signing only when needed.
+   * Return an authorized platform content URL, re-signing when needed.
    *
    * - Signed URL still fresh (expires later than `skewMs` from now) — returned
    *   unchanged, **no network call**.
    * - Signed URL expired or expiring within `skewMs` (default 1 min) — re-signed.
-   * - Unsigned absolute URL (no `Expires`) — public content, returned unchanged.
+   * - URL without recognized signing/expiry — ask the platform to authorize it.
    * - Bare object key (not an absolute URL) — always signed into a real URL.
    *
    * Before re-signing, a memoized mint for the same `(org, object path)` is
@@ -103,19 +104,13 @@ export class ContentSection {
   async ensureFresh(url: string, opts?: EnsureFreshUrlOptions): Promise<string> {
     const skewMs = opts?.skewMs ?? DEFAULT_FRESHNESS_SKEW_MS;
 
-    let isAbsoluteUrl = true;
-    try {
-      new URL(url);
-    } catch {
-      isAbsoluteUrl = false; // bare object key — must be signed to be fetchable
-    }
-
-    if (isAbsoluteUrl && !isSignedContentUrlExpired(url, skewMs)) {
+    const info = parseSignedContentUrl(url);
+    if (info.signed && info.expiresAt && Number.isFinite(info.expiresAt.getTime()) && !isSignedContentUrlExpired(url, skewMs)) {
       return url;
     }
 
     const cached = this.mintCache.get(this.cacheKey(url, opts));
-    if (cached && (cached.expiresAtMs === null || cached.expiresAtMs - skewMs > Date.now())) {
+    if (cached && cached.expiresAtMs - skewMs > Date.now()) {
       return cached.url;
     }
     return this.refresh(url, opts);
@@ -131,7 +126,8 @@ export class ContentSection {
 
   /**
    * Whether a content URL is expired (or expires within `skewMs`).
-   * URLs without an `Expires` param never expire. Pure — no network.
+   * Returns false when expiry is unknown; that is not evidence of public access
+   * or indefinite validity. Pure — no network.
    */
   isExpired(url: string, skewMs?: number): boolean {
     return isSignedContentUrlExpired(url, skewMs);
@@ -161,15 +157,16 @@ export class ContentSection {
     return `${org}:${objectPath}`;
   }
 
-  /** Memoize a minted URL until its own `Expires` (forever when unsigned). */
+  /** Memoize only URLs with a recognized expiry; never assume indefinite freshness. */
   private remember(key: string, mintedUrl: string): void {
+    const { expiresAt } = parseSignedContentUrl(mintedUrl);
+    if (!expiresAt || !Number.isFinite(expiresAt.getTime())) return;
     // Re-inserting moves the key to the back, so eviction stays oldest-first.
     this.mintCache.delete(key);
     if (this.mintCache.size >= MAX_CACHE_ENTRIES) {
       const oldest = this.mintCache.keys().next().value;
       if (oldest !== undefined) this.mintCache.delete(oldest);
     }
-    const { expiresAt } = parseSignedContentUrl(mintedUrl);
-    this.mintCache.set(key, { url: mintedUrl, expiresAtMs: expiresAt?.getTime() ?? null });
+    this.mintCache.set(key, { url: mintedUrl, expiresAtMs: expiresAt.getTime() });
   }
 }

@@ -152,10 +152,10 @@ export interface EnsureFreshUrlOptions extends SignContentOptions {
 export interface SignedContent {
   /**
    * CloudFront signed URL for private content. Omitted/`null` when the object
-   * is public or signing is unavailable — fall back to `url`.
+   * cannot be signed. Treat its absence as a signing failure.
    */
   signed_url?: string | null;
-  /** Legacy unsigned CDN URL. Prefer `signed_url` when present. */
+  /** @deprecated Compatibility metadata only. Use `signed_url` for delivery. */
   url: string;
 }
 

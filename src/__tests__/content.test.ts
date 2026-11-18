@@ -206,15 +206,41 @@ describe('Timbal.content', () => {
     expect(url).toBe(freshSigned);
   });
 
-  test('refresh() should fall back to legacy url when signed_url is absent', async () => {
+  test('refresh() rejects missing signing instead of returning the legacy URL', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: () => Promise.resolve({ signed_url: null, url: OBJECT_URL }),
     });
 
-    const url = await makeTimbal().content.refresh(signedUrl(oneHourAgo()));
-    expect(url).toBe(OBJECT_URL);
+    await expect(makeTimbal().content.refresh(signedUrl(oneHourAgo()))).rejects.toThrow('Content signing is unavailable');
+  });
+
+  test('failed signing is not cached and can recover on the next call', async () => {
+    const timbal = makeTimbal();
+    for (const value of [null, undefined, '', '   ']) {
+      mockFetch.mockResolvedValueOnce({ok: true, status: 200,
+        json: () => Promise.resolve({signed_url: value, url: OBJECT_URL})});
+      await expect(timbal.content.ensureFresh(OBJECT_URL)).rejects.toThrow('Content signing is unavailable');
+    }
+    expect(await timbal.content.ensureFresh(OBJECT_URL)).toBe(freshSigned);
+    expect(mockFetch).toHaveBeenCalledTimes(5);
+  });
+
+  test('unknown or invalid expiry must be authorized and never cached forever', async () => {
+    const timbal = makeTimbal();
+    for (const expires of ['nonsense', '1e30']) {
+      timbal.content.clearCache();
+      const input = signedUrl(inOneHour()).replace(/Expires=[^&]+/, `Expires=${expires}`);
+      expect(await timbal.content.ensureFresh(input)).toBe(freshSigned);
+    }
+    timbal.content.clearCache();
+    const unknownExpiry = 'https://store.test/file?X-Amz-Signature=server-authorized';
+    mockFetch.mockImplementation(() => Promise.resolve({ok: true, status: 200,
+      json: () => Promise.resolve({signed_url: unknownExpiry, url: OBJECT_URL})}));
+    expect(await timbal.content.ensureFresh(OBJECT_URL)).toBe(unknownExpiry);
+    expect(await timbal.content.ensureFresh(OBJECT_URL)).toBe(unknownExpiry);
+    expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
   test('ensureFresh() should return a still-fresh URL unchanged without a network call', async () => {
@@ -248,11 +274,11 @@ describe('Timbal.content', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  test('ensureFresh() should leave unsigned public URLs untouched', async () => {
+  test('ensureFresh() authorizes unsigned content URLs instead of assuming public access', async () => {
     const url = await makeTimbal().content.ensureFresh(OBJECT_URL);
 
-    expect(url).toBe(OBJECT_URL);
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(url).toBe(freshSigned);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   test('ensureFresh() should always sign bare object keys', async () => {
