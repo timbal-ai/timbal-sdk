@@ -523,7 +523,11 @@ export interface Project {
   default_role: string | null;
   is_public_template: boolean;
   template_uses: number;
-  publishable_api_key: string;
+  /**
+   * No longer returned by the platform API. Kept optional so older platform
+   * responses that still include it remain type-compatible.
+   */
+  publishable_api_key?: string;
   /** Whether end users must authenticate to access this project. */
   auth_enabled: boolean;
   /**

@@ -155,7 +155,7 @@ describe.skipIf(SKIP)('Integration Tests — project auth modes', () => {
       expect(pub.auth.required).toBe(project.auth_enabled);
       // Whitelist-built — these must never appear.
       expect(json).not.toContain('publishable_api_key');
-      expect(json).not.toContain(project.publishable_api_key);
+      if (project.publishable_api_key) expect(json).not.toContain(project.publishable_api_key);
       if (project.repository_url) {
         expect(json).not.toContain(project.repository_url);
       }
@@ -193,7 +193,7 @@ describe.skipIf(SKIP)('Integration Tests — project auth modes', () => {
 
         const text = JSON.stringify(body);
         expect(text).not.toContain('publishable_api_key');
-        expect(text).not.toContain(project.publishable_api_key);
+        if (project.publishable_api_key) expect(text).not.toContain(project.publishable_api_key);
       } finally {
         if (saved.org !== undefined) process.env.TIMBAL_ORG_ID = saved.org;
         else delete process.env.TIMBAL_ORG_ID;
