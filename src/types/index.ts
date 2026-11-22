@@ -577,7 +577,10 @@ export interface ProjectChannelSpec {
   /**
    * Provider-specific secrets (runtime payload only; `null` when not
    * configured). Telegram: `{ token, secret_token? }`. Slack:
-   * `{ bot_token, signing_secret }`. Hold in memory only; never log.
+   * `{ bot_token, signing_secret }`. WhatsApp: `{ access_token,
+   * phone_number_id, app_secret, verify_token }`, or only `{ access_token }`
+   * when `config.mode` is `'platform'` (Embedded Signup; the number is in
+   * `config.phone_number_id`). Hold in memory only; never log.
    */
   credentials?: Record<string, string> | null;
 }

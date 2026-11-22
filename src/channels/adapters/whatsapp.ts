@@ -11,21 +11,79 @@ export interface WhatsAppAdapterOptions {
   accessToken: string;
   /** Business phone number ID used in `POST /{phone-number-id}/messages`. */
   phoneNumberId: string;
-  /** App secret — HMAC key for `X-Hub-Signature-256` on inbound webhooks. */
-  appSecret: string;
-  /** Shared string Meta echoes in the hub challenge (`hub.verify_token`). */
-  verifyToken: string;
+  /**
+   * App secret — HMAC key for `X-Hub-Signature-256` on inbound webhooks.
+   * Required unless {@link platformSecret} is set.
+   */
+  appSecret?: string;
+  /**
+   * Shared string Meta echoes in the hub challenge (`hub.verify_token`).
+   * Required unless {@link platformSecret} is set.
+   */
+  verifyToken?: string;
+  /**
+   * Platform-routed mode, for numbers connected to Timbal through WhatsApp
+   * Embedded Signup. The Timbal platform receives Meta's webhooks for the
+   * number, verifies Meta's signature, and forwards each delivery to this
+   * app signed with a key derived from this secret (the project's
+   * `TIMBAL_PROJECT_SECRET`). The adapter then checks that signature instead
+   * of Meta's, and needs no {@link appSecret} or {@link verifyToken}.
+   * See {@link verifyPlatformForward} for the exact scheme.
+   */
+  platformSecret?: string;
   /**
    * When set, inbound messages whose `metadata.phone_number_id` does not
    * match are dropped. Useful when one Meta app callback fans out to several
-   * bindings. **Unset by default** — a wrong {@link phoneNumberId} should
-   * fail loudly on send, not silently drop inbound webhooks.
+   * bindings. Unset by default when constructing the adapter by hand; the
+   * platform and env bindings set it to {@link phoneNumberId}.
    */
   expectedPhoneNumberId?: string;
   /** Graph API origin. @default https://graph.facebook.com */
   apiBase?: string;
   /** Graph API version path segment. @default v21.0 */
   apiVersion?: string;
+  /** Clock in milliseconds, for the forward's timestamp window. @default Date.now */
+  now?: () => number;
+}
+
+/** Header carrying the unix time (seconds) at which the platform signed a forward. */
+export const PLATFORM_TIMESTAMP_HEADER = 'x-timbal-channel-timestamp';
+/** Header carrying `sha256=<hex>` over `"<timestamp>.<raw body>"`. */
+export const PLATFORM_SIGNATURE_HEADER = 'x-timbal-channel-signature';
+/** Forwards older or newer than this are rejected. */
+export const PLATFORM_MAX_SKEW_SECONDS = 300;
+const PLATFORM_KEY_LABEL = 'whatsapp-forward-v1';
+
+/**
+ * Check a platform-forwarded WhatsApp delivery.
+ *
+ * - key = HMAC-SHA256(key: `platformSecret`, message: `"whatsapp-forward-v1"`)
+ * - signature = `sha256=` + hex(HMAC-SHA256(key, `"<timestamp>.<raw body>"`))
+ *
+ * The timestamp is inside the MAC, so it cannot be replaced; deliveries
+ * outside {@link PLATFORM_MAX_SKEW_SECONDS} are rejected, and the pipeline's
+ * message-id dedupe drops replays inside the window.
+ */
+export function verifyPlatformForward(
+  platformSecret: string,
+  rawBody: string,
+  timestampHeader: string | null,
+  signatureHeader: string | null,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!timestampHeader || !/^\d{1,12}$/.test(timestampHeader.trim())) return false;
+  if (!signatureHeader?.startsWith('sha256=')) return false;
+  const timestamp = Number(timestampHeader.trim());
+  if (Math.abs(nowMs / 1000 - timestamp) > PLATFORM_MAX_SKEW_SECONDS) return false;
+
+  const key = createHmac('sha256', platformSecret).update(PLATFORM_KEY_LABEL).digest();
+  const expected = `sha256=${createHmac('sha256', key)
+    .update(`${timestamp}.`)
+    .update(rawBody)
+    .digest('hex')}`;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signatureHeader.trim());
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /** Subset of the WhatsApp Cloud API webhook envelope. */
@@ -78,6 +136,10 @@ function signatureValid(rawBody: string, signatureHeader: string | null, appSecr
  *   off for this channel.
  * - Webhook URL is configured in Meta (or via Embedded Signup / override);
  *   there is no Telegram-style `setWebhook`, so no `registerWebhook`.
+ * - With `platformSecret` (numbers connected through Embedded Signup), Meta
+ *   talks to the Timbal platform, not to this app: `verify` accepts only
+ *   POSTs signed by the platform ({@link verifyPlatformForward}) and refuses
+ *   hub challenges.
  *
  * ```ts
  * timbalChannels({
@@ -94,11 +156,14 @@ function signatureValid(rawBody: string, signatureHeader: string | null, appSecr
  * ```
  */
 export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
-  const { accessToken, phoneNumberId, appSecret, verifyToken } = options;
+  const { accessToken, phoneNumberId, appSecret, verifyToken, platformSecret } = options;
   if (!accessToken) throw new Error('whatsapp adapter requires an accessToken');
   if (!phoneNumberId) throw new Error('whatsapp adapter requires a phoneNumberId');
-  if (!appSecret) throw new Error('whatsapp adapter requires an appSecret');
-  if (!verifyToken) throw new Error('whatsapp adapter requires a verifyToken');
+  if (!platformSecret) {
+    if (!appSecret) throw new Error('whatsapp adapter requires an appSecret');
+    if (!verifyToken) throw new Error('whatsapp adapter requires a verifyToken');
+  }
+  const now = options.now ?? Date.now;
 
   const expectedPhoneNumberId = options.expectedPhoneNumberId;
   const apiBase = options.apiBase ?? 'https://graph.facebook.com';
@@ -135,11 +200,25 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
     provider: 'whatsapp',
 
     verify(req: WebhookRequest): Response | 'ok' {
+      const method = (req.method ?? '').toUpperCase();
+
+      // Platform-routed: Meta never calls this app, the platform does.
+      if (platformSecret) {
+        if (method === 'GET') return new Response('Method Not Allowed', { status: 405 });
+        const valid = verifyPlatformForward(
+          platformSecret,
+          req.rawBody,
+          req.headers.get(PLATFORM_TIMESTAMP_HEADER),
+          req.headers.get(PLATFORM_SIGNATURE_HEADER),
+          now(),
+        );
+        return valid ? 'ok' : new Response('Invalid signature', { status: 401 });
+      }
+
       const url = new URL(req.url);
       const mode = url.searchParams.get('hub.mode');
       const token = url.searchParams.get('hub.verify_token');
       const challenge = url.searchParams.get('hub.challenge');
-      const method = (req.method ?? '').toUpperCase();
 
       // Hub challenge is GET-only. Meta sometimes leaves `hub.*` on the saved
       // callback URL — a POST with those query params must still verify the
@@ -155,7 +234,10 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
       }
 
       // Inbound webhook (POST) — require a valid signature.
-      if (!signatureValid(req.rawBody, req.headers.get('x-hub-signature-256'), appSecret)) {
+      if (
+        !appSecret ||
+        !signatureValid(req.rawBody, req.headers.get('x-hub-signature-256'), appSecret)
+      ) {
         return new Response('Invalid signature', { status: 401 });
       }
       return 'ok';

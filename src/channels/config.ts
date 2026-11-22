@@ -80,12 +80,35 @@ function buildAdapter(
       return slack({ botToken, signingSecret });
     }
     case 'whatsapp': {
+      const config = spec.config ?? {};
+      // Connected through Embedded Signup: the platform receives Meta's
+      // webhooks and forwards them signed with the project secret. Only the
+      // platform-held token is used; no env fallback.
+      if (config.mode === 'platform') {
+        const accessToken = creds.access_token;
+        const phoneNumberId =
+          typeof config.phone_number_id === 'string' ? config.phone_number_id : undefined;
+        const platformSecret = env.TIMBAL_PROJECT_SECRET;
+        if (!accessToken || !phoneNumberId || !platformSecret) return null;
+        return whatsapp({
+          accessToken,
+          phoneNumberId,
+          platformSecret,
+          expectedPhoneNumberId: phoneNumberId,
+        });
+      }
       const accessToken = creds.access_token || env.WHATSAPP_ACCESS_TOKEN;
       const phoneNumberId = creds.phone_number_id || env.WHATSAPP_PHONE_NUMBER_ID;
       const appSecret = creds.app_secret || env.WHATSAPP_APP_SECRET;
       const verifyToken = creds.verify_token || env.WHATSAPP_VERIFY_TOKEN;
       if (!accessToken || !phoneNumberId || !appSecret || !verifyToken) return null;
-      return whatsapp({ accessToken, phoneNumberId, appSecret, verifyToken });
+      return whatsapp({
+        accessToken,
+        phoneNumberId,
+        appSecret,
+        verifyToken,
+        expectedPhoneNumberId: phoneNumberId,
+      });
     }
     case 'teams': {
       const appId = creds.app_id || env.TEAMS_APP_ID;

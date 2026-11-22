@@ -87,6 +87,7 @@ export function channelBindingsFromEnv(
         phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID,
         appSecret: env.WHATSAPP_APP_SECRET,
         verifyToken: env.WHATSAPP_VERIFY_TOKEN,
+        expectedPhoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID,
       }),
       workforce: requireWorkforce('whatsapp'),
     });
