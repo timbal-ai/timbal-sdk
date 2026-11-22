@@ -2,7 +2,13 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { createHmac } from 'node:crypto';
 import { telegram, deriveTelegramSecretToken } from '../channels/adapters/telegram';
 import { slack } from '../channels/adapters/slack';
-import { whatsapp } from '../channels/adapters/whatsapp';
+import {
+  PLATFORM_MAX_SKEW_SECONDS,
+  PLATFORM_SIGNATURE_HEADER,
+  PLATFORM_TIMESTAMP_HEADER,
+  verifyPlatformForward,
+  whatsapp,
+} from '../channels/adapters/whatsapp';
 import type { WebhookRequest } from '../channels/types';
 
 function req(body: unknown, headers: Record<string, string> = {}): WebhookRequest {
@@ -868,5 +874,131 @@ describe('whatsapp adapter', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+// Cross-implementation vector: the platform signs forwards with the same
+// scheme, and its tests pin the same values.
+const PLATFORM_SECRET = 'tps_example_project_secret';
+const PLATFORM_BODY = '{"object":"whatsapp_business_account"}';
+const PLATFORM_TS = 1763800000;
+const PLATFORM_SIG = 'sha256=b90515c29fae0bcbbfb277b93445744bbd5817f4e22424a843279d844c1bea62';
+
+function platformSigned(
+  body: unknown,
+  secret = PLATFORM_SECRET,
+  timestamp = PLATFORM_TS,
+): WebhookRequest {
+  const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
+  const key = createHmac('sha256', secret).update('whatsapp-forward-v1').digest();
+  const signature = `sha256=${createHmac('sha256', key)
+    .update(`${timestamp}.${rawBody}`)
+    .digest('hex')}`;
+  return {
+    rawBody,
+    headers: new Headers({
+      [PLATFORM_TIMESTAMP_HEADER]: String(timestamp),
+      [PLATFORM_SIGNATURE_HEADER]: signature,
+    }),
+    url: 'https://app.example.com/channels/joi/whatsapp',
+    method: 'POST',
+  };
+}
+
+describe('verifyPlatformForward', () => {
+  const check = (o: {
+    secret?: string;
+    body?: string;
+    ts?: string | null;
+    sig?: string | null;
+    nowSec?: number;
+  }) =>
+    verifyPlatformForward(
+      o.secret ?? PLATFORM_SECRET,
+      o.body ?? PLATFORM_BODY,
+      o.ts === undefined ? String(PLATFORM_TS) : o.ts,
+      o.sig === undefined ? PLATFORM_SIG : o.sig,
+      (o.nowSec ?? PLATFORM_TS) * 1000,
+    );
+
+  test('matches the shared vector', () => {
+    expect(check({})).toBe(true);
+  });
+
+  test('rejects a wrong secret, body, timestamp or signature', () => {
+    expect(check({ secret: 'other' })).toBe(false);
+    expect(check({ body: '{}' })).toBe(false);
+    expect(check({ ts: String(PLATFORM_TS + 1) })).toBe(false);
+    expect(check({ sig: 'sha256=00' })).toBe(false);
+    expect(check({ ts: null })).toBe(false);
+    expect(check({ sig: null })).toBe(false);
+    expect(check({ ts: '1.5e9' })).toBe(false);
+  });
+
+  test('enforces the timestamp window', () => {
+    expect(check({ nowSec: PLATFORM_TS + PLATFORM_MAX_SKEW_SECONDS })).toBe(true);
+    expect(check({ nowSec: PLATFORM_TS + PLATFORM_MAX_SKEW_SECONDS + 1 })).toBe(false);
+    expect(check({ nowSec: PLATFORM_TS - PLATFORM_MAX_SKEW_SECONDS - 1 })).toBe(false);
+  });
+});
+
+describe('whatsapp adapter (platform-routed)', () => {
+  const adapter = whatsapp({
+    accessToken: 'tok',
+    phoneNumberId: WA_PHONE_ID,
+    platformSecret: PLATFORM_SECRET,
+    expectedPhoneNumberId: WA_PHONE_ID,
+    now: () => PLATFORM_TS * 1000,
+  });
+
+  test('needs no app secret or verify token, but manual mode still does', () => {
+    expect(() =>
+      whatsapp({ accessToken: 'tok', phoneNumberId: WA_PHONE_ID, platformSecret: 's' }),
+    ).not.toThrow();
+    expect(() =>
+      whatsapp({ accessToken: 'tok', phoneNumberId: WA_PHONE_ID, verifyToken: WA_VERIFY_TOKEN }),
+    ).toThrow('appSecret');
+    expect(() =>
+      whatsapp({ accessToken: 'tok', phoneNumberId: WA_PHONE_ID, appSecret: WA_APP_SECRET }),
+    ).toThrow('verifyToken');
+  });
+
+  test('accepts a platform-signed forward', () => {
+    expect(adapter.verify(platformSigned(waTextEnvelope()))).toBe('ok');
+  });
+
+  test("rejects Meta's own signature, a forged forward and a stale one", () => {
+    const metaSigned = adapter.verify(signedWhatsAppReq(waTextEnvelope()));
+    expect(metaSigned).toBeInstanceOf(Response);
+    expect((metaSigned as Response).status).toBe(401);
+
+    const forged = adapter.verify(platformSigned(waTextEnvelope(), 'another-project-secret'));
+    expect((forged as Response).status).toBe(401);
+
+    const staleTs = PLATFORM_TS - PLATFORM_MAX_SKEW_SECONDS - 1;
+    const stale = adapter.verify(platformSigned(waTextEnvelope(), PLATFORM_SECRET, staleTs));
+    expect((stale as Response).status).toBe(401);
+  });
+
+  test('refuses hub challenges', () => {
+    const verdict = adapter.verify({
+      rawBody: '',
+      headers: new Headers(),
+      url:
+        'https://app.example.com/channels/joi/whatsapp' +
+        '?hub.mode=subscribe&hub.verify_token=x&hub.challenge=1',
+      method: 'GET',
+    });
+    expect((verdict as Response).status).toBe(405);
+  });
+
+  test('parses forwarded messages and drops other numbers', () => {
+    const events = adapter.parse(platformSigned(waTextEnvelope({ body: 'hola' })));
+    expect(events).toHaveLength(1);
+    expect(events[0]!.text).toBe('hola');
+    expect(events[0]!.dedupeKey).toBe('whatsapp:wamid.TEST');
+    expect(adapter.parse(platformSigned(waTextEnvelope({ phoneNumberId: 'other' })))).toHaveLength(
+      0,
+    );
   });
 });
