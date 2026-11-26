@@ -235,8 +235,9 @@ export async function resolveChannelBindings(
  * ```
  *
  * The default workforce input is `{ prompt: event.text }`. Events carrying
- * attachments (Telegram photos/documents) are re-uploaded to Timbal temp
- * storage and sent as prompt content parts
+ * attachments (Telegram photos/documents, WhatsApp images/documents) are
+ * re-uploaded to Timbal temp storage and sent as prompt content parts; audio
+ * (WhatsApp voice notes) is transcribed and sent as text
  * (`{ prompt: [{type:'text',...}, {type:'file', file: url}] }`) — the same
  * shape the platform chat UI produces. Use `binding.buildInput` to thread
  * conversation/user context into components with richer input schemas (e.g.
@@ -273,6 +274,12 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * projects that authenticates as the project service principal
    * (`TIMBAL_PROJECT_SECRET`) — then send prompt content parts, the same
    * shape the platform chat UI uses.
+   *
+   * Audio attachments (WhatsApp voice notes) are transcribed with the
+   * platform's transcription service and sent as text instead of a file:
+   * agents accept few audio formats (voice notes are Ogg/Opus) and most chat
+   * models take no audio at all. When a transcript is all there is (with
+   * the caption, if any), the plain `{ prompt: text }` shape is used.
    */
   async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
     const attachments = event.attachments ?? [];
@@ -281,9 +288,17 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     const parts: Array<Record<string, unknown>> = [];
     if (event.text) parts.push({ type: 'text', text: event.text });
     const failures: unknown[] = [];
+    let transcribed = false;
     for (const attachment of attachments) {
       try {
         const { data, contentType, fileName } = await attachment.download();
+        if (attachment.kind === 'audio') {
+          const { text } = await timbal.transcribeAudio(data, fileName, contentType);
+          if (!text.trim()) throw new Error(`No speech recognized in ${fileName}`);
+          parts.push({ type: 'text', text: text.trim() });
+          transcribed = true;
+          continue;
+        }
         const tmp = await timbal.uploadTempFileFromBuffer(data, fileName, contentType);
         parts.push({ type: 'file', file: tmp.url });
       } catch (err) {
@@ -304,6 +319,10 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
       } catch {
         /* observer must not take down the pipeline */
       }
+    }
+    // A voice note alone (or with a caption) reads like a typed message.
+    if (transcribed && parts.every((p) => p.type === 'text')) {
+      return { prompt: parts.map((p) => p.text as string).join('\n\n') };
     }
     return { prompt: parts };
   }

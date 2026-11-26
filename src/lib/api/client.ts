@@ -374,10 +374,15 @@ export class ApiClient {
     });
   }
 
-  public async postFormData<T>(endpoint: string, formData: FormData): Promise<ApiResponse<T>> {
+  public async postFormData<T>(
+    endpoint: string,
+    formData: FormData,
+    headers?: Record<string, string>
+  ): Promise<ApiResponse<T>> {
     return this.makeRequest<T>(endpoint, {
       method: 'POST',
       body: formData,
+      ...(headers ? { headers } : {}),
     });
   }
 

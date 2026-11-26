@@ -22,6 +22,8 @@ import {
   query as queryFn,
   uploadTempFile as uploadTempFileFn,
   uploadTempFileFromBuffer as uploadTempFileFromBufferFn,
+  transcribeAudio as transcribeAudioFn,
+  type Transcription,
   uploadFile as uploadFileFn,
   uploadFileFromBuffer as uploadFileFromBufferFn,
   getSession as getSessionFn,
@@ -237,6 +239,18 @@ export class Timbal {
     contentType?: string,
   ): Promise<TempFile> {
     return uploadTempFileFromBufferFn(this.apiClient, data, filename, contentType);
+  }
+
+  /**
+   * Transcribe an audio file (speech to text) with the platform's
+   * transcription service. Billed to the org, attributed to the project.
+   */
+  async transcribeAudio(
+    data: ArrayBuffer | Uint8Array,
+    filename: string,
+    contentType: string,
+  ): Promise<Transcription> {
+    return transcribeAudioFn(this.apiClient, data, filename, contentType);
   }
 
   /**

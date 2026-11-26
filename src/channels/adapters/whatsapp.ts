@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ChannelAdapter,
+  ChannelAttachment,
+  ChannelAttachmentData,
   ChannelDelivery,
   ChannelEvent,
   WebhookRequest,
@@ -109,11 +111,49 @@ interface WhatsAppWebhook {
           timestamp?: string;
           type?: string;
           text?: { body?: string };
+          image?: WhatsAppMedia;
+          document?: WhatsAppMedia;
+          audio?: WhatsAppMedia;
         }>;
         statuses?: unknown[];
       };
     }>;
   }>;
+}
+
+/** The media object of an image, document or audio message. */
+interface WhatsAppMedia {
+  /** Media id, exchanged for a short-lived download URL (`GET /{id}`). */
+  id?: string;
+  mime_type?: string;
+  caption?: string;
+  /** Documents only. */
+  filename?: string;
+  /** Audio only: true for a voice note recorded in WhatsApp. */
+  voice?: boolean;
+}
+
+/** Message types turned into attachments. Video, stickers, locations,
+ * contacts and interactive replies are not handled yet and are skipped. */
+const MEDIA_TYPES = ['image', 'document', 'audio'] as const;
+type MediaType = (typeof MEDIA_TYPES)[number];
+
+const EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'audio/ogg': 'ogg',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/aac': 'aac',
+  'audio/amr': 'amr',
+  'application/pdf': 'pdf',
+};
+
+/** `audio/ogg; codecs=opus` → `audio/ogg`. */
+function baseMimeType(mime: string | undefined): string | undefined {
+  const base = mime?.split(';')[0]?.trim().toLowerCase();
+  return base || undefined;
 }
 
 function signatureValid(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
@@ -130,8 +170,11 @@ function signatureValid(rawBody: string, signatureHeader: string | null, appSecr
  * - `verify` answers Meta's hub challenge on GET (`hub.mode=subscribe` +
  *   `hub.verify_token` → plain-text `hub.challenge`) and checks
  *   `X-Hub-Signature-256` on POST.
- * - `parse` accepts `messages` field changes; status callbacks and non-text
- *   messages return `[]` for now.
+ * - `parse` accepts `messages` field changes: text, and image / document /
+ *   audio messages as attachments (caption as text). Attachments download
+ *   through the Graph API with the access token; the pipeline uploads files
+ *   and transcribes audio (voice notes). Status callbacks, video, stickers,
+ *   locations, contacts and interactive replies return `[]` for now.
  * - Delivery is send-only (no progressive edit API) — keep plugin streaming
  *   off for this channel.
  * - Webhook URL is configured in Meta (or via Embedded Signup / override);
@@ -169,6 +212,62 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
   const apiBase = options.apiBase ?? 'https://graph.facebook.com';
   const apiVersion = options.apiVersion ?? 'v21.0';
   const messagesUrl = `${apiBase}/${apiVersion}/${phoneNumberId}/messages`;
+
+  /**
+   * Media id → bytes: `GET /{media-id}` returns a short-lived URL (minutes),
+   * which needs the same bearer token. Neither the URL nor the token leave
+   * the adapter; callers get bytes only.
+   */
+  async function downloadMedia(
+    mediaId: string,
+  ): Promise<{ data: Uint8Array; contentType: string | null }> {
+    const auth = { Authorization: `Bearer ${accessToken}` };
+    const lookup = await fetch(`${apiBase}/${apiVersion}/${encodeURIComponent(mediaId)}`, {
+      headers: auth,
+    });
+    const meta = (await lookup.json().catch(() => null)) as
+      | { url?: string; mime_type?: string }
+      | null;
+    if (!lookup.ok || !meta?.url) {
+      throw new Error(`WhatsApp media lookup failed (${lookup.status})`);
+    }
+    const res = await fetch(meta.url, { headers: auth });
+    if (!res.ok) {
+      throw new Error(`WhatsApp media download failed (${res.status})`);
+    }
+    const served = res.headers.get('content-type') ?? undefined;
+    return {
+      data: new Uint8Array(await res.arrayBuffer()),
+      contentType: baseMimeType(meta.mime_type) ?? baseMimeType(served) ?? null,
+    };
+  }
+
+  function mediaAttachment(
+    type: MediaType,
+    media: WhatsAppMedia & { id: string },
+  ): ChannelAttachment {
+    const mediaId = media.id;
+    const declared = baseMimeType(media.mime_type);
+    const ext = declared ? EXTENSIONS[declared] : undefined;
+    const fileName =
+      (type === 'document' && media.filename) ||
+      `${type === 'audio' && media.voice ? 'voice' : type}_${mediaId}${ext ? `.${ext}` : ''}`;
+    const kind: ChannelAttachment['kind'] =
+      type === 'document' && declared?.startsWith('image/') ? 'image' : type;
+    return {
+      kind,
+      fileName,
+      contentType: declared,
+      async download(): Promise<ChannelAttachmentData> {
+        const { data, contentType } = await downloadMedia(mediaId);
+        return {
+          data,
+          contentType: declared ?? contentType ?? 'application/octet-stream',
+          fileName,
+        };
+      },
+    };
+  }
 
   async function sendText(to: string, body: string): Promise<unknown> {
     const res = await fetch(messagesUrl, {
@@ -271,15 +370,32 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
           const contactName = value.contacts?.[0]?.profile?.name;
 
           for (const message of value.messages) {
-            // Text-only for v1. Status webhooks have no `messages`.
-            if (message.type !== 'text' || !message.from || !message.text?.body) continue;
+            // Status webhooks have no `messages`.
+            if (!message.from) continue;
+
+            // Text, or an image / document / audio with its caption. The
+            // pipeline downloads attachments (and transcribes audio).
+            let text = '';
+            const attachments: ChannelAttachment[] = [];
+            if (message.type === 'text') {
+              text = message.text?.body ?? '';
+            } else if ((MEDIA_TYPES as readonly string[]).includes(message.type ?? '')) {
+              const type = message.type as MediaType;
+              const media = message[type];
+              if (media?.id) {
+                text = media.caption ?? '';
+                attachments.push(mediaAttachment(type, { ...media, id: media.id }));
+              }
+            }
+            if (!text && attachments.length === 0) continue;
 
             events.push({
               provider: 'whatsapp',
               conversationId: message.from,
               externalUserId: message.from,
               userDisplayName: contactName,
-              text: message.text.body,
+              text,
+              ...(attachments.length > 0 ? { attachments } : {}),
               dedupeKey: message.id ? `whatsapp:${message.id}` : undefined,
               raw: { entry, change, message },
             });
