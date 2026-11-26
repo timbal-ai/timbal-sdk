@@ -364,10 +364,15 @@ describe('timbalChannels plugin', () => {
           const body = JSON.parse(req.rawBody) as {
             id?: string;
             text?: string;
-            files?: { name: string; type: string; fail?: boolean }[];
+            files?: {
+              name: string;
+              type: string;
+              fail?: boolean;
+              kind?: 'image' | 'document' | 'audio';
+            }[];
           };
           const attachments = (body.files ?? []).map((f) => ({
-            kind: 'document' as const,
+            kind: f.kind ?? ('document' as const),
             fileName: f.name,
             contentType: f.type,
             async download() {
@@ -393,19 +398,97 @@ describe('timbalChannels plugin', () => {
       return { ...base, adapter };
     }
 
-    /** makeTimbal + a recording uploadTempFileFromBuffer. */
-    function makeUploadingTimbal() {
+    /** makeTimbal + a recording uploadTempFileFromBuffer and transcribeAudio. */
+    function makeUploadingTimbal(transcript = 'the spoken words') {
       const { timbal, invocations } = makeTimbal(() => [
         { type: 'delta', delta: 'seen it' },
       ]);
       const uploads: { filename: string; contentType?: string; bytes: number }[] = [];
+      const transcriptions: { filename: string; contentType: string }[] = [];
       (timbal as unknown as Record<string, unknown>).uploadTempFileFromBuffer =
         async (data: Uint8Array, filename: string, contentType?: string) => {
           uploads.push({ filename, contentType, bytes: data.byteLength });
           return { url: `https://cdn.test/tmp/${filename}` };
         };
-      return { timbal, invocations, uploads };
+      (timbal as unknown as Record<string, unknown>).transcribeAudio = async (
+        _data: Uint8Array,
+        filename: string,
+        contentType: string,
+      ) => {
+        transcriptions.push({ filename, contentType });
+        return { text: transcript };
+      };
+      return { timbal, invocations, uploads, transcriptions };
     }
+
+    test('a voice note is transcribed and sent as a plain text prompt', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads, transcriptions } = makeUploadingTimbal(
+        '  can you call me back?  ',
+      );
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'voice_1.ogg', type: 'audio/ogg', kind: 'audio' }],
+      });
+      await settle();
+
+      expect(transcriptions).toEqual([{ filename: 'voice_1.ogg', contentType: 'audio/ogg' }]);
+      expect(uploads).toEqual([]);
+      expect(invocations[0]!.input).toEqual({ prompt: 'can you call me back?' });
+    });
+
+    test('a transcript next to a file goes as content parts', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal('look at this');
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [
+          { name: 'voice_1.ogg', type: 'audio/ogg', kind: 'audio' },
+          { name: 'pic.jpg', type: 'image/jpeg', kind: 'image' },
+        ],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual(['pic.jpg']);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: 'look at this' },
+          { type: 'file', file: 'https://cdn.test/tmp/pic.jpg' },
+        ],
+      });
+    });
+
+    test('a voice note with no recognizable speech hits the error path', async () => {
+      const { adapter, sent } = makeMediaAdapter();
+      const { timbal, invocations } = makeUploadingTimbal('   ');
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          errorMessage: 'could not understand the audio',
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'voice_1.ogg', type: 'audio/ogg', kind: 'audio' }],
+      });
+      await settle();
+
+      expect(invocations).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(sent).toEqual(['could not understand the audio']);
+    });
 
     test('uploads attachments and sends prompt content parts', async () => {
       const { adapter } = makeMediaAdapter();

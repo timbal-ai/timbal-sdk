@@ -1,10 +1,74 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { SDK_VERSION } from '../../constants';
 import type {
   ChannelAdapter,
+  ChannelAttachment,
+  ChannelAttachmentData,
   ChannelDelivery,
   ChannelEvent,
   WebhookRequest,
 } from '../types';
+
+/** Sent on media downloads: some Meta media hosts refuse requests without one. */
+const MEDIA_USER_AGENT = `timbal-sdk/${SDK_VERSION}`;
+
+/** Whether `data` starts like an HTML document (an error page, not media). */
+function looksLikeHtml(data: Uint8Array): boolean {
+  const head = new TextDecoder()
+    .decode(data.subarray(0, 512))
+    .replace(/^\uFEFF/, '')
+    .trimStart()
+    .toLowerCase();
+  return head.startsWith('<!doctype html') || head.startsWith('<html');
+}
+
+/**
+ * Declared types a user-sent *document* can have while really being HTML
+ * (or unknown): an HTML body is accepted for these. Images, audio, PDFs and
+ * other binary types never legitimately arrive as HTML.
+ */
+function htmlPlausible(mime: string | undefined): boolean {
+  return (
+    !mime ||
+    mime.startsWith('text/') ||
+    mime === 'application/xhtml+xml' ||
+    mime === 'application/xml' ||
+    mime === 'application/octet-stream'
+  );
+}
+
+/** Reads `res` into memory, refusing bodies over `maxBytes`. */
+async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
+  const tooLarge = () =>
+    new Error(`WhatsApp media is larger than the ${maxBytes}-byte limit (maxMediaBytes)`);
+  const declaredLength = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return data;
+}
 
 export interface WhatsAppAdapterOptions {
   /** Graph API access token (system user or customer-scoped business token). */
@@ -42,6 +106,17 @@ export interface WhatsAppAdapterOptions {
   apiBase?: string;
   /** Graph API version path segment. @default v21.0 */
   apiVersion?: string;
+  /**
+   * Time allowed for one media download (lookup + file), in milliseconds.
+   * @default 60000
+   */
+  mediaTimeoutMs?: number;
+  /**
+   * Largest media file downloaded, in bytes; larger ones fail that
+   * attachment. Meta allows documents up to 100 MB, all held in memory and
+   * re-uploaded. @default 52428800 (50 MB)
+   */
+  maxMediaBytes?: number;
   /** Clock in milliseconds, for the forward's timestamp window. @default Date.now */
   now?: () => number;
 }
@@ -109,11 +184,49 @@ interface WhatsAppWebhook {
           timestamp?: string;
           type?: string;
           text?: { body?: string };
+          image?: WhatsAppMedia;
+          document?: WhatsAppMedia;
+          audio?: WhatsAppMedia;
         }>;
         statuses?: unknown[];
       };
     }>;
   }>;
+}
+
+/** The media object of an image, document or audio message. */
+interface WhatsAppMedia {
+  /** Media id, exchanged for a short-lived download URL (`GET /{id}`). */
+  id?: string;
+  mime_type?: string;
+  caption?: string;
+  /** Documents only. */
+  filename?: string;
+  /** Audio only: true for a voice note recorded in WhatsApp. */
+  voice?: boolean;
+}
+
+/** Message types turned into attachments. Video, stickers, locations,
+ * contacts and interactive replies are not handled yet and are skipped. */
+const MEDIA_TYPES = ['image', 'document', 'audio'] as const;
+type MediaType = (typeof MEDIA_TYPES)[number];
+
+const EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'audio/ogg': 'ogg',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'audio/aac': 'aac',
+  'audio/amr': 'amr',
+  'application/pdf': 'pdf',
+};
+
+/** `audio/ogg; codecs=opus` → `audio/ogg`. */
+function baseMimeType(mime: string | undefined): string | undefined {
+  const base = mime?.split(';')[0]?.trim().toLowerCase();
+  return base || undefined;
 }
 
 function signatureValid(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
@@ -130,8 +243,11 @@ function signatureValid(rawBody: string, signatureHeader: string | null, appSecr
  * - `verify` answers Meta's hub challenge on GET (`hub.mode=subscribe` +
  *   `hub.verify_token` → plain-text `hub.challenge`) and checks
  *   `X-Hub-Signature-256` on POST.
- * - `parse` accepts `messages` field changes; status callbacks and non-text
- *   messages return `[]` for now.
+ * - `parse` accepts `messages` field changes: text, and image / document /
+ *   audio messages as attachments (caption as text). Attachments download
+ *   through the Graph API with the access token; the pipeline uploads files
+ *   and transcribes audio (voice notes). Status callbacks, video, stickers,
+ *   locations, contacts and interactive replies return `[]` for now.
  * - Delivery is send-only (no progressive edit API) — keep plugin streaming
  *   off for this channel.
  * - Webhook URL is configured in Meta (or via Embedded Signup / override);
@@ -169,6 +285,99 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
   const apiBase = options.apiBase ?? 'https://graph.facebook.com';
   const apiVersion = options.apiVersion ?? 'v21.0';
   const messagesUrl = `${apiBase}/${apiVersion}/${phoneNumberId}/messages`;
+  const mediaTimeoutMs = options.mediaTimeoutMs ?? 60_000;
+  const maxMediaBytes = options.maxMediaBytes ?? 50 * 1024 * 1024;
+
+  /**
+   * Media id → bytes: `GET /{media-id}` returns a short-lived URL (minutes),
+   * which needs the same bearer token. Neither the URL nor the token leave
+   * the adapter; callers get bytes only.
+   *
+   * A media host can answer an error *page* with a 200; unless the user
+   * sent a document that may really be HTML (`isDocument` and a text-like
+   * or unknown type), an HTML response is refused here so it never reaches
+   * the agent as an "image" or a "voice note".
+   *
+   * Both requests share one {@link mediaTimeoutMs} deadline, and the body is
+   * capped at {@link maxMediaBytes}.
+   */
+  async function downloadMedia(
+    mediaId: string,
+    declared: string | undefined,
+    isDocument: boolean,
+  ): Promise<{ data: Uint8Array; contentType: string | null }> {
+    const headers = { Authorization: `Bearer ${accessToken}`, 'User-Agent': MEDIA_USER_AGENT };
+    const signal = AbortSignal.timeout(mediaTimeoutMs);
+    try {
+      const lookup = await fetch(`${apiBase}/${apiVersion}/${encodeURIComponent(mediaId)}`, {
+        headers,
+        signal,
+      });
+      const meta = (await lookup.json().catch(() => null)) as
+        | { url?: string; mime_type?: string }
+        | null;
+      if (!lookup.ok || !meta?.url) {
+        throw new Error(`WhatsApp media lookup failed (${lookup.status})`);
+      }
+      const res = await fetch(meta.url, { headers, signal });
+      if (!res.ok) {
+        throw new Error(`WhatsApp media download failed (${res.status})`);
+      }
+      const served = baseMimeType(res.headers.get('content-type') ?? undefined);
+      const data = await readCapped(res, maxMediaBytes);
+      const expected = declared ?? baseMimeType(meta.mime_type);
+      const htmlAllowed = isDocument && htmlPlausible(expected);
+      if (!htmlAllowed && (served === 'text/html' || looksLikeHtml(data))) {
+        throw new Error('WhatsApp media download returned a web page instead of the file');
+      }
+      return {
+        data,
+        contentType: baseMimeType(meta.mime_type) ?? served ?? null,
+      };
+    } catch (err) {
+      if (signal.aborted) {
+        throw new Error(`WhatsApp media download timed out after ${mediaTimeoutMs}ms`);
+      }
+      throw err;
+    }
+  }
+
+  function mediaAttachment(
+    type: MediaType,
+    media: WhatsAppMedia & { id: string },
+  ): ChannelAttachment {
+    const mediaId = media.id;
+    const declared = baseMimeType(media.mime_type);
+    const ext = declared ? EXTENSIONS[declared] : undefined;
+    const fileName =
+      (type === 'document' && media.filename) ||
+      `${type === 'audio' && media.voice ? 'voice' : type}_${mediaId}${ext ? `.${ext}` : ''}`;
+    // A photo or a recording sent "as a document" is still an image / audio
+    // to the pipeline (audio is transcribed); it keeps the user's file name.
+    const kind: ChannelAttachment['kind'] =
+      type === 'document' && declared?.startsWith('image/')
+        ? 'image'
+        : type === 'document' && declared?.startsWith('audio/')
+          ? 'audio'
+          : type;
+    return {
+      kind,
+      fileName,
+      contentType: declared,
+      async download(): Promise<ChannelAttachmentData> {
+        const { data, contentType } = await downloadMedia(
+          mediaId,
+          declared,
+          type === 'document',
+        );
+        return {
+          data,
+          contentType: declared ?? contentType ?? 'application/octet-stream',
+          fileName,
+        };
+      },
+    };
+  }
 
   async function sendText(to: string, body: string): Promise<unknown> {
     const res = await fetch(messagesUrl, {
@@ -271,15 +480,32 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
           const contactName = value.contacts?.[0]?.profile?.name;
 
           for (const message of value.messages) {
-            // Text-only for v1. Status webhooks have no `messages`.
-            if (message.type !== 'text' || !message.from || !message.text?.body) continue;
+            // Status webhooks have no `messages`.
+            if (!message.from) continue;
+
+            // Text, or an image / document / audio with its caption. The
+            // pipeline downloads attachments (and transcribes audio).
+            let text = '';
+            const attachments: ChannelAttachment[] = [];
+            if (message.type === 'text') {
+              text = message.text?.body ?? '';
+            } else if ((MEDIA_TYPES as readonly string[]).includes(message.type ?? '')) {
+              const type = message.type as MediaType;
+              const media = message[type];
+              if (media?.id) {
+                text = media.caption ?? '';
+                attachments.push(mediaAttachment(type, { ...media, id: media.id }));
+              }
+            }
+            if (!text && attachments.length === 0) continue;
 
             events.push({
               provider: 'whatsapp',
               conversationId: message.from,
               externalUserId: message.from,
               userDisplayName: contactName,
-              text: message.text.body,
+              text,
+              ...(attachments.length > 0 ? { attachments } : {}),
               dedupeKey: message.id ? `whatsapp:${message.id}` : undefined,
               raw: { entry, change, message },
             });

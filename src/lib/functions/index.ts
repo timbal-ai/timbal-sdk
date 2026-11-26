@@ -7,6 +7,7 @@ export {
 } from './file';
 export { getSession } from './session';
 export { getProject } from './project';
+export { transcribeAudio, type Transcription } from './transcription';
 export {
   getOAuthUrl,
   sendMagicLink,
