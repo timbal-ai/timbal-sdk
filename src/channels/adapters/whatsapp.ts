@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { SDK_VERSION } from '../../constants';
 import type {
   ChannelAdapter,
   ChannelAttachment,
@@ -7,6 +8,19 @@ import type {
   ChannelEvent,
   WebhookRequest,
 } from '../types';
+
+/** Sent on media downloads: some Meta media hosts refuse requests without one. */
+const MEDIA_USER_AGENT = `timbal-sdk/${SDK_VERSION}`;
+
+/** Whether `data` starts like an HTML document (an error page, not media). */
+function looksLikeHtml(data: Uint8Array): boolean {
+  const head = new TextDecoder()
+    .decode(data.subarray(0, 512))
+    .replace(/^\uFEFF/, '')
+    .trimStart()
+    .toLowerCase();
+  return head.startsWith('<!doctype html') || head.startsWith('<html');
+}
 
 export interface WhatsAppAdapterOptions {
   /** Graph API access token (system user or customer-scoped business token). */
@@ -217,13 +231,18 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
    * Media id → bytes: `GET /{media-id}` returns a short-lived URL (minutes),
    * which needs the same bearer token. Neither the URL nor the token leave
    * the adapter; callers get bytes only.
+   *
+   * A media host can answer an error *page* with a 200; unless the user
+   * really sent an HTML document (`declared`), an HTML response is refused
+   * here so it never reaches the agent as an "image" or a "voice note".
    */
   async function downloadMedia(
     mediaId: string,
+    declared: string | undefined,
   ): Promise<{ data: Uint8Array; contentType: string | null }> {
-    const auth = { Authorization: `Bearer ${accessToken}` };
+    const headers = { Authorization: `Bearer ${accessToken}`, 'User-Agent': MEDIA_USER_AGENT };
     const lookup = await fetch(`${apiBase}/${apiVersion}/${encodeURIComponent(mediaId)}`, {
-      headers: auth,
+      headers,
     });
     const meta = (await lookup.json().catch(() => null)) as
       | { url?: string; mime_type?: string }
@@ -231,14 +250,19 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
     if (!lookup.ok || !meta?.url) {
       throw new Error(`WhatsApp media lookup failed (${lookup.status})`);
     }
-    const res = await fetch(meta.url, { headers: auth });
+    const res = await fetch(meta.url, { headers });
     if (!res.ok) {
       throw new Error(`WhatsApp media download failed (${res.status})`);
     }
-    const served = res.headers.get('content-type') ?? undefined;
+    const served = baseMimeType(res.headers.get('content-type') ?? undefined);
+    const data = new Uint8Array(await res.arrayBuffer());
+    const expected = declared ?? baseMimeType(meta.mime_type);
+    if (expected !== 'text/html' && (served === 'text/html' || looksLikeHtml(data))) {
+      throw new Error('WhatsApp media download returned a web page instead of the file');
+    }
     return {
-      data: new Uint8Array(await res.arrayBuffer()),
-      contentType: baseMimeType(meta.mime_type) ?? baseMimeType(served) ?? null,
+      data,
+      contentType: baseMimeType(meta.mime_type) ?? served ?? null,
     };
   }
 
@@ -259,7 +283,7 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
       fileName,
       contentType: declared,
       async download(): Promise<ChannelAttachmentData> {
-        const { data, contentType } = await downloadMedia(mediaId);
+        const { data, contentType } = await downloadMedia(mediaId, declared);
         return {
           data,
           contentType: declared ?? contentType ?? 'application/octet-stream',

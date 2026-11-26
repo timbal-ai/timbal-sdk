@@ -10,6 +10,7 @@ import {
   whatsapp,
 } from '../channels/adapters/whatsapp';
 import type { WebhookRequest } from '../channels/types';
+import { SDK_VERSION } from '../constants';
 
 function req(body: unknown, headers: Record<string, string> = {}): WebhookRequest {
   return {
@@ -977,11 +978,12 @@ describe('whatsapp adapter media', () => {
   });
 
   test('download looks the media up, then fetches it, both with the token', async () => {
-    const calls: Array<{ url: string; auth: string | null }> = [];
+    const calls: Array<{ url: string; auth: string | null; ua: string | null }> = [];
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      calls.push({ url, auth: new Headers(init?.headers).get('authorization') });
+      const headers = new Headers(init?.headers);
+      calls.push({ url, auth: headers.get('authorization'), ua: headers.get('user-agent') });
       if (url.endsWith('/MEDIA2')) {
         return new Response(
           JSON.stringify({ url: 'https://media.example.com/blob?x=1', mime_type: 'audio/ogg' }),
@@ -1004,12 +1006,65 @@ describe('whatsapp adapter media', () => {
       expect(Array.from(file.data)).toEqual([1, 2, 3]);
       expect(file.contentType).toBe('audio/ogg');
       expect(file.fileName).toBe('voice_MEDIA2.ogg');
+      const ua = `timbal-sdk/${SDK_VERSION}`;
       expect(calls).toEqual([
-        { url: 'https://graph.facebook.com/v21.0/MEDIA2', auth: 'Bearer tok' },
-        { url: 'https://media.example.com/blob?x=1', auth: 'Bearer tok' },
+        { url: 'https://graph.facebook.com/v21.0/MEDIA2', auth: 'Bearer tok', ua },
+        { url: 'https://media.example.com/blob?x=1', auth: 'Bearer tok', ua },
       ]);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  /** Lookup answers a URL; the download answers `body` with `contentType`. */
+  function mockMediaHost(body: string, contentType?: string) {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes('graph.facebook.com')) {
+        return new Response(JSON.stringify({ url: 'https://media.example.com/blob' }), {
+          status: 200,
+        });
+      }
+      return new Response(body, {
+        status: 200,
+        headers: contentType ? { 'Content-Type': contentType } : {},
+      });
+    }) as typeof fetch;
+    return () => {
+      globalThis.fetch = originalFetch;
+    };
+  }
+
+  function imageAttachment(type = 'image', mime = 'image/jpeg', filename?: string) {
+    const media = { id: 'MEDIA9', mime_type: mime, ...(filename ? { filename } : {}) };
+    const [event] = adapter.parse(signedWhatsAppReq(waMediaEnvelope({ type, [type]: media })));
+    return event!.attachments![0]!;
+  }
+
+  test('an error page served with a 200 is refused, not passed on as the file', async () => {
+    for (const [body, contentType] of [
+      ['<html><body>Sorry, something went wrong</body></html>', 'text/html; charset=utf-8'],
+      ['\n  <!DOCTYPE html><html><head></head></html>', undefined],
+    ] as const) {
+      const restore = mockMediaHost(body, contentType);
+      try {
+        await expect(imageAttachment().download()).rejects.toThrow(
+          'WhatsApp media download returned a web page instead of the file',
+        );
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  test('an HTML document the user really sent still downloads', async () => {
+    const restore = mockMediaHost('<html><body>menu</body></html>', 'text/html');
+    try {
+      const file = await imageAttachment('document', 'text/html', 'menu.html').download();
+      expect(file.fileName).toBe('menu.html');
+      expect(file.contentType).toBe('text/html');
+    } finally {
+      restore();
     }
   });
 
