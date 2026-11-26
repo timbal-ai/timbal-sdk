@@ -1,19 +1,30 @@
 import { test, expect, describe } from 'bun:test';
-import { transcribeAudio } from '../lib/functions/transcription';
+import { transcribeAudio, TRANSCRIPTION_TIMEOUT_MS } from '../lib/functions/transcription';
 import type { ApiClient } from '../lib/api';
 
-type Captured = { path?: string; form?: FormData; headers?: Record<string, string> };
+type Captured = {
+  path?: string;
+  form?: FormData;
+  headers?: Record<string, string>;
+  overrides?: { timeout?: number; retryAttempts?: number };
+};
 
 function client(
-  config: { orgId?: string; projectId?: string },
+  config: { orgId?: string; projectId?: string; timeout?: number },
   data: unknown,
   captured: Captured,
 ): ApiClient {
   return {
-    postFormData: async (path: string, form: FormData, headers?: Record<string, string>) => {
+    postFormData: async (
+      path: string,
+      form: FormData,
+      headers?: Record<string, string>,
+      overrides?: Captured['overrides'],
+    ) => {
       captured.path = path;
       captured.form = form;
       captured.headers = headers;
+      captured.overrides = overrides;
       return { data, success: true, statusCode: 200 };
     },
     getConfig: () => config,
@@ -49,6 +60,25 @@ describe('transcribeAudio', () => {
     );
     expect(result).toEqual({ text: '' });
     expect(captured.headers).toEqual({});
+  });
+
+  test('is sent once, with a timeout long enough for long audio', async () => {
+    const captured: Captured = {};
+    await transcribeAudio(
+      client({ orgId: '7', timeout: 30_000 }, { text: 'x' }, captured),
+      new Uint8Array([1]),
+      'a.ogg',
+      'audio/ogg',
+    );
+    expect(captured.overrides).toEqual({ timeout: TRANSCRIPTION_TIMEOUT_MS, retryAttempts: 0 });
+
+    await transcribeAudio(
+      client({ orgId: '7', timeout: 600_000 }, { text: 'x' }, captured),
+      new Uint8Array([1]),
+      'a.ogg',
+      'audio/ogg',
+    );
+    expect(captured.overrides).toEqual({ timeout: 600_000, retryAttempts: 0 });
   });
 
   test('needs an org', async () => {

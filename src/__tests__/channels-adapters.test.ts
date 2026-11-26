@@ -1087,6 +1087,94 @@ describe('whatsapp adapter media', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test('a recording sent as a document is audio (transcribed) and keeps its name', () => {
+    const attachment = imageAttachment('document', 'audio/ogg', 'meeting.ogg');
+    expect(attachment).toMatchObject({ kind: 'audio', fileName: 'meeting.ogg' });
+  });
+
+  test('an XHTML document the user sent still downloads; a PDF that is HTML does not', async () => {
+    const restore = mockMediaHost('<!DOCTYPE html><html></html>', 'text/html');
+    try {
+      const file = await imageAttachment('document', 'application/xhtml+xml', 'page.xhtml').download();
+      expect(file.fileName).toBe('page.xhtml');
+      await expect(
+        imageAttachment('document', 'application/pdf', 'invoice.pdf').download(),
+      ).rejects.toThrow('WhatsApp media download returned a web page instead of the file');
+    } finally {
+      restore();
+    }
+  });
+
+  test('a stalled media download times out', async () => {
+    const slow = whatsapp({
+      accessToken: 'tok',
+      phoneNumberId: WA_PHONE_ID,
+      appSecret: WA_APP_SECRET,
+      verifyToken: WA_VERIFY_TOKEN,
+      mediaTimeoutMs: 20,
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+      })) as typeof fetch;
+    try {
+      const [event] = slow.parse(
+        signedWhatsAppReq(
+          waMediaEnvelope({ type: 'image', image: { id: 'MEDIA1', mime_type: 'image/jpeg' } }),
+        ),
+      );
+      await expect(event!.attachments![0]!.download()).rejects.toThrow(
+        'WhatsApp media download timed out after 20ms',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('media over maxMediaBytes is refused, with or without a Content-Length', async () => {
+    const capped = whatsapp({
+      accessToken: 'tok',
+      phoneNumberId: WA_PHONE_ID,
+      appSecret: WA_APP_SECRET,
+      verifyToken: WA_VERIFY_TOKEN,
+      maxMediaBytes: 4,
+    });
+    const attachment = () =>
+      capped.parse(
+        signedWhatsAppReq(
+          waMediaEnvelope({ type: 'image', image: { id: 'MEDIA1', mime_type: 'image/jpeg' } }),
+        ),
+      )[0]!.attachments![0]!;
+
+    for (const withLength of [true, false]) {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        if (String(input).includes('graph.facebook.com')) {
+          return new Response(JSON.stringify({ url: 'https://media.example.com/blob' }));
+        }
+        const bytes = new Uint8Array([1, 2, 3, 4, 5, 6]);
+        const body = withLength
+          ? bytes
+          : new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(bytes.subarray(0, 3));
+                controller.enqueue(bytes.subarray(3));
+                controller.close();
+              },
+            });
+        return new Response(body, {
+          headers: withLength ? { 'Content-Length': '6' } : {},
+        });
+      }) as typeof fetch;
+      try {
+        await expect(attachment().download()).rejects.toThrow('larger than the 4-byte limit');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    }
+  });
 });
 
 // Cross-implementation vector: the platform signs forwards with the same

@@ -136,6 +136,14 @@ export class TimbalApiError extends Error {
   }
 }
 
+/** Per-request replacements for the client's timeout / retry settings. */
+export interface RequestOverrides {
+  /** Milliseconds before the request is aborted. */
+  timeout?: number;
+  /** Retries on timeout, network error or 5xx. `0` sends the request once. */
+  retryAttempts?: number;
+}
+
 export class ApiClient {
   private config: Required<TimbalConfig>;
 
@@ -234,13 +242,16 @@ export class ApiClient {
   private async makeRequest<T>(
     endpoint: string,
     options: RequestInit = {},
-    retryCount = 0
+    retryCount = 0,
+    overrides: RequestOverrides = {}
   ): Promise<ApiResponse<T>> {
     const { url, init } = this.prepareRequest(endpoint, options);
+    const timeout = overrides.timeout ?? this.config.timeout;
+    const retryAttempts = overrides.retryAttempts ?? this.config.retryAttempts;
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.config.timeout);
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       if (process.env.TIMBAL_DEBUG) {
         console.debug(
@@ -286,18 +297,18 @@ export class ApiClient {
     } catch (error) {
       // Handle timeout
       if (error instanceof Error && error.name === 'AbortError') {
-        if (retryCount < this.config.retryAttempts) {
+        if (retryCount < retryAttempts) {
           await sleep(this.config.retryDelay * (retryCount + 1));
-          return this.makeRequest<T>(endpoint, options, retryCount + 1);
+          return this.makeRequest<T>(endpoint, options, retryCount + 1, overrides);
         }
         throw new TimbalApiError('Request timeout', 0, ERROR_CODES.TIMEOUT_ERROR);
       }
 
       // Handle network errors
       if (error instanceof TypeError) {
-        if (retryCount < this.config.retryAttempts) {
+        if (retryCount < retryAttempts) {
           await sleep(this.config.retryDelay * (retryCount + 1));
-          return this.makeRequest<T>(endpoint, options, retryCount + 1);
+          return this.makeRequest<T>(endpoint, options, retryCount + 1, overrides);
         }
         throw new TimbalApiError(`Network error: ${error.message}`, 0, ERROR_CODES.NETWORK_ERROR);
       }
@@ -305,9 +316,9 @@ export class ApiClient {
       // Handle API errors
       if (error instanceof TimbalApiError) {
         // Retry on server errors (5xx)
-        if (error.statusCode >= 500 && retryCount < this.config.retryAttempts) {
+        if (error.statusCode >= 500 && retryCount < retryAttempts) {
           await sleep(this.config.retryDelay * (retryCount + 1));
-          return this.makeRequest<T>(endpoint, options, retryCount + 1);
+          return this.makeRequest<T>(endpoint, options, retryCount + 1, overrides);
         }
         throw error;
       }
@@ -374,16 +385,26 @@ export class ApiClient {
     });
   }
 
+  /**
+   * `overrides` replaces the client's `timeout` / `retryAttempts` for this
+   * one request — e.g. a slow, billed call that must not be re-sent.
+   */
   public async postFormData<T>(
     endpoint: string,
     formData: FormData,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
+    overrides?: RequestOverrides
   ): Promise<ApiResponse<T>> {
-    return this.makeRequest<T>(endpoint, {
-      method: 'POST',
-      body: formData,
-      ...(headers ? { headers } : {}),
-    });
+    return this.makeRequest<T>(
+      endpoint,
+      {
+        method: 'POST',
+        body: formData,
+        ...(headers ? { headers } : {}),
+      },
+      0,
+      overrides
+    );
   }
 
   public async postFile<T>(

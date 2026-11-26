@@ -22,6 +22,54 @@ function looksLikeHtml(data: Uint8Array): boolean {
   return head.startsWith('<!doctype html') || head.startsWith('<html');
 }
 
+/**
+ * Declared types a user-sent *document* can have while really being HTML
+ * (or unknown): an HTML body is accepted for these. Images, audio, PDFs and
+ * other binary types never legitimately arrive as HTML.
+ */
+function htmlPlausible(mime: string | undefined): boolean {
+  return (
+    !mime ||
+    mime.startsWith('text/') ||
+    mime === 'application/xhtml+xml' ||
+    mime === 'application/xml' ||
+    mime === 'application/octet-stream'
+  );
+}
+
+/** Reads `res` into memory, refusing bodies over `maxBytes`. */
+async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
+  const tooLarge = () =>
+    new Error(`WhatsApp media is larger than the ${maxBytes}-byte limit (maxMediaBytes)`);
+  const declaredLength = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return data;
+}
+
 export interface WhatsAppAdapterOptions {
   /** Graph API access token (system user or customer-scoped business token). */
   accessToken: string;
@@ -58,6 +106,17 @@ export interface WhatsAppAdapterOptions {
   apiBase?: string;
   /** Graph API version path segment. @default v21.0 */
   apiVersion?: string;
+  /**
+   * Time allowed for one media download (lookup + file), in milliseconds.
+   * @default 60000
+   */
+  mediaTimeoutMs?: number;
+  /**
+   * Largest media file downloaded, in bytes; larger ones fail that
+   * attachment. Meta allows documents up to 100 MB, all held in memory and
+   * re-uploaded. @default 52428800 (50 MB)
+   */
+  maxMediaBytes?: number;
   /** Clock in milliseconds, for the forward's timestamp window. @default Date.now */
   now?: () => number;
 }
@@ -226,6 +285,8 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
   const apiBase = options.apiBase ?? 'https://graph.facebook.com';
   const apiVersion = options.apiVersion ?? 'v21.0';
   const messagesUrl = `${apiBase}/${apiVersion}/${phoneNumberId}/messages`;
+  const mediaTimeoutMs = options.mediaTimeoutMs ?? 60_000;
+  const maxMediaBytes = options.maxMediaBytes ?? 50 * 1024 * 1024;
 
   /**
    * Media id → bytes: `GET /{media-id}` returns a short-lived URL (minutes),
@@ -233,37 +294,52 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
    * the adapter; callers get bytes only.
    *
    * A media host can answer an error *page* with a 200; unless the user
-   * really sent an HTML document (`declared`), an HTML response is refused
-   * here so it never reaches the agent as an "image" or a "voice note".
+   * sent a document that may really be HTML (`isDocument` and a text-like
+   * or unknown type), an HTML response is refused here so it never reaches
+   * the agent as an "image" or a "voice note".
+   *
+   * Both requests share one {@link mediaTimeoutMs} deadline, and the body is
+   * capped at {@link maxMediaBytes}.
    */
   async function downloadMedia(
     mediaId: string,
     declared: string | undefined,
+    isDocument: boolean,
   ): Promise<{ data: Uint8Array; contentType: string | null }> {
     const headers = { Authorization: `Bearer ${accessToken}`, 'User-Agent': MEDIA_USER_AGENT };
-    const lookup = await fetch(`${apiBase}/${apiVersion}/${encodeURIComponent(mediaId)}`, {
-      headers,
-    });
-    const meta = (await lookup.json().catch(() => null)) as
-      | { url?: string; mime_type?: string }
-      | null;
-    if (!lookup.ok || !meta?.url) {
-      throw new Error(`WhatsApp media lookup failed (${lookup.status})`);
+    const signal = AbortSignal.timeout(mediaTimeoutMs);
+    try {
+      const lookup = await fetch(`${apiBase}/${apiVersion}/${encodeURIComponent(mediaId)}`, {
+        headers,
+        signal,
+      });
+      const meta = (await lookup.json().catch(() => null)) as
+        | { url?: string; mime_type?: string }
+        | null;
+      if (!lookup.ok || !meta?.url) {
+        throw new Error(`WhatsApp media lookup failed (${lookup.status})`);
+      }
+      const res = await fetch(meta.url, { headers, signal });
+      if (!res.ok) {
+        throw new Error(`WhatsApp media download failed (${res.status})`);
+      }
+      const served = baseMimeType(res.headers.get('content-type') ?? undefined);
+      const data = await readCapped(res, maxMediaBytes);
+      const expected = declared ?? baseMimeType(meta.mime_type);
+      const htmlAllowed = isDocument && htmlPlausible(expected);
+      if (!htmlAllowed && (served === 'text/html' || looksLikeHtml(data))) {
+        throw new Error('WhatsApp media download returned a web page instead of the file');
+      }
+      return {
+        data,
+        contentType: baseMimeType(meta.mime_type) ?? served ?? null,
+      };
+    } catch (err) {
+      if (signal.aborted) {
+        throw new Error(`WhatsApp media download timed out after ${mediaTimeoutMs}ms`);
+      }
+      throw err;
     }
-    const res = await fetch(meta.url, { headers });
-    if (!res.ok) {
-      throw new Error(`WhatsApp media download failed (${res.status})`);
-    }
-    const served = baseMimeType(res.headers.get('content-type') ?? undefined);
-    const data = new Uint8Array(await res.arrayBuffer());
-    const expected = declared ?? baseMimeType(meta.mime_type);
-    if (expected !== 'text/html' && (served === 'text/html' || looksLikeHtml(data))) {
-      throw new Error('WhatsApp media download returned a web page instead of the file');
-    }
-    return {
-      data,
-      contentType: baseMimeType(meta.mime_type) ?? served ?? null,
-    };
   }
 
   function mediaAttachment(
@@ -276,14 +352,24 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
     const fileName =
       (type === 'document' && media.filename) ||
       `${type === 'audio' && media.voice ? 'voice' : type}_${mediaId}${ext ? `.${ext}` : ''}`;
+    // A photo or a recording sent "as a document" is still an image / audio
+    // to the pipeline (audio is transcribed); it keeps the user's file name.
     const kind: ChannelAttachment['kind'] =
-      type === 'document' && declared?.startsWith('image/') ? 'image' : type;
+      type === 'document' && declared?.startsWith('image/')
+        ? 'image'
+        : type === 'document' && declared?.startsWith('audio/')
+          ? 'audio'
+          : type;
     return {
       kind,
       fileName,
       contentType: declared,
       async download(): Promise<ChannelAttachmentData> {
-        const { data, contentType } = await downloadMedia(mediaId, declared);
+        const { data, contentType } = await downloadMedia(
+          mediaId,
+          declared,
+          type === 'document',
+        );
         return {
           data,
           contentType: declared ?? contentType ?? 'application/octet-stream',

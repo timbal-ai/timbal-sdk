@@ -333,6 +333,26 @@ describe('ApiClient', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
+    test('postFormData overrides can turn retries off for one request', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: () => Promise.resolve({ message: 'Unavailable' }),
+      });
+
+      const client = new ApiClient({
+        token: 'k',
+        baseUrl: 'https://api.test.com',
+        retryAttempts: 3,
+        retryDelay: 1,
+      });
+
+      await expect(
+        client.postFormData('/upload', new FormData(), undefined, { retryAttempts: 0 })
+      ).rejects.toThrow('Unavailable');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     test('should retry on network error and throw after exhausting retries', async () => {
       mockFetch.mockRejectedValue(new TypeError('fetch failed'));
 
