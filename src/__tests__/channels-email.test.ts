@@ -80,6 +80,97 @@ describe('parseEmail', () => {
     expect(html.text).toBe('Subject: Hi\n\nHello there & welcome\nLine!');
   });
 
+  test('takes the alternative that has text, and keeps inline files from every version', () => {
+    const related = (html: string) => [
+      'Content-Type: multipart/related; boundary=r',
+      '',
+      '--r',
+      'Content-Type: text/html',
+      '',
+      html,
+      '--r',
+      'Content-Type: image/png',
+      'Content-ID: <shot>',
+      'Content-Transfer-Encoding: base64',
+      '',
+      'iVBORw0KGgo=',
+      '--r--',
+    ];
+    const alternative = (plain: string, html: string) =>
+      parseEmail(
+        crlf([
+          'Subject: Appt',
+          'Content-Type: multipart/alternative; boundary=a',
+          '',
+          '--a',
+          'Content-Type: text/plain',
+          '',
+          plain,
+          '--a',
+          ...related(html),
+          '--a--',
+        ]),
+      );
+
+    const emptyPlain = alternative('', '<p>Dentist Tuesday 10:00</p><img src="cid:shot">');
+    expect(emptyPlain.text).toBe('Subject: Appt\nAttachments: attachment-1\n\nDentist Tuesday 10:00');
+    expect(emptyPlain.attachments.map((a) => a.contentType)).toEqual(['image/png']);
+
+    const seeScreenshot = alternative('see screenshot', '<p>see <img src="cid:shot"></p>');
+    expect(seeScreenshot.text).toBe('Subject: Appt\nAttachments: attachment-1\n\nsee screenshot');
+    expect(seeScreenshot.attachments.map((a) => a.contentType)).toEqual(['image/png']);
+  });
+
+  test('keeps the sections of a multipart/mixed email in order', () => {
+    const email = parseEmail(
+      crlf([
+        'Subject: Update',
+        'Content-Type: multipart/mixed; boundary=m',
+        '',
+        '--m',
+        'Content-Type: text/plain',
+        '',
+        'Here is the update',
+        '--m',
+        'Content-Type: text/html',
+        '',
+        '<p>Shipment arrives Friday</p>',
+        '--m--',
+      ]),
+    );
+    expect(email.text).toBe('Subject: Update\n\nHere is the update\n\nShipment arrives Friday');
+  });
+
+  test('keeps link destinations from HTML', () => {
+    const email = parseEmail(
+      crlf([
+        'Subject: Invite',
+        'Content-Type: text/html',
+        '',
+        '<p><a href="https://meet.example.com/abc?x=1&amp;y=2">Join <b>meeting</b></a></p>',
+        "<p><a href='mailto:ana@example.com'>ana@example.com</a></p>",
+        '<p><a href="https://example.com">https://example.com</a></p>',
+        '<p><a href="#top">Back to top</a> <a href="javascript:void(0)">Click</a></p>',
+      ]),
+    );
+    expect(email.text).toBe(
+      [
+        'Subject: Invite',
+        'Join meeting (https://meet.example.com/abc?x=1&y=2)',
+        'ana@example.com',
+        'https://example.com',
+        'Back to top Click',
+      ].join('\n\n'),
+    );
+  });
+
+  test('reads a part that has no headers', () => {
+    const email = parseEmail(
+      crlf(['Subject: Note', 'Content-Type: multipart/mixed; boundary=m', '', '--m', '', 'Please arrive by noon', '--m--']),
+    );
+    expect(email.text).toBe('Subject: Note\n\nPlease arrive by noon');
+  });
+
   test('decodes quoted-printable bodies in their charset', () => {
     const email = parseEmail(
       crlf([

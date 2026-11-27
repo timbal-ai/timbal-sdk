@@ -3,6 +3,7 @@ import {
   agentReadableUpload,
   isAudioContentType,
   looksLikeText,
+  toUtf8,
   unsupportedAttachmentNote,
 } from '../channels/attachments';
 
@@ -207,5 +208,22 @@ describe('looksLikeText', () => {
     expect(looksLikeText(Bun.gzipSync(new TextEncoder().encode('a,b\n1,2\n')))).toBe(false);
     expect(looksLikeText(bytes(0x50, 0x4b, 0x03, 0x04, 0x14))).toBe(false);
     expect(looksLikeText(bytes(0x68, 0x00, 0x69))).toBe(false);
+  });
+});
+
+describe('toUtf8', () => {
+  const text = 'Name\tCity\nAna\tBarcelona\n';
+
+  test('converts BOM-marked UTF-16 in both byte orders', () => {
+    const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    const be = Buffer.from(le.subarray(2)).swap16();
+    const beWithBom = Buffer.concat([Buffer.from([0xfe, 0xff]), be]);
+    expect(new TextDecoder().decode(toUtf8(new Uint8Array(le)))).toBe(text);
+    expect(new TextDecoder().decode(toUtf8(new Uint8Array(beWithBom)))).toBe(text);
+  });
+
+  test('leaves anything else unchanged', () => {
+    const utf8 = new TextEncoder().encode(text);
+    expect(toUtf8(utf8)).toBe(utf8);
   });
 });

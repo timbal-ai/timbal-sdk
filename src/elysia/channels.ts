@@ -6,6 +6,7 @@ import {
   agentReadableUpload,
   isAudioContentType,
   looksLikeText,
+  toUtf8,
   unsupportedAttachmentNote,
 } from '../channels/attachments';
 import { parseEmail, type EmailAttachment } from '../channels/email';
@@ -32,10 +33,13 @@ function unsupportedAttachment(fileName: string, contentType: string): Error {
   return new Error(`Agents can't read this attachment type: ${fileName} (${contentType})`);
 }
 
-/** Emails inside emails (forwards) parsed before the rest is sent as is. */
-const MAX_EMAIL_DEPTH = 3;
-/** Files taken from one email; the email's text still lists them all. */
-const MAX_EMAIL_ATTACHMENTS = 20;
+/**
+ * Emails inside emails (forwards) whose files are followed. Deeper emails
+ * are still sent as their text, which names the files left out.
+ */
+const MAX_EMAIL_DEPTH = 5;
+/** Files taken from the emails of one message, all depths together. */
+const MAX_EMAIL_FILES = 20;
 
 /** A file found inside an email, as an attachment of the message. */
 function emailAttachment(file: EmailAttachment): ChannelAttachment {
@@ -324,7 +328,8 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    *
    * An email (`.eml`) is uploaded as its readable text (main headers and
    * body, see {@link parseEmail}); each file attached to it follows the
-   * email through the same checks.
+   * email through the same checks, up to a nesting depth and a file count.
+   * Text is uploaded as UTF-8 (BOM-marked UTF-16 is converted).
    */
   async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
     const attachments = event.attachments ?? [];
@@ -342,6 +347,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     // Files found inside an email join the queue right after it (array
     // iterators are live, so they are visited in turn).
     const queue = attachments.map((attachment) => ({ attachment, emailDepth: 0 }));
+    let emailFilesLeft = MAX_EMAIL_FILES;
     for (const [i, { attachment, emailDepth }] of queue.entries()) {
       try {
         const declaredAudio =
@@ -371,11 +377,16 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           refuse(fileName, contentType);
           continue;
         }
-        let body = data;
-        if (upload.kind === 'email' && emailDepth < MAX_EMAIL_DEPTH) {
-          const email = parseEmail(data);
-          body = new TextEncoder().encode(email.text);
-          const files = email.attachments.slice(0, MAX_EMAIL_ATTACHMENTS);
+        // Text is uploaded as UTF-8: the framework reads UTF-16 as Windows-1252.
+        let body = upload.kind === 'binary' ? data : toUtf8(data);
+        if (upload.kind === 'email') {
+          const email = parseEmail(body);
+          const files =
+            emailDepth < MAX_EMAIL_DEPTH ? email.attachments.slice(0, emailFilesLeft) : [];
+          emailFilesLeft -= files.length;
+          const left = email.attachments.slice(files.length).map((file) => file.fileName);
+          const note = left.length > 0 ? `\n\n[Not included (nested too deep, or too many files): ${left.join(', ')}]` : '';
+          body = new TextEncoder().encode(email.text + note);
           queue.splice(
             i + 1,
             0,

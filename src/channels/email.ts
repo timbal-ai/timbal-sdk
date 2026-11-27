@@ -8,9 +8,11 @@
  * body) plus its attachments, each of which then goes through the same
  * checks as any other file.
  *
- * Covers what mail clients produce: nested multipart, `multipart/alternative`
- * (plain text preferred over HTML), base64 and quoted-printable bodies,
- * charsets, RFC 2047 encoded words and RFC 2231 parameters. Anything it
+ * Covers what mail clients produce: nested multipart, `multipart/mixed`
+ * sections in order, `multipart/alternative` (the plain-text version when
+ * it has text, else the richest one with text), base64 and
+ * quoted-printable bodies, charsets, RFC 2047 encoded words and RFC 2231
+ * parameters. HTML becomes text with link destinations kept. Anything it
  * can't make sense of is kept as body text rather than dropped.
  */
 
@@ -81,6 +83,9 @@ function headerText(value: string): string {
 }
 
 function splitPart(raw: string): Part {
+  // A part that starts with a blank line has no headers.
+  const headerless = /^\r?\n/.exec(raw);
+  if (headerless) return { headers: new Map(), body: raw.slice(headerless[0].length) };
   const blank = /\r?\n\r?\n/.exec(raw);
   const head = blank ? raw.slice(0, blank.index) : raw;
   const body = blank ? raw.slice(blank.index + blank[0].length) : '';
@@ -255,9 +260,27 @@ const ENTITIES: Record<string, string> = {
   nbsp: ' ',
 };
 
+/**
+ * `<a href="https://x">Join</a>` → `Join (https://x)`, so the agent can
+ * give the destination. Only web, mail and phone links; a label that
+ * already shows the destination stays as is.
+ */
+function linkText(_match: string, dq?: string, sq?: string, bare?: string, label = ''): string {
+  const href = (dq ?? sq ?? bare ?? '').trim();
+  if (!/^(https?:|mailto:|tel:)/i.test(href)) return label;
+  const visible = label.replace(/<[^>]*>/g, '').trim();
+  if (!visible) return href;
+  const shown = href.replace(/^(mailto|tel):/i, '');
+  return visible === href || visible === shown ? label : `${label} (${href})`;
+}
+
 function htmlToText(html: string): string {
   return html
     .replace(/<(script|style|head)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(
+      /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
+      linkText,
+    )
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)\s*>/gi, '\n')
     .replace(/<[^>]*>/g, '')
@@ -280,14 +303,19 @@ function contentTypeOf(part: Part): HeaderValue {
 }
 
 interface Collected {
-  texts: string[];
-  htmls: string[];
+  /** Body sections in source order, HTML already turned into text. */
+  bodies: string[];
+  /** Unnamed attachments get a name once all are collected. */
   attachments: EmailAttachment[];
+}
+
+/** Parts read so far, shared by every branch of one email. */
+interface Budget {
   parts: number;
 }
 
-function collect(part: Part, depth: number, out: Collected): void {
-  if (++out.parts > MAX_PARTS) return;
+function collect(part: Part, depth: number, out: Collected, budget: Budget): void {
+  if (++budget.parts > MAX_PARTS) return;
   const type = contentTypeOf(part);
   const disposition = parseHeaderValue(part.headers.get('content-disposition') ?? '');
   const name = decodeWords(disposition.params.get('filename') ?? type.params.get('name') ?? '').trim();
@@ -296,14 +324,10 @@ function collect(part: Part, depth: number, out: Collected): void {
   if (type.value.startsWith('multipart/') && boundary && depth < MAX_DEPTH) {
     const children = splitMultipart(part.body, boundary).map(splitPart);
     if (type.value === 'multipart/alternative') {
-      // Clients put the richest version last; plain text reads best.
-      const pick =
-        children.findLast((c) => contentTypeOf(c).value === 'text/plain') ??
-        children.findLast((c) => contentTypeOf(c).value === 'text/html') ??
-        children.at(-1);
-      if (pick) collect(pick, depth + 1, out);
+      collectAlternative(children, depth + 1, out, budget);
     } else {
-      for (const child of children) collect(child, depth + 1, out);
+      // `mixed`, `related`, ...: every section, in order.
+      for (const child of children) collect(child, depth + 1, out, budget);
     }
     return;
   }
@@ -313,18 +337,38 @@ function collect(part: Part, depth: number, out: Collected): void {
     !name &&
     (type.value === 'text/plain' || type.value === 'text/html');
   if (isBodyText) {
-    const text = decodeText(decodeBody(part), type.params.get('charset'));
-    if (type.value === 'text/html') out.htmls.push(htmlToText(text));
-    else out.texts.push(text.trim());
+    const text = decodeText(decodeBody(part), type.params.get('charset')).replace(/\r\n?/g, '\n');
+    out.bodies.push(type.value === 'text/html' ? htmlToText(text) : text.trim());
     return;
   }
 
-  const fallback = type.value === 'message/rfc822' ? 'forwarded' : 'attachment';
-  out.attachments.push({
-    fileName: name || `${fallback}-${out.attachments.length + 1}${type.value === 'message/rfc822' ? '.eml' : ''}`,
-    contentType: type.value,
-    data: decodeBody(part),
+  out.attachments.push({ fileName: name, contentType: type.value, data: decodeBody(part) });
+}
+
+/**
+ * The versions of one message: the body comes from the plain-text version
+ * when it has text, else from the last (richest) version with text. Files
+ * are kept from every version — an inline image lives only in the HTML one.
+ */
+function collectAlternative(children: Part[], depth: number, out: Collected, budget: Budget): void {
+  const versions = children.map((child) => {
+    const version: Collected = { bodies: [], attachments: [] };
+    collect(child, depth, version, budget);
+    return { plain: contentTypeOf(child).value === 'text/plain', version };
   });
+  const withText = versions.filter((v) => v.version.bodies.some(Boolean));
+  const pick = withText.find((v) => v.plain) ?? withText.at(-1);
+  if (pick) out.bodies.push(...pick.version.bodies);
+
+  const seen = new Set<string>();
+  for (const { version } of versions) {
+    for (const file of version.attachments) {
+      const key = `${file.fileName}\0${file.contentType}\0${file.data.byteLength}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.attachments.push(file);
+    }
+  }
 }
 
 /**
@@ -339,17 +383,22 @@ export function parseEmail(data: Uint8Array): ParsedEmail {
     SUMMARY_HEADERS.some((h) => root.headers.has(h));
   if (!isEmail) return { text: decodeText(data, 'utf-8'), attachments: [] };
 
-  const out: Collected = { texts: [], htmls: [], attachments: [], parts: 0 };
-  collect(root, 0, out);
+  const out: Collected = { bodies: [], attachments: [] };
+  collect(root, 0, out, { parts: 0 });
+  const attachments = out.attachments.map((file, i) => {
+    if (file.fileName) return file;
+    const forwarded = file.contentType === 'message/rfc822';
+    return { ...file, fileName: forwarded ? `forwarded-${i + 1}.eml` : `attachment-${i + 1}` };
+  });
 
   const lines: string[] = [];
   for (const header of SUMMARY_HEADERS) {
     const value = root.headers.get(header);
     if (value) lines.push(`${header.charAt(0).toUpperCase()}${header.slice(1)}: ${decodeWords(value)}`);
   }
-  if (out.attachments.length > 0) {
-    lines.push(`Attachments: ${out.attachments.map((a) => a.fileName).join(', ')}`);
+  if (attachments.length > 0) {
+    lines.push(`Attachments: ${attachments.map((a) => a.fileName).join(', ')}`);
   }
-  const body = (out.texts.length > 0 ? out.texts : out.htmls).filter(Boolean).join('\n\n');
-  return { text: `${lines.join('\n')}\n\n${body}`.trim(), attachments: out.attachments };
+  const body = out.bodies.filter(Boolean).join('\n\n');
+  return { text: `${lines.join('\n')}\n\n${body}`.trim(), attachments };
 }

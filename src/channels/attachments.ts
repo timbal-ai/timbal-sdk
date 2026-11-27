@@ -198,6 +198,25 @@ export function agentReadableUpload(
 }
 
 /**
+ * BOM-marked UTF-16 as UTF-8; anything else unchanged. The framework tries
+ * UTF-8 then Windows-1252, so UTF-16 would reach the model with a NUL
+ * between letters.
+ */
+export function toUtf8(data: Uint8Array): Uint8Array {
+  const order =
+    data[0] === 0xff && data[1] === 0xfe
+      ? 'utf-16le'
+      : data[0] === 0xfe && data[1] === 0xff
+        ? 'utf-16be'
+        : undefined;
+  if (!order) return data;
+  // Bun's types omit these labels; the runtime decodes both. TextDecoder
+  // drops the byte-order mark.
+  const decoder = new TextDecoder(order as ConstructorParameters<typeof TextDecoder>[0]);
+  return new TextEncoder().encode(decoder.decode(data));
+}
+
+/**
  * Whether bytes meant to be read as text look like text: no gzip or zip
  * signature and no NUL byte in the first 8 KiB. UTF-16 (which has NUL
  * bytes) is recognized by its byte-order mark.

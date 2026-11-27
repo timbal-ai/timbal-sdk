@@ -408,11 +408,13 @@ describe('timbalChannels plugin', () => {
       ]);
       const uploads: { filename: string; contentType?: string; bytes: number }[] = [];
       const uploaded = new Map<string, string>();
+      const uploadedTexts: string[] = [];
       const transcriptions: { filename: string; contentType: string }[] = [];
       (timbal as unknown as Record<string, unknown>).uploadTempFileFromBuffer =
         async (data: Uint8Array, filename: string, contentType?: string) => {
           uploads.push({ filename, contentType, bytes: data.byteLength });
           uploaded.set(filename, new TextDecoder().decode(data));
+          uploadedTexts.push(new TextDecoder().decode(data));
           return { url: `https://cdn.test/tmp/${filename}` };
         };
       (timbal as unknown as Record<string, unknown>).transcribeAudio = async (
@@ -423,7 +425,7 @@ describe('timbalChannels plugin', () => {
         transcriptions.push({ filename, contentType });
         return { text: transcript };
       };
-      return { timbal, invocations, uploads, uploaded, transcriptions };
+      return { timbal, invocations, uploads, uploaded, uploadedTexts, transcriptions };
     }
 
     test('a voice note is transcribed and sent as a plain text prompt', async () => {
@@ -574,6 +576,113 @@ describe('timbalChannels plugin', () => {
           { type: 'text', text: unsupportedAttachmentNote('deck.pptx') },
         ],
       });
+    });
+
+    /** An email with a PDF, forwarded as an attachment `depth` times. */
+    function forwardedEmail(depth: number): string {
+      let email = [
+        'Subject: original',
+        'Content-Type: multipart/mixed; boundary="b0"',
+        '',
+        '--b0',
+        'Content-Type: text/plain',
+        '',
+        'the invoice',
+        '--b0',
+        'Content-Type: application/pdf',
+        'Content-Disposition: attachment; filename="invoice.pdf"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        Buffer.from('%PDF-1.4 invoice').toString('base64'),
+        '--b0--',
+      ].join('\r\n');
+      for (let d = 1; d <= depth; d++) {
+        email = [
+          `Subject: Fwd ${d}`,
+          `Content-Type: multipart/mixed; boundary="b${d}"`,
+          '',
+          `--b${d}`,
+          'Content-Type: text/plain',
+          '',
+          `forward ${d}`,
+          `--b${d}`,
+          'Content-Type: message/rfc822',
+          '',
+          email,
+          `--b${d}--`,
+        ].join('\r\n');
+      }
+      return email;
+    }
+
+    test('files in forwarded emails are followed, several levels deep', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, uploads, uploadedTexts } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'Mail.eml', type: 'message/rfc822', content: forwardedEmail(4) }],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual([
+        'Mail.eml.txt',
+        'forwarded-1.eml.txt',
+        'forwarded-1.eml.txt',
+        'forwarded-1.eml.txt',
+        'forwarded-1.eml.txt',
+        'invoice.pdf',
+      ]);
+      expect(uploadedTexts.at(-1)).toBe('%PDF-1.4 invoice');
+      for (const text of uploadedTexts) expect(text).not.toContain('JVBER'); // no base64
+    });
+
+    test('an email nested too deep is still sent as text, naming the files left out', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, uploads, uploadedTexts } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'Mail.eml', type: 'message/rfc822', content: forwardedEmail(5) }],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).not.toContain('invoice.pdf');
+      const innermost = uploadedTexts.at(-1) ?? '';
+      expect(innermost).toContain('the invoice');
+      expect(innermost).toContain(
+        '[Not included (nested too deep, or too many files): invoice.pdf]',
+      );
+      for (const text of uploadedTexts) expect(text).not.toContain('JVBER');
+    });
+
+    test('UTF-16 text is uploaded as UTF-8, in both byte orders', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, uploads, uploadedTexts } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+      const text = 'Name\tCity\nAna\tBarcelona\n';
+      const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+      const be = Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(le.subarray(2)).swap16()]);
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [
+          { name: 'people.tsv', type: 'text/tab-separated-values', content: le.toString('latin1') },
+          { name: 'people-be.tsv', type: 'text/tab-separated-values', content: be.toString('latin1') },
+        ],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual(['people.tsv', 'people-be.tsv']);
+      expect(uploadedTexts).toEqual([text, text]);
     });
 
     test('a text file whose bytes are compressed is refused after download', async () => {
