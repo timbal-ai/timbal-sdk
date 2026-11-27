@@ -46,3 +46,8 @@ export {
   clearTeamsAdapterCaches,
   type TeamsAdapterOptions,
 } from './adapters/teams';
+export {
+  federatedTokenFile,
+  type TeamsCertificate,
+  type TeamsFederatedToken,
+} from './adapters/teams-auth';

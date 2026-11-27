@@ -203,4 +203,29 @@ describe('materializeChannelBindings', () => {
     expect(fromEnv.skipped).toEqual([]);
     expect(fromEnv.bindings[0]!.adapter.provider).toBe('teams');
   });
+
+  test('teams materializes with a certificate or federated token file and no password', () => {
+    const spec = (credentials?: Record<string, string>) => [
+      { provider: 'teams', workforce: 'joi', ...(credentials ? { credentials } : {}) },
+    ];
+    const withCertificate = materializeChannelBindings(
+      spec({
+        app_id: 'app-1',
+        certificate_private_key: '-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----',
+        certificate_thumbprint_sha256: 'ab'.repeat(32),
+      }),
+      {},
+    );
+    expect(withCertificate.skipped).toEqual([]);
+    expect(withCertificate.bindings[0]!.adapter.provider).toBe('teams');
+
+    const withFederated = materializeChannelBindings(spec(), {
+      TEAMS_APP_ID: 'app-1',
+      TEAMS_FEDERATED_TOKEN_FILE: '/var/run/secrets/azure/tokens/azure-identity-token',
+    });
+    expect(withFederated.skipped).toEqual([]);
+
+    const withNone = materializeChannelBindings(spec({ app_id: 'app-1' }), {});
+    expect(withNone.skipped[0]!.reason).toBe('missing-credentials');
+  });
 });
