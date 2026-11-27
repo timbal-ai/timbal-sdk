@@ -164,7 +164,8 @@ function isTeamsFileInfo(type: string | undefined): boolean {
 /**
  * Extension → MIME type, for files Teams sends with only an extension. Lets
  * the pipeline skip files agents can't read before downloading them, and
- * marks audio for transcription.
+ * marks audio for transcription. An extension not listed (or ambiguous,
+ * like `webm`, audio or video) stays untyped: the download's type decides.
  */
 const FILE_TYPES = new Map<string, string>([
   ['jpg', 'image/jpeg'],
@@ -192,7 +193,21 @@ const FILE_TYPES = new Map<string, string>([
   ['amr', 'audio/amr'],
   ['flac', 'audio/flac'],
   ['weba', 'audio/webm'],
-  ['webm', 'audio/webm'],
+  // Unreadable types common enough to refuse before downloading them.
+  ['zip', 'application/zip'],
+  ['7z', 'application/x-7z-compressed'],
+  ['rar', 'application/vnd.rar'],
+  ['gz', 'application/gzip'],
+  ['tgz', 'application/gzip'],
+  ['tar', 'application/x-tar'],
+  ['heic', 'image/heic'],
+  ['heif', 'image/heif'],
+  ['doc', 'application/msword'],
+  ['xls', 'application/vnd.ms-excel'],
+  ['ppt', 'application/vnd.ms-powerpoint'],
+  ['avi', 'video/x-msvideo'],
+  ['mkv', 'video/x-matroska'],
+  ['wmv', 'video/x-ms-wmv'],
   ['mp4', 'video/mp4'],
   ['mov', 'video/quicktime'],
 ]);
@@ -275,9 +290,9 @@ function cleanTeamsMentionText(
  *
  * - `verify` validates the Bot Connector JWT: RS256 signature against the
  *   Bot Framework JWKS (cached module-wide), `iss`, `aud` = app id,
- *   `exp`/`nbf` within skew, and the token's `serviceurl` claim against the
- *   activity's `serviceUrl` (blocks replaying a signed activity at a forged
- *   reply target).
+ *   `exp`/`nbf` within skew, and the token's `serviceurl` claim (required)
+ *   against the activity's `serviceUrl` (blocks replaying a signed activity
+ *   at a forged reply target, and sending the connector token elsewhere).
  * - `parse` accepts `type: "message"` activities; `conversationUpdate`,
  *   reactions, typing, etc. return `[]`. Teams bakes the thread into
  *   `conversation.id` for channel messages, so thread-scoped memory needs no
@@ -534,9 +549,9 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
         attachments.push({
           kind: attachmentKind(declared),
           fileName,
-          // Teams sends only the extension: an unknown one is declared
-          // generic binary, so the pipeline skips it before downloading.
-          contentType: declared ?? 'application/octet-stream',
+          // Teams sends only the extension: an unknown one stays untyped,
+          // so the download's type decides (`export.dat` served as CSV).
+          contentType: declared,
           download: () =>
             deadline(async (signal) => {
               const { data, served } = await fetchAttachment(url, {
@@ -545,9 +560,12 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
                 allowHop: isFileHost,
                 signal,
               });
+              // An image's bytes beat its extension (`.gif` holding a PNG).
+              const sniffed =
+                attachmentKind(declared ?? served) === 'image' ? sniffImageType(data) : undefined;
               return {
                 data,
-                contentType: declared ?? served ?? 'application/octet-stream',
+                contentType: sniffed ?? declared ?? served ?? 'application/octet-stream',
                 fileName,
               };
             }),
@@ -589,10 +607,12 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
               declared: declared ?? type,
               signal,
             });
+            // The bytes beat the declared type: Teams can list a pasted
+            // image as GIF and serve a static PNG.
             const sniffed = kind === 'image' ? sniffImageType(data) : undefined;
             return {
               data,
-              contentType: declared ?? sniffed ?? served ?? 'application/octet-stream',
+              contentType: sniffed ?? declared ?? served ?? 'application/octet-stream',
               fileName,
             };
           }),
@@ -645,23 +665,23 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
         return unauthorized();
       }
 
-      // The token pins the serviceUrl replies must go to; the activity body
-      // carries the one delivery will use. When the claim is present, require
-      // a matching body serviceUrl — omitting it would skip the binding and
-      // let a signed token authorize an activity that replies elsewhere.
-      if (typeof payload.serviceurl === 'string') {
-        let activity: TeamsActivity | null = null;
-        try {
-          activity = JSON.parse(req.rawBody) as TeamsActivity;
-        } catch {
-          return unauthorized();
-        }
-        if (
-          typeof activity?.serviceUrl !== 'string' ||
-          trimTrailingSlash(activity.serviceUrl) !== trimTrailingSlash(payload.serviceurl)
-        ) {
-          return unauthorized();
-        }
+      // The token pins the serviceUrl the connector token is later sent to
+      // (replies, inline media); the activity body carries the one used.
+      // Require the claim and a matching body serviceUrl, as botbuilder's
+      // channel validation does: without the claim, the body alone would
+      // choose where the connector token goes.
+      if (typeof payload.serviceurl !== 'string') return unauthorized();
+      let activity: TeamsActivity | null = null;
+      try {
+        activity = JSON.parse(req.rawBody) as TeamsActivity;
+      } catch {
+        return unauthorized();
+      }
+      if (
+        typeof activity?.serviceUrl !== 'string' ||
+        trimTrailingSlash(activity.serviceUrl) !== trimTrailingSlash(payload.serviceurl)
+      ) {
+        return unauthorized();
       }
 
       return 'ok';

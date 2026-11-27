@@ -10,6 +10,10 @@ import {
   whatsapp,
 } from '../channels/adapters/whatsapp';
 import type { ChannelEvent, WebhookRequest } from '../channels/types';
+import { Elysia } from 'elysia';
+import { timbalChannels } from '../elysia/channels';
+import { unsupportedAttachmentNote } from '../channels/attachments';
+import type { Timbal } from '../lib/timbal';
 import { SDK_VERSION } from '../constants';
 
 function req(body: unknown, headers: Record<string, string> = {}): WebhookRequest {
@@ -752,6 +756,119 @@ describe('slack files', () => {
   afterEach(() => {
     restore();
     restore = () => {};
+  });
+
+  // A Slack voice clip can be named `audio_message.mp4` and typed `video/mp4`.
+  const CLIP = {
+    ...PNG,
+    id: 'F0CLIP',
+    name: 'audio_message.mp4',
+    mimetype: 'video/mp4',
+    subtype: 'slack_audio',
+    url_private_download: 'https://files.slack.com/files-pri/T0-F0CLIP/download/audio_message.mp4',
+  };
+  const VIDEO = {
+    ...CLIP,
+    id: 'F0VID',
+    name: 'clip.mp4',
+    subtype: undefined,
+    url_private_download: 'https://files.slack.com/files-pri/T0-F0VID/download/clip.mp4',
+  };
+
+  test('a Slack voice clip is audio, even when typed as video; a video stays video', async () => {
+    const [event] = await adapter.parse(fileShare([CLIP, VIDEO]));
+    expect(event!.attachments!.map((a) => [a.kind, a.contentType])).toEqual([
+      ['audio', 'audio/mp4'],
+      ['video', 'video/mp4'],
+    ]);
+  });
+
+  test('a Slack Connect voice clip is described as audio', async () => {
+    const m = mockFetch(
+      () =>
+        new Response(JSON.stringify({ ok: true, file: CLIP }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    restore = m.restore;
+    const stub = { id: 'F0CLIP', mode: 'file_access', file_access: 'check_file_info' };
+    expect((await attachmentFor(stub).describe!()).contentType).toBe('audio/mp4');
+  });
+
+  /** The default channel pipeline, with Slack in front and a fake Timbal client. */
+  function slackPipeline() {
+    const invocations: Record<string, unknown>[] = [];
+    const uploads: string[] = [];
+    const transcriptions: { filename: string; contentType: string }[] = [];
+    const timbal = {
+      workforce: {
+        get: () => ({
+          async *events(input: Record<string, unknown>) {
+            invocations.push(input);
+            yield { type: 'delta', delta: 'ok' };
+          },
+        }),
+      },
+      async uploadTempFileFromBuffer(_data: Uint8Array, filename: string) {
+        uploads.push(filename);
+        return { url: `https://cdn.test/tmp/${filename}` };
+      },
+      async transcribeAudio(_data: Uint8Array, filename: string, contentType: string) {
+        transcriptions.push({ filename, contentType });
+        return { text: 'the spoken words' };
+      },
+    } as unknown as Timbal;
+    const adapter = slack({
+      signingSecret: SIGNING_SECRET,
+      botToken: 'xoxb-test',
+      apiBase: 'https://slack.test/api',
+      now: () => Date.now(),
+    });
+    const app = new Elysia().use(timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }));
+    const post = async (files: unknown[]) => {
+      const signed = signedSlackReq(
+        { type: 'event_callback', event_id: 'Ev1', event: { type: 'message', subtype: 'file_share', text: '', user: 'U0USER', channel: 'D0DM', channel_type: 'im', ts: '1700000000.000100', files } },
+        Date.now(),
+      );
+      await app.handle(
+        new Request('http://localhost/channels/a/slack', {
+          method: 'POST',
+          headers: signed.headers,
+          body: signed.rawBody,
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+    };
+    return { post, invocations, uploads, transcriptions };
+  }
+
+  test('through the webhook, a voice clip is transcribed; a video gets the unsupported note', async () => {
+    const m = mockFetch((url) =>
+      url.startsWith('https://slack.test/api/')
+        ? new Response(JSON.stringify({ ok: true, ts: '1700000000.000200' }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : new Response(new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]), {
+            headers: { 'Content-Type': 'video/mp4' },
+          }),
+    );
+    restore = m.restore;
+
+    const clip = slackPipeline();
+    await clip.post([CLIP]);
+    expect(clip.transcriptions).toEqual([{ filename: 'audio_message.mp4', contentType: 'audio/mp4' }]);
+    expect(clip.uploads).toEqual([]);
+    expect(clip.invocations[0]).toEqual({ prompt: 'the spoken words' });
+
+    const video = slackPipeline();
+    await video.post([VIDEO]);
+    expect(video.transcriptions).toEqual([]);
+    expect(video.uploads).toEqual([]);
+    expect(video.invocations[0]).toEqual({
+      prompt: [{ type: 'text', text: unsupportedAttachmentNote('clip.mp4') }],
+    });
+    // Refused before download.
+    expect(m.calls.some((c) => c.url === VIDEO.url_private_download)).toBe(false);
   });
 
   test('a file_share message carries its files as attachments', async () => {

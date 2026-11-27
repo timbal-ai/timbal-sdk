@@ -64,6 +64,8 @@ interface SlackFile {
   name?: string | null;
   title?: string | null;
   mimetype?: string;
+  /** `slack_audio` for an audio clip recorded in Slack. */
+  subtype?: string;
   size?: number;
   /**
    * `hosted`, `external`, `snippet` or `post`; a Slack Connect stub says
@@ -115,6 +117,17 @@ function privateUrl(file: SlackFile): string | undefined {
   if (file.mode !== undefined && !DOWNLOADABLE_MODES.has(file.mode)) return undefined;
   if (file.is_external || file.is_hidden_by_limit) return undefined;
   return file.url_private_download || file.url_private || undefined;
+}
+
+/**
+ * A file's type, with Slack's own audio clips typed as audio: a clip
+ * (`subtype: 'slack_audio'`) can arrive as `audio_message.mp4` declared
+ * `video/mp4`, and would otherwise be refused as video, not transcribed.
+ */
+function fileTypeOf(file: SlackFile): string | undefined {
+  const mime = baseMimeType(file.mimetype);
+  if (file.subtype !== 'slack_audio' || mime?.startsWith('audio/')) return mime;
+  return mime?.startsWith('video/') ? `audio/${mime.slice('video/'.length)}` : 'audio/mp4';
 }
 
 function fileNameOf(file: SlackFile, id: string): string {
@@ -240,7 +253,7 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
       await res.body?.cancel().catch(() => {});
       throw new Error(`Slack file download failed (${res.status})`);
     }
-    const declared = baseMimeType(file.mimetype);
+    const declared = fileTypeOf(file);
     const served = baseMimeType(res.headers.get('content-type'));
     const data = await readCapped(res, maxFileBytes, tooLarge);
     if (isErrorPage(declared, served, data)) {
@@ -296,7 +309,7 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
             const full = await lookup();
             return {
               fileName: fileNameOf(full, id),
-              contentType: baseMimeType(full.mimetype),
+              contentType: fileTypeOf(full),
               sizeBytes: full.size,
               unavailable: unavailableReason(full),
             };
@@ -309,7 +322,7 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
         continue;
       }
 
-      const contentType = baseMimeType(file.mimetype);
+      const contentType = fileTypeOf(file);
       attachments.push({
         kind: attachmentKind(contentType),
         fileName: fileNameOf(file, id),
