@@ -252,6 +252,26 @@ describe('parseEmail', () => {
     expect(html('<templates>shown</templates>')).toBe('Subject: x\n\nshown');
   });
 
+  // Only real template tags count: one inside a comment, a quoted attribute
+  // or a script must neither leak hidden text nor hide visible text.
+  test('counts only real template tags', () => {
+    const body = (html: string) =>
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', html])).text;
+    for (const html of [
+      '<template><!-- One <template> per language. --></template><p>Shipped.</p>',
+      '<template><!-- Insert before </template> --><p>Refunded.</p></template><p>Shipped.</p>',
+      '<template><p title="</template>">Refunded.</p></template><p>Shipped.</p>',
+      "<template><p title='<template>'>Refunded.</p></template><p>Shipped.</p>",
+      '<template><script>s = "</template>"</script><p>Refunded.</p></template><p>Shipped.</p>',
+      '<template><style>/* </template> */</style><p>Refunded.</p></template><p>Shipped.</p>',
+      '<template><a href="https://hidden.example">Refunded.</a></template><p>Shipped.</p>',
+    ]) {
+      expect(body(html)).toBe('Subject: x\n\nShipped.');
+    }
+    // A stray end tag outside any template changes nothing.
+    expect(body('<p>a</p></template><p>b</p>')).toBe('Subject: x\n\na\nb');
+  });
+
   // As in browsers: `</styles-x>` or a `"</scripted"` string doesn't end them.
   test('ends a script or style only at its own end tag', () => {
     const html = (body: string) =>

@@ -381,32 +381,24 @@ function isTagAt(html: string, at: number, name: string): boolean {
 }
 
 /**
- * The index just past the `</template>` closing the template whose content
- * starts at `from`, counting nested templates; -1 when it never closes.
- * Template content is never shown, so it is skipped whole.
- */
-function templateEnd(html: string, from: number): number {
-  let depth = 1;
-  for (let j = html.indexOf('<', from); j >= 0; j = html.indexOf('<', j + 1)) {
-    if (isTagAt(html, j + 1, 'template')) {
-      depth++;
-    } else if (html.charAt(j + 1) === '/' && isTagAt(html, j + 2, 'template') && --depth === 0) {
-      const gt = html.indexOf('>', j);
-      return gt < 0 ? html.length : gt + 1;
-    }
-  }
-  return -1;
-}
-
-/**
  * HTML → text: tags and comments dropped (scripts, styles, the title and
  * templates with their content), line breaks for `<br>` and block ends, links as
  * `label (destination)`. One forward scan, so crafted input — unclosed
  * tags, a run of `<` — costs linear time instead of blocking the server.
+ *
+ * Templates are tracked by the same scan: only real `<template>` and
+ * `</template>` tags count, never one inside a comment, a quoted attribute
+ * or a script. Their content is never shown, so a separate search for
+ * those words would let hidden text reach the agent, or drop visible text.
  */
 function htmlToText(html: string): string {
   // Chunks, joined once at the end: a link only touches its own chunks.
   const out: string[] = [];
+  // Templates open around the scan; inside one, nothing is written.
+  let templateDepth = 0;
+  const emit = (text: string): void => {
+    if (templateDepth === 0) out.push(text);
+  };
   let link: { href: string; start: number } | undefined;
   const closeLink = (): void => {
     if (!link) return;
@@ -447,10 +439,10 @@ function htmlToText(html: string): string {
   while (i < html.length) {
     const lt = html.indexOf('<', i);
     if (lt < 0) {
-      out.push(decodeEntities(html.slice(i)));
+      emit(decodeEntities(html.slice(i)));
       break;
     }
-    out.push(decodeEntities(html.slice(i, lt)));
+    emit(decodeEntities(html.slice(i, lt)));
 
     if (html.startsWith('<!--', lt)) {
       const end = commentEnd(lt + 4);
@@ -470,14 +462,14 @@ function htmlToText(html: string): string {
     const nameStart = closing ? lt + 2 : lt + 1;
     if (!isLetter(html[nameStart])) {
       // `1 < 2`: a `<` that starts no tag is text.
-      out.push('<');
+      emit('<');
       i = lt + 1;
       continue;
     }
     let gt = tagEnd(html, nameStart);
     if (gt < 0) gt = html.indexOf('>', nameStart); // a quote that never closes
     if (gt < 0) {
-      out.push(decodeEntities(html.slice(lt)));
+      emit(decodeEntities(html.slice(lt)));
       break;
     }
     i = gt + 1;
@@ -486,10 +478,10 @@ function htmlToText(html: string): string {
     while (nameEnd < tag.length && !isSpace(tag[nameEnd]) && tag[nameEnd] !== '/') nameEnd++;
     const name = tag.slice(0, nameEnd).toLowerCase();
 
-    if (!closing && name === 'template') {
-      const end = templateEnd(html, i);
-      if (end < 0) break; // unclosed: the rest is its content
-      i = end;
+    if (name === 'template') {
+      // An unclosed template hides the rest, as in browsers.
+      if (!closing) templateDepth++;
+      else if (templateDepth > 0) templateDepth--;
     } else if (!closing && SKIPPED_TAGS.has(name)) {
       const end = missingEndTags.has(name) ? -1 : endTagIndex(html, name, i);
       if (end < 0) {
@@ -499,6 +491,8 @@ function htmlToText(html: string): string {
       }
       const endGt = html.indexOf('>', end);
       i = endGt < 0 ? html.length : endGt + 1;
+    } else if (templateDepth > 0) {
+      // Inside a template: no links or line breaks either.
     } else if (name === 'a') {
       closeLink(); // links don't nest; an unclosed one ends here
       const href = closing ? '' : decodeEntities((attributesOf(tag).get('href') ?? '').trim());
