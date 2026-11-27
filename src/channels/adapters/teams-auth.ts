@@ -8,7 +8,6 @@
  * their `tempauth` credential on March 1, 2027: Entra answers 401 to file
  * requests made with a token got from a client secret.
  */
-import { readFile } from 'node:fs/promises';
 
 /** A certificate registered on the bot's app registration (Certificates & secrets). */
 export interface TeamsCertificate {
@@ -219,7 +218,7 @@ export function federatedAuthentication(getToken: TeamsFederatedToken): ClientAu
  * and rotates it in place.
  */
 export function federatedTokenFile(path: string): TeamsFederatedToken {
-  return async () => (await readFile(path, 'utf8')).trim();
+  return async () => (await Bun.file(path).text()).trim();
 }
 
 /** String settings (platform credentials or env) for the non-secret credentials. */

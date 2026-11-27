@@ -561,7 +561,8 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
    * GET an attachment's bytes. A `token` goes to `url`'s origin only, never
    * to a redirect elsewhere; `allowHop` limits where redirects may lead. An
    * error page instead of the file is refused (see {@link isErrorPage}), and
-   * `refusalHint` explains a failed status.
+   * `refusalHint` explains a failed status, knowing whether the hop that
+   * answered was sent the token.
    */
   async function fetchAttachment(
     url: URL,
@@ -570,21 +571,25 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       declared: string | undefined;
       allowHop?: (hop: URL) => boolean;
       signal: AbortSignal;
-      refusalHint?: (status: number) => string;
+      refusalHint?: (status: number, tokenSent: boolean) => string;
     },
   ): Promise<{ data: Uint8Array; served: string | undefined }> {
     const token = opts.token ? await opts.token() : undefined;
+    // The last hop asked for: the one whose answer comes back.
+    let tokenSent = false;
     const res = await fetchFollowingRedirects(url, {
       signal: opts.signal,
-      headersFor: (hop): Record<string, string> =>
-        token && hop.origin === url.origin ? { Authorization: `Bearer ${token}` } : {},
+      headersFor: (hop): Record<string, string> => {
+        tokenSent = !!token && hop.origin === url.origin;
+        return tokenSent ? { Authorization: `Bearer ${token}` } : {};
+      },
       label: 'Teams file download',
       allowHop: opts.allowHop,
     });
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
       throw new Error(
-        `Teams file download failed (${res.status})${opts.refusalHint?.(res.status) ?? ''}`,
+        `Teams file download failed (${res.status})${opts.refusalHint?.(res.status, tokenSent) ?? ''}`,
       );
     }
     const served = baseMimeType(res.headers.get('content-type'));
@@ -642,10 +647,12 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
         if (!tenant) throw new Error('Teams file token needs a tenant ID, and the activity has none');
         return getFileToken(credential, tenant, url.host);
       },
-      refusalHint: (status) =>
-        status === 401 || status === 403
-          ? ': the file token was refused; the app manifest must grant the File.ReadSelected.User RSC permission'
-          : '',
+      refusalHint: (status, tokenSent) =>
+        status !== 401 && status !== 403
+          ? ''
+          : tokenSent
+            ? ': the file token was refused; the app manifest must grant the File.ReadSelected.User RSC permission'
+            : ': the file host redirected to another host, which the file token is not sent to',
     };
   }
 

@@ -1262,6 +1262,22 @@ describe('teams adapter file tokens', () => {
     ]);
   });
 
+  // The token stays on the first host: a 401 from the next one isn't the
+  // RSC permission's fault.
+  test('a 401 after a redirect to another file host names the redirect, not the permission', async () => {
+    const otherHost = 'https://contoso.sharepoint.test/Shared/invoice.pdf';
+    fileRoutes.set(BARE_DOWNLOAD_URL, () =>
+      new Response(null, { status: 302, headers: { Location: otherHost } }),
+    );
+    fileRoutes.set(otherHost, () => new Response('unauthorized', { status: 401 }));
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+    const error = await event!.attachments![0]!.download().catch((e: Error) => e);
+    expect(String(error)).toContain(
+      'Teams file download failed (401): the file host redirected to another host, which the file token is not sent to',
+    );
+    expect(String(error)).not.toContain('File.ReadSelected.User');
+  });
+
   // Off the file hosts a redirect isn't followed at all, token or not.
   test('a redirect off the file hosts is refused before it is fetched', async () => {
     const elsewhere = 'https://cdn.example.test/invoice.pdf';
