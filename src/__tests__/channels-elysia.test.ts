@@ -851,6 +851,25 @@ describe('timbalChannels plugin', () => {
       });
     });
 
+    // A Slack Connect voice clip: declared as a document, typed only by `describe()`.
+    test('a file described as audio is transcribed, whatever its kind', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads, transcriptions } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'audio_message.m4a', type: 'audio/mp4', kind: 'document', described: {} }],
+      });
+      await settle();
+
+      expect(uploads).toEqual([]);
+      expect(transcriptions).toEqual([{ filename: 'audio_message.m4a', contentType: 'audio/mp4' }]);
+      expect(invocations[0]!.input).toEqual({ prompt: 'the spoken words' });
+    });
+
     test('a file agents cannot read is not downloaded; the agent gets a note instead', async () => {
       const { adapter, sent } = makeMediaAdapter();
       const { timbal, invocations, uploads } = makeUploadingTimbal();

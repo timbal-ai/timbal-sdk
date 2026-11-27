@@ -146,6 +146,22 @@ interface TeamsFileDownloadInfo {
 const FILE_DOWNLOAD_INFO = 'application/vnd.microsoft.teams.file.download.info';
 
 /**
+ * Teams file types other than {@link FILE_DOWNLOAD_INFO} (`file.info`,
+ * `card.file.info`, as seen for files shared in channels and group chats):
+ * a file was sent, but with no link the bot can download. A consent card
+ * is the bot's own upload request, not a file.
+ */
+function isTeamsFileInfo(type: string | undefined): boolean {
+  return (
+    !!type &&
+    type.startsWith('application/vnd.microsoft.teams.') &&
+    type.includes('file') &&
+    type !== FILE_DOWNLOAD_INFO &&
+    !type.includes('consent')
+  );
+}
+
+/**
  * Extension → MIME type, for files Teams sends with only an extension. Lets
  * the pipeline skip files agents can't read before downloading them, and
  * marks audio for transcription.
@@ -486,8 +502,9 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       const type = baseMimeType(attachment.contentType);
 
       // A file shared in a channel or group chat: a link into SharePoint
-      // that only a Graph token can read.
-      if (type === 'reference') {
+      // that only a Graph token can read, typed `reference` or as a Teams
+      // file-info attachment (named, unlike cards).
+      if (type === 'reference' || (isTeamsFileInfo(type) && attachment.name)) {
         attachments.push(
           unavailableFile(
             'document',

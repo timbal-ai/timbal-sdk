@@ -586,13 +586,27 @@ describe('teams adapter attachments', () => {
   });
 
   test('a file shared in a channel or group chat is marked unavailable', async () => {
-    const [event] = await parseAttachments([
-      { contentType: 'reference', contentUrl: 'https://contoso.sharepoint.test/Shared/plan.docx', name: 'plan.docx' },
-    ]);
-    expect(event!.attachments![0]).toMatchObject({
-      fileName: 'plan.docx',
-      unavailable: "files shared in Teams channels and group chats can't be downloaded by the bot",
-    });
+    const shared = "files shared in Teams channels and group chats can't be downloaded by the bot";
+    for (const contentType of [
+      'reference',
+      'application/vnd.microsoft.teams.file.info',
+      'application/vnd.microsoft.teams.card.file.info',
+    ]) {
+      const [event] = await parseAttachments([
+        { contentType, contentUrl: 'https://contoso.sharepoint.test/Shared/plan.docx', name: 'plan.docx' },
+      ]);
+      expect(event!.attachments![0]).toMatchObject({ fileName: 'plan.docx', unavailable: shared });
+    }
+    expect(fetches).toHaveLength(0);
+  });
+
+  test('a file consent card or a nameless file-info attachment is not a file', async () => {
+    for (const attachment of [
+      { contentType: 'application/vnd.microsoft.teams.card.file.consent', name: 'report.pdf' },
+      { contentType: 'application/vnd.microsoft.teams.file.info' },
+    ]) {
+      expect(await parseAttachments([attachment])).toHaveLength(0);
+    }
   });
 
   test('a redirect off https or off the file hosts is refused', async () => {
