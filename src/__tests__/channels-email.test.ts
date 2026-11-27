@@ -215,6 +215,19 @@ describe('parseEmail', () => {
     expect(text).not.toContain('-->');
   });
 
+  // As in browsers: `</styles-x>` or a `"</scripted"` string doesn't end them.
+  test('ends a script or style only at its own end tag', () => {
+    const html = (body: string) =>
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', body])).text;
+    expect(html('<style>p{}</styles-x>.c{color:red}</style><p>shown</p>')).toBe(
+      'Subject: x\n\nshown',
+    );
+    expect(html('<p>a</p><script>s = "</scripted>"; hidden()</script><p>b</p>')).toBe(
+      'Subject: x\n\na\nb',
+    );
+    expect(html('<p>a</p><STYLE>x</Style >y</STYLE>')).toBe('Subject: x\n\na\ny');
+  });
+
   // Lowercasing can lengthen a string (İ → i̇), so positions must come from
   // the original text.
   test('finds end tags after text that lowercases to a different length', () => {

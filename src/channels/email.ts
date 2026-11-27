@@ -360,10 +360,19 @@ function linkSuffix(label: string, href: string): string {
   return label === href || label === shown ? '' : ` (${href})`;
 }
 
-/** The index of `</name` (any case) from `from`, or -1. */
+/**
+ * The index of the `</name>` end tag (any case) from `from`, or -1. As in
+ * browsers, the name must end there: `</styles-x>` doesn't end a style.
+ */
 function endTagIndex(html: string, name: string, from: number): number {
   for (let j = html.indexOf('</', from); j >= 0; j = html.indexOf('</', j + 2)) {
-    if (html.slice(j + 2, j + 2 + name.length).toLowerCase() === name) return j;
+    const after = html.charAt(j + 2 + name.length);
+    if (
+      html.slice(j + 2, j + 2 + name.length).toLowerCase() === name &&
+      (after === '' || after === '>' || after === '/' || isSpace(after))
+    ) {
+      return j;
+    }
   }
   return -1;
 }
