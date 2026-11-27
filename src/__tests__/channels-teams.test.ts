@@ -157,6 +157,7 @@ const makeAdapter = (tenantId?: string) =>
     tenantId,
     openIdMetadataUrl: METADATA_URL,
     loginBase: LOGIN_BASE,
+    fileHosts: ['sharepoint.test'],
     now: () => NOW,
   });
 
@@ -537,17 +538,95 @@ describe('teams adapter attachments', () => {
     expect(event!.attachments![0]!.contentType).toBeUndefined();
   });
 
-  test('attachments without a usable https URL are skipped', async () => {
-    const unusable = [
-      { ...fileDownloadInfo('a.pdf', 'pdf'), content: { uniqueId: 'x', fileType: 'pdf' } },
-      fileDownloadInfo('b.pdf', 'pdf', 'http://contoso.sharepoint.test/b.pdf'),
-      inlineImage('not a url'),
-      { contentType: 'image/png' },
-      HTML_COPY,
+  // The agent is told the file is missing, and nothing is fetched.
+  test('files without an acceptable link are marked unavailable', async () => {
+    const offHosts = "its download link isn't on the bot's allowed file hosts";
+    const offConnector = 'Teams gave no link to it on the Bot Connector service';
+    const cases: [unknown, string][] = [
+      [{ ...fileDownloadInfo('a.pdf', 'pdf'), content: { uniqueId: 'x', fileType: 'pdf' } }, offHosts],
+      [fileDownloadInfo('b.pdf', 'pdf', 'http://contoso.sharepoint.test/b.pdf'), offHosts],
+      [fileDownloadInfo('c.pdf', 'pdf', 'https://attacker.example/c.pdf'), offHosts],
+      [fileDownloadInfo('d.pdf', 'pdf', 'https://sharepoint.test.attacker.example/d.pdf'), offHosts],
+      [inlineImage('not a url'), offConnector],
+      [inlineImage('https://cdn.example.test/cat.png', 'image/png'), offConnector],
+      [{ contentType: 'image/png' }, offConnector],
     ];
-    for (const attachment of unusable) {
-      expect(await parseAttachments([attachment])).toHaveLength(0);
+    for (const [attachment, reason] of cases) {
+      const [event] = await parseAttachments([attachment]);
+      expect(event!.attachments).toHaveLength(1);
+      expect(event!.attachments![0]!.unavailable).toBe(reason);
     }
+    expect(fetches.filter((f) => !f.url.startsWith(LOGIN_BASE))).toHaveLength(0);
+    // The message's HTML copy is not a file at all.
+    expect(await parseAttachments([HTML_COPY])).toHaveLength(0);
+  });
+
+  // On Web Chat or Direct Line the sender picks the URLs.
+  test('files are only fetched from Teams activities', async () => {
+    const adapter = makeAdapter();
+    const [event] = await adapter.parse(
+      req(
+        activityFixture({
+          channelId: 'webchat',
+          text: 'what is in this file?',
+          attachments: [
+            fileDownloadInfo('invoice.pdf', 'pdf'),
+            inlineImage(),
+            { contentType: 'text/plain', contentUrl: 'https://attacker.example/notes.txt', name: 'notes.txt' },
+          ],
+        }),
+      ),
+    );
+    expect(event!.attachments!.map((a) => [a.fileName, a.unavailable])).toEqual([
+      ['invoice.pdf', 'the bot only downloads files sent through Microsoft Teams'],
+      ['image_2', 'the bot only downloads files sent through Microsoft Teams'],
+      ['notes.txt', 'the bot only downloads files sent through Microsoft Teams'],
+    ]);
+    expect(fetches).toHaveLength(0);
+  });
+
+  test('a file shared in a channel or group chat is marked unavailable', async () => {
+    const [event] = await parseAttachments([
+      { contentType: 'reference', contentUrl: 'https://contoso.sharepoint.test/Shared/plan.docx', name: 'plan.docx' },
+    ]);
+    expect(event!.attachments![0]).toMatchObject({
+      fileName: 'plan.docx',
+      unavailable: "files shared in Teams channels and group chats can't be downloaded by the bot",
+    });
+  });
+
+  test('a redirect off https or off the file hosts is refused', async () => {
+    for (const target of [
+      'http://169.254.169.254/latest/meta-data/',
+      'https://attacker.example/file.pdf',
+    ]) {
+      fileRoutes.set(DOWNLOAD_URL, () => new Response(null, { status: 302, headers: { Location: target } }));
+      const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')]);
+      await expect(event!.attachments![0]!.download()).rejects.toThrow(
+        "Teams file download led to a URL that isn't allowed",
+      );
+      expect(fetches.some((f) => f.url === target)).toBe(false);
+    }
+  });
+
+  test('more audio types are declared as audio, for transcription', async () => {
+    const [event] = await parseAttachments(
+      ['aac', 'amr', 'flac', 'opus', 'oga', 'weba', 'webm'].map((ext) =>
+        fileDownloadInfo(`voice.${ext}`, ext),
+      ),
+    );
+    for (const attachment of event!.attachments!) {
+      expect(attachment.kind).toBe('audio');
+      expect(attachment.contentType?.startsWith('audio/')).toBe(true);
+    }
+  });
+
+  test('a text file whose content starts with HTML still downloads', async () => {
+    const source = '<!DOCTYPE html><html><body>draft</body></html>';
+    fileRoutes.set(DOWNLOAD_URL, () => new Response(source, { headers: { 'Content-Type': 'text/plain' } }));
+    const [event] = await parseAttachments([fileDownloadInfo('draft.txt', 'txt')]);
+    const file = await event!.attachments![0]!.download();
+    expect(new TextDecoder().decode(file.data)).toBe(source);
   });
 
   test('a personal-chat file downloads from downloadUrl as received, without the bot token', async () => {
@@ -582,16 +661,6 @@ describe('teams adapter attachments', () => {
     expect(file.fileName).toBe('image_1');
     const download = fetches.find((f) => f.url === INLINE_IMAGE_URL)!;
     expect(download.headers.authorization).toBe('Bearer connector-token-1');
-  });
-
-  test('the connector token is not sent to media hosted elsewhere', async () => {
-    const elsewhere = 'https://cdn.example.test/cat.png';
-    fileRoutes.set(elsewhere, () => new Response(PNG_BYTES, { headers: { 'Content-Type': 'image/png' } }));
-    const [event] = await parseAttachments([inlineImage(elsewhere, 'image/png')]);
-    const file = await event!.attachments![0]!.download();
-    expect(file.contentType).toBe('image/png');
-    expect(fetches.find((f) => f.url === elsewhere)!.headers.authorization).toBeUndefined();
-    expect(tokenFetches).toBe(0);
   });
 
   test('a redirect off the connector host drops the token', async () => {
@@ -652,11 +721,30 @@ describe('teams adapter attachments', () => {
       openIdMetadataUrl: METADATA_URL,
       loginBase: LOGIN_BASE,
       now: () => NOW,
+      fileHosts: ['sharepoint.test'],
       maxFileBytes: 3,
     });
     const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')], '', capped);
     await expect(event!.attachments![0]!.download()).rejects.toThrow(
       'Teams file is larger than the 3-byte limit (maxFileBytes)',
+    );
+  });
+
+  // The token request is shared and takes no abort signal: the deadline must
+  // still end the download.
+  test('a stalled connector-token request still times out', async () => {
+    fileRoutes.set(`${LOGIN_BASE}/botframework.com/oauth2/v2.0/token`, () => new Promise<Response>(() => {}));
+    const slow = teams({
+      appId: APP_ID,
+      appPassword: APP_PASSWORD,
+      openIdMetadataUrl: METADATA_URL,
+      loginBase: LOGIN_BASE,
+      now: () => NOW,
+      fileTimeoutMs: 20,
+    });
+    const [event] = await parseAttachments([inlineImage()], '', slow);
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download timed out after 20ms',
     );
   });
 
@@ -674,6 +762,7 @@ describe('teams adapter attachments', () => {
       openIdMetadataUrl: METADATA_URL,
       loginBase: LOGIN_BASE,
       now: () => NOW,
+      fileHosts: ['sharepoint.test'],
       fileTimeoutMs: 20,
     });
     const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')], '', slow);

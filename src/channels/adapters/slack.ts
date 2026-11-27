@@ -11,8 +11,7 @@ import {
   attachmentKind,
   baseMimeType,
   fetchFollowingRedirects,
-  isHtmlType,
-  looksLikeHtml,
+  isErrorPage,
   readCapped,
   withDeadline,
 } from '../download';
@@ -123,6 +122,17 @@ function fileNameOf(file: SlackFile, id: string): string {
 }
 
 /**
+ * Why a full file object can't be downloaded (finishing "was not
+ * included: …"), or `undefined` when it can.
+ */
+function unavailableReason(file: SlackFile): string | undefined {
+  if (privateUrl(file)) return undefined;
+  if (file.is_external) return 'it is hosted outside Slack, where the bot can\'t read it';
+  if (file.is_hidden_by_limit) return "it is hidden by the Slack workspace's plan limit";
+  return "Slack doesn't offer a download for this kind of file";
+}
+
+/**
  * DM detection: `channel_type: 'im'` on `message` events; `app_mention`
  * events omit `channel_type`, so fall back to the `D` channel-id prefix
  * (Slack ids are typed by prefix: D = DM, C = channel, G = group).
@@ -211,9 +221,9 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
   }
 
   /**
-   * A full file object → its bytes. Slack declares the file's type, so an
-   * HTML body for anything but an HTML file is a sign-in page: what
-   * `url_private` serves when the token lacks `files:read`.
+   * A full file object → its bytes. A body served as HTML for anything but
+   * an HTML file is a sign-in page: what `url_private` serves when the token
+   * lacks `files:read` (see {@link isErrorPage}).
    */
   async function readFile(
     file: SlackFile,
@@ -233,7 +243,7 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
     const declared = baseMimeType(file.mimetype);
     const served = baseMimeType(res.headers.get('content-type'));
     const data = await readCapped(res, maxFileBytes, tooLarge);
-    if (!isHtmlType(declared) && (served === 'text/html' || looksLikeHtml(data))) {
+    if (isErrorPage(declared, served, data)) {
       throw new Error(
         'Slack file download returned a web page instead of the file (does the bot token have the files:read scope?)',
       );
@@ -259,24 +269,54 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
       const id = file.id;
       if (!id) continue;
 
-      // Slack Connect: the event carries a stub (no name, type or URL), so
-      // the metadata is unknown until files.info answers on download.
+      // Slack Connect: the event carries a stub (no name, type or URL).
+      // `describe` looks it up with files.info, so the pipeline can refuse
+      // a file agents can't read before its bytes are fetched; the download
+      // reuses that answer.
       if (file.file_access === 'check_file_info') {
+        let info: Promise<SlackFile> | undefined;
+        const lookup = (): Promise<SlackFile> => {
+          if (!info) {
+            const pending = withDeadline(
+              fileTimeoutMs,
+              () => new Error(`Slack files.info timed out after ${fileTimeoutMs}ms`),
+              (signal) => fileInfo(id, signal),
+            );
+            // A failed lookup may be retried by the next call.
+            pending.catch(() => {
+              if (info === pending) info = undefined;
+            });
+            info = pending;
+          }
+          return info;
+        };
         attachments.push({
           kind: 'document',
-          download: () =>
-            download(async (signal) => readFile(await fileInfo(id, signal), id, signal)),
+          describe: async () => {
+            const full = await lookup();
+            return {
+              fileName: fileNameOf(full, id),
+              contentType: baseMimeType(full.mimetype),
+              sizeBytes: full.size,
+              unavailable: unavailableReason(full),
+            };
+          },
+          download: async () => {
+            const full = await lookup();
+            return download((signal) => readFile(full, id, signal));
+          },
         });
         continue;
       }
 
-      if (!privateUrl(file)) continue;
       const contentType = baseMimeType(file.mimetype);
       attachments.push({
         kind: attachmentKind(contentType),
         fileName: fileNameOf(file, id),
         contentType,
         sizeBytes: file.size,
+        // External, plan-hidden, posts, canvases: the agent is told why.
+        unavailable: unavailableReason(file),
         download: () => download((signal) => readFile(file, id, signal)),
       });
     }

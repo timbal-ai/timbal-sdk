@@ -230,6 +230,15 @@ export function looksLikeText(data: Uint8Array): boolean {
 }
 
 /**
+ * The prompt text that stands in for a file the adapter couldn't fetch, so
+ * the agent knows it was sent (and why it's missing) instead of answering
+ * as if nothing was attached.
+ */
+export function unavailableAttachmentNote(fileName: string, reason: string): string {
+  return `[Attachment "${fileName}" was not included: ${reason}.]`;
+}
+
+/**
  * The prompt text that stands in for an attachment agents can't read, so
  * the agent knows a file was sent and can ask for a format it reads instead
  * of answering as if nothing was attached.

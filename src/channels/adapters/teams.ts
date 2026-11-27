@@ -10,8 +10,7 @@ import {
   attachmentKind,
   baseMimeType,
   fetchFollowingRedirects,
-  isHtmlType,
-  looksLikeHtml,
+  isErrorPage,
   readCapped,
   sniffImageType,
   withDeadline,
@@ -32,6 +31,12 @@ export interface TeamsAdapterOptions {
   openIdMetadataUrl?: string;
   /** Entra login origin for connector tokens (tests). @default https://login.microsoftonline.com */
   loginBase?: string;
+  /**
+   * Hosts (and their subdomains) a file's `downloadUrl` may be on, and its
+   * redirects may lead to. Teams stores files users send in OneDrive for
+   * Business. @default ['sharepoint.com']
+   */
+  fileHosts?: string[];
   /** Time allowed for one file download, in milliseconds. @default 60000 */
   fileTimeoutMs?: number;
   /**
@@ -165,6 +170,13 @@ const FILE_TYPES = new Map<string, string>([
   ['m4a', 'audio/mp4'],
   ['wav', 'audio/wav'],
   ['ogg', 'audio/ogg'],
+  ['oga', 'audio/ogg'],
+  ['opus', 'audio/opus'],
+  ['aac', 'audio/aac'],
+  ['amr', 'audio/amr'],
+  ['flac', 'audio/flac'],
+  ['weba', 'audio/webm'],
+  ['webm', 'audio/webm'],
   ['mp4', 'video/mp4'],
   ['mov', 'video/quicktime'],
 ]);
@@ -277,8 +289,14 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   const loginBase = options.loginBase ?? 'https://login.microsoftonline.com';
   const maxSkewSeconds = options.maxSkewSeconds ?? 300;
   const now = options.now ?? Date.now;
+  const fileHosts = (options.fileHosts ?? ['sharepoint.com']).map((h) => h.toLowerCase());
   const fileTimeoutMs = options.fileTimeoutMs ?? 60_000;
   const maxFileBytes = options.maxFileBytes ?? 50 * 1024 * 1024;
+  /** Whether `url` is on a file host or one of its subdomains. */
+  const isFileHost = (url: URL): boolean => {
+    const host = url.hostname.toLowerCase();
+    return fileHosts.some((h) => host === h || host.endsWith(`.${h}`));
+  };
   // Multi-tenant bots request connector tokens against the shared
   // botframework.com tenant; single-tenant must use their own.
   const tokenTenant = tenantId || 'botframework.com';
@@ -397,12 +415,18 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
 
   /**
    * GET an attachment's bytes. With `withToken`, the connector token goes
-   * to `url`'s origin only, never to a redirect elsewhere. An HTML body is
-   * refused unless `declared` is an HTML type: it is an error page.
+   * to `url`'s origin only, never to a redirect elsewhere; `allowHop` limits
+   * where redirects may lead. An error page instead of the file is refused
+   * (see {@link isErrorPage}).
    */
   async function fetchAttachment(
     url: URL,
-    opts: { withToken: boolean; declared: string | undefined; signal: AbortSignal },
+    opts: {
+      withToken: boolean;
+      declared: string | undefined;
+      allowHop?: (hop: URL) => boolean;
+      signal: AbortSignal;
+    },
   ): Promise<{ data: Uint8Array; served: string | undefined }> {
     const token = opts.withToken ? await getConnectorToken() : undefined;
     const res = await fetchFollowingRedirects(url, {
@@ -410,6 +434,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       headersFor: (hop): Record<string, string> =>
         token && hop.origin === url.origin ? { Authorization: `Bearer ${token}` } : {},
       label: 'Teams file download',
+      allowHop: opts.allowHop,
     });
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
@@ -424,27 +449,71 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     }
     const served = baseMimeType(res.headers.get('content-type'));
     const data = await readCapped(res, maxFileBytes, tooLarge);
-    if (!isHtmlType(opts.declared) && (served === 'text/html' || looksLikeHtml(data))) {
+    if (isErrorPage(opts.declared, served, data)) {
       throw new Error('Teams file download returned a web page instead of the file');
     }
     return { data, served };
   }
 
+  /** An attachment the bot won't fetch, so the agent is told why it's missing. */
+  function unavailableFile(
+    kind: ChannelAttachment['kind'],
+    fileName: string,
+    contentType: string | undefined,
+    reason: string,
+  ): ChannelAttachment {
+    return {
+      kind,
+      fileName,
+      contentType,
+      unavailable: reason,
+      download: () => Promise.reject(new Error(`Teams file ${fileName} is not available: ${reason}`)),
+    };
+  }
+
+  /**
+   * Files and inline media of a message. Only Teams activities are fetched:
+   * on other Bot Framework channels (Web Chat, Direct Line) the sender
+   * chooses the URLs, and the server would fetch whatever they point at.
+   * Within Teams, file links must be on {@link TeamsAdapterOptions.fileHosts}
+   * and inline media on the connector (`serviceUrl`) origin.
+   */
   function parseAttachments(activity: TeamsActivity): ChannelAttachment[] {
     const connectorOrigin = httpsUrl(activity.serviceUrl)?.origin;
+    const fromTeams = activity.channelId === 'msteams';
     const attachments: ChannelAttachment[] = [];
     for (const attachment of activity.attachments ?? []) {
       const type = baseMimeType(attachment.contentType);
 
+      // A file shared in a channel or group chat: a link into SharePoint
+      // that only a Graph token can read.
+      if (type === 'reference') {
+        attachments.push(
+          unavailableFile(
+            'document',
+            attachment.name || `file_${attachments.length + 1}`,
+            undefined,
+            "files shared in Teams channels and group chats can't be downloaded by the bot",
+          ),
+        );
+        continue;
+      }
+
       if (type === FILE_DOWNLOAD_INFO) {
         const info = (attachment.content ?? {}) as TeamsFileDownloadInfo;
-        const url = httpsUrl(info.downloadUrl);
-        if (!url) continue;
         const nameExt = attachment.name?.includes('.') ? attachment.name.split('.').pop() : '';
         const ext = (info.fileType || nameExt || '').toLowerCase();
         const declared = FILE_TYPES.get(ext);
         const fallbackName = `file_${info.uniqueId ?? attachments.length + 1}`;
         const fileName = attachment.name || `${fallbackName}${ext ? `.${ext}` : ''}`;
+        const url = httpsUrl(info.downloadUrl);
+        if (!fromTeams || !url || !isFileHost(url)) {
+          const reason = fromTeams
+            ? "its download link isn't on the bot's allowed file hosts"
+            : 'the bot only downloads files sent through Microsoft Teams';
+          attachments.push(unavailableFile(attachmentKind(declared), fileName, declared, reason));
+          continue;
+        }
         attachments.push({
           kind: attachmentKind(declared),
           fileName,
@@ -456,6 +525,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
               const { data, served } = await fetchAttachment(url, {
                 withToken: false,
                 declared,
+                allowHop: isFileHost,
                 signal,
               });
               return {
@@ -477,20 +547,31 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       ) {
         continue;
       }
-      const url = httpsUrl(attachment.contentUrl);
-      if (!url) continue;
       // Inline images are often typed just `image/*`; the bytes tell.
       const declared = type.endsWith('/*') ? undefined : type;
       const kind = attachmentKind(type);
       const fileName = attachment.name || `${kind}_${attachments.length + 1}`;
-      const withToken = url.origin === connectorOrigin;
+      const url = httpsUrl(attachment.contentUrl);
+      if (!fromTeams || !url || !connectorOrigin || url.origin !== connectorOrigin) {
+        const reason = fromTeams
+          ? 'Teams gave no link to it on the Bot Connector service'
+          : 'the bot only downloads files sent through Microsoft Teams';
+        attachments.push(unavailableFile(kind, fileName, declared, reason));
+        continue;
+      }
       attachments.push({
         kind,
         fileName,
         contentType: declared,
         download: () =>
           deadline(async (signal) => {
-            const { data, served } = await fetchAttachment(url, { withToken, declared, signal });
+            // `type` (e.g. `image/*`) for the error-page check: an image is
+            // never HTML.
+            const { data, served } = await fetchAttachment(url, {
+              withToken: true,
+              declared: declared ?? type,
+              signal,
+            });
             const sniffed = kind === 'image' ? sniffImageType(data) : undefined;
             return {
               data,

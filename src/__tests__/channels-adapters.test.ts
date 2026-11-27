@@ -808,19 +808,31 @@ describe('slack files', () => {
     expect(event!.attachments![0]!.fileName).toBe('invoice.pdf');
   });
 
-  test('external, hidden, post and id-less files are skipped', async () => {
-    const skipped = [
-      { ...PDF, mode: 'external', is_external: true, url_private: 'https://drive.example/f' },
-      { ...PDF, is_hidden_by_limit: 1 },
-      { ...PDF, mode: 'post' },
-      { ...PDF, id: undefined },
-      { ...PDF, url_private: undefined, url_private_download: undefined },
+  // The agent is told why such a file is missing instead of never hearing of it.
+  test('external, hidden and post files are marked unavailable, with the reason', async () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [
+        { ...PDF, mode: 'external', is_external: true, url_private: 'https://drive.example/f' },
+        "it is hosted outside Slack, where the bot can't read it",
+      ],
+      [{ ...PDF, is_hidden_by_limit: 1 }, "it is hidden by the Slack workspace's plan limit"],
+      [{ ...PDF, mode: 'post' }, "Slack doesn't offer a download for this kind of file"],
+      [
+        { ...PDF, url_private: undefined, url_private_download: undefined },
+        "Slack doesn't offer a download for this kind of file",
+      ],
     ];
-    for (const file of skipped) {
-      // No text and nothing downloadable → nothing to run.
-      expect(await adapter.parse(fileShare([file], { text: '' }))).toHaveLength(0);
+    for (const [file, reason] of cases) {
+      // A file on its own is still an event, so the user gets an answer.
+      const [event] = await adapter.parse(fileShare([file], { text: '' }));
+      expect(event!.attachments).toHaveLength(1);
+      expect(event!.attachments![0]).toMatchObject({ fileName: 'invoice.pdf', unavailable: reason });
     }
-    const [withText] = await adapter.parse(fileShare(skipped));
+  });
+
+  test('id-less files are skipped', async () => {
+    expect(await adapter.parse(fileShare([{ ...PDF, id: undefined }], { text: '' }))).toHaveLength(0);
+    const [withText] = await adapter.parse(fileShare([{ ...PDF, id: undefined }]));
     expect(withText!.attachments).toBeUndefined();
   });
 
@@ -922,13 +934,38 @@ describe('slack files', () => {
         await expect(attachmentFor(PDF).download()).rejects.toThrow(
           'Slack file download returned a web page instead of the file (does the bot token have the files:read scope?)',
         );
-        // A text file is refused too: Slack declares the type it stored.
-        await expect(
-          attachmentFor({ ...PDF, name: 'notes.txt', mimetype: 'text/plain' }).download(),
-        ).rejects.toThrow('returned a web page');
       } finally {
         m.restore();
       }
+    }
+    // A text file is refused when the body is served as HTML.
+    const m = mockFetch(
+      () => new Response('<!DOCTYPE html><html></html>', { headers: { 'Content-Type': 'text/html' } }),
+    );
+    try {
+      await expect(
+        attachmentFor({ ...PDF, name: 'notes.txt', mimetype: 'text/plain' }).download(),
+      ).rejects.toThrow('returned a web page');
+    } finally {
+      m.restore();
+    }
+  });
+
+  // A `.txt` or snippet holding HTML source is the file, not a sign-in page.
+  test('a text file whose content starts with HTML still downloads', async () => {
+    const source = '<!DOCTYPE html>\n<html><body>My landing page draft</body></html>\n';
+    const m = mockFetch(() => new Response(source, { headers: { 'Content-Type': 'text/plain' } }));
+    try {
+      const file = await attachmentFor({
+        ...PDF,
+        name: 'draft.txt',
+        mimetype: 'text/plain',
+        mode: 'snippet',
+      }).download();
+      expect(new TextDecoder().decode(file.data)).toBe(source);
+      expect(file.contentType).toBe('text/plain');
+    } finally {
+      m.restore();
     }
   });
 
@@ -993,6 +1030,48 @@ describe('slack files', () => {
       ['https://slack.test/api/files.info?file=F0EXT', 'Bearer xoxb-test'],
       [PDF_URL, 'Bearer xoxb-test'],
     ]);
+  });
+
+  // The pipeline describes a stub before downloading it, so a file agents
+  // can't read is refused without fetching its bytes.
+  test('a Slack Connect stub describes itself; the download reuses that lookup', async () => {
+    const m = mockFetch((url) => {
+      if (url.startsWith('https://slack.test/api/files.info')) {
+        return new Response(JSON.stringify({ ok: true, file: PDF }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(BYTES);
+    });
+    restore = m.restore;
+    const stub = { id: 'F0EXT', mode: 'file_access', file_access: 'check_file_info' };
+    const attachment = attachmentFor(stub);
+    expect(await attachment.describe!()).toEqual({
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: PDF.size,
+      unavailable: undefined,
+    });
+    await attachment.download();
+    expect(m.calls.map((c) => c.url)).toEqual([
+      'https://slack.test/api/files.info?file=F0EXT',
+      PDF_URL,
+    ]);
+  });
+
+  test('a Slack Connect stub that turns out external is described as unavailable', async () => {
+    const external = { ...PDF, mode: 'external', is_external: true, url_private: 'https://drive.example/f' };
+    const m = mockFetch(
+      () =>
+        new Response(JSON.stringify({ ok: true, file: external }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    restore = m.restore;
+    const stub = { id: 'F0EXT', mode: 'file_access', file_access: 'check_file_info' };
+    expect((await attachmentFor(stub).describe!()).unavailable).toBe(
+      "it is hosted outside Slack, where the bot can't read it",
+    );
   });
 
   test('a files.info refusal fails the download clearly', async () => {

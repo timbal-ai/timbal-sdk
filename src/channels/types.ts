@@ -56,8 +56,29 @@ export interface ChannelAttachment {
   contentType?: string;
   /** Declared size in bytes, when known (pre-download hint, not verified). */
   sizeBytes?: number;
+  /**
+   * Why the file can't be fetched, when the adapter knows it can't (hosted
+   * outside the provider, a file the bot has no access to). The default
+   * input then tells the agent the file wasn't included, without calling
+   * `download()`. Phrased to finish "was not included: …".
+   */
+  unavailable?: string;
+  /**
+   * Looks up the metadata a provider only gives on request (a Slack Connect
+   * file). The default input calls it before `download()`, so a file agents
+   * can't read is refused without fetching its bytes.
+   */
+  describe?(): Promise<ChannelAttachmentDescription>;
   /** Fetch the raw bytes from the provider, using the adapter's credentials. */
   download(): Promise<ChannelAttachmentData>;
+}
+
+/** What {@link ChannelAttachment.describe} resolves to. */
+export interface ChannelAttachmentDescription {
+  fileName?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  unavailable?: string;
 }
 
 /**

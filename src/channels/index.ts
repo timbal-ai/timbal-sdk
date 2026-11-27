@@ -2,6 +2,7 @@ export type {
   ChannelAdapter,
   ChannelAttachment,
   ChannelAttachmentData,
+  ChannelAttachmentDescription,
   ChannelBinding,
   ChannelDelivery,
   ChannelEvent,

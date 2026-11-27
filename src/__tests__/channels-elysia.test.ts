@@ -8,7 +8,7 @@ import {
 } from '../elysia/channels';
 import { clearProjectAuthConfigCache } from '../auth/config';
 import { clearRuntimeChannelsCache } from '../channels/runtime';
-import { unsupportedAttachmentNote } from '../channels/attachments';
+import { unavailableAttachmentNote, unsupportedAttachmentNote } from '../channels/attachments';
 import { deriveTelegramSecretToken } from '../channels/adapters/telegram';
 import { whatsapp } from '../channels/adapters/whatsapp';
 import { clearConfigRefreshHooks } from '../config/refresh';
@@ -372,12 +372,21 @@ describe('timbalChannels plugin', () => {
               fail?: boolean;
               content?: string;
               kind?: 'image' | 'document' | 'audio';
+              unavailable?: string;
+              /** Declared without name or type; `describe()` resolves them. */
+              described?: { unavailable?: string };
             }[];
           };
           const attachments = (body.files ?? []).map((f) => ({
             kind: f.kind ?? ('document' as const),
-            fileName: f.name,
-            contentType: f.type,
+            ...(f.described
+              ? {
+                  async describe() {
+                    return { fileName: f.name, contentType: f.type, ...f.described };
+                  },
+                }
+              : { fileName: f.name, contentType: f.type }),
+            ...(f.unavailable ? { unavailable: f.unavailable } : {}),
             async download() {
               if (f.fail) throw new Error(`download failed: ${f.name}`);
               return {
@@ -770,6 +779,76 @@ describe('timbalChannels plugin', () => {
       expect(uploads).toEqual([]);
       expect(transcriptions).toEqual([{ filename: 'memo.wav', contentType: 'audio/wav' }]);
       expect(invocations[0]!.input).toEqual({ prompt: 'the spoken words' });
+    });
+
+    test('a file the adapter marks unavailable gets a note saying why, without a download', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        // `fail` would throw on download: the note must come first.
+        files: [
+          {
+            name: 'Q3 plan',
+            type: 'application/pdf',
+            fail: true,
+            unavailable: 'it is hosted outside Slack',
+          },
+        ],
+      });
+      await settle();
+
+      expect(uploads).toEqual([]);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: unavailableAttachmentNote('Q3 plan', 'it is hosted outside Slack') },
+        ],
+      });
+      expect(String(errors[0])).toContain('Attachment not available: Q3 plan');
+    });
+
+    test('a file whose metadata needs a lookup is described before it is downloaded', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [
+          // Unreadable once described: refused without a download.
+          { name: 'deck.pptx', type: 'application/vnd.ms-powerpoint', fail: true, described: {} },
+          // Readable: downloaded and uploaded.
+          { name: 'invoice.pdf', type: 'application/pdf', described: {} },
+          // Described as unavailable: a note.
+          {
+            name: 'gone.pdf',
+            type: 'application/pdf',
+            fail: true,
+            described: { unavailable: 'it is hidden by the plan limit' },
+          },
+        ],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual(['invoice.pdf']);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: unsupportedAttachmentNote('deck.pptx') },
+          { type: 'file', file: 'https://cdn.test/tmp/invoice.pdf' },
+          { type: 'text', text: unavailableAttachmentNote('gone.pdf', 'it is hidden by the plan limit') },
+        ],
+      });
     });
 
     test('a file agents cannot read is not downloaded; the agent gets a note instead', async () => {
