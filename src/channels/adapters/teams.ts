@@ -11,8 +11,10 @@ import {
   baseMimeType,
   fetchFollowingRedirects,
   isErrorPage,
+  isGenericType,
   readCapped,
   sniffImageType,
+  webmTrackKinds,
   withDeadline,
 } from '../download';
 
@@ -211,6 +213,17 @@ const FILE_TYPES = new Map<string, string>([
   ['mp4', 'video/mp4'],
   ['mov', 'video/quicktime'],
 ]);
+
+/**
+ * A `.webm` served with a generic type: audio or video by its track list,
+ * so a voice recording is transcribed and a screen recording isn't.
+ */
+function webmType(data: Uint8Array): string | undefined {
+  const kinds = webmTrackKinds(data);
+  if (kinds?.video) return 'video/webm';
+  if (kinds?.audio) return 'audio/webm';
+  return undefined;
+}
 
 /** `url` when it is an `https:` URL, else `undefined`. */
 function httpsUrl(url: unknown): URL | undefined {
@@ -562,7 +575,11 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
               });
               // An image's bytes beat its extension (`.gif` holding a PNG).
               const sniffed =
-                attachmentKind(declared ?? served) === 'image' ? sniffImageType(data) : undefined;
+                attachmentKind(declared ?? served) === 'image'
+                  ? sniffImageType(data)
+                  : ext === 'webm' && isGenericType(served)
+                    ? webmType(data)
+                    : undefined;
               return {
                 data,
                 contentType: sniffed ?? declared ?? served ?? 'application/octet-stream',

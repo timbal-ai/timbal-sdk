@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { Elysia } from 'elysia';
 import { teams, clearTeamsAdapterCaches } from '../channels/adapters/teams';
 import { unsupportedAttachmentNote } from '../channels/attachments';
+import { webmTrackKinds } from '../channels/download';
 import type { WebhookRequest } from '../channels/types';
 import { timbalChannels } from '../elysia/channels';
 import type { Timbal } from '../lib/timbal';
@@ -918,6 +919,73 @@ describe('teams attachments through the channel pipeline', () => {
     fileRoutes.set(DOWNLOAD_URL, () => new Response(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]), {
       headers: { 'Content-Type': 'video/webm' },
     }));
+    const video = teamsPipeline();
+    await video.post([fileDownloadInfo('capture.webm', 'webm')]);
+    expect(video.transcriptions).toEqual([]);
+    expect(video.uploads).toEqual([]);
+    expect(video.invocations[0]).toEqual({
+      prompt: [{ type: 'text', text: unsupportedAttachmentNote('capture.webm') }],
+    });
+  });
+});
+
+// ── WebM track lists ──
+
+/** EBML size: 1 to 3 bytes is plenty here. */
+const ebmlSize = (n: number): number[] =>
+  n < 0x7f ? [0x80 | n] : n < 0x3fff ? [0x40 | (n >> 8), n & 0xff] : [0x20 | (n >> 16), (n >> 8) & 0xff, n & 0xff];
+const ebml = (id: number[], body: number[]): number[] => [...id, ...ebmlSize(body.length), ...body];
+const ascii = (text: string) => [...new TextEncoder().encode(text)];
+/** An 8-byte size with every value bit set: "unknown", as recorders write it. */
+const UNKNOWN_SIZE = [0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+
+/** A minimal WebM: header, unknown-size Segment, Tracks (1 video, 2 audio), a Cluster. */
+function webmFile(trackTypes: number[], { tracksAfterCluster = false } = {}): Uint8Array {
+  const header = ebml([0x1a, 0x45, 0xdf, 0xa3], ebml([0x42, 0x82], ascii('webm')));
+  const tracks = ebml(
+    [0x16, 0x54, 0xae, 0x6b],
+    trackTypes.flatMap((type, i) =>
+      ebml([0xae], [
+        ...ebml([0xd7], [i + 1]),
+        ...ebml([0x83], [type]),
+        ...ebml([0x86], ascii(type === 1 ? 'V_VP9' : 'A_OPUS')),
+      ]),
+    ),
+  );
+  const cluster = ebml([0x1f, 0x43, 0xb6, 0x75], ebml([0xe7], [0]));
+  const body = tracksAfterCluster ? [...cluster, ...tracks] : [...tracks, ...cluster];
+  return Uint8Array.from([...header, 0x18, 0x53, 0x80, 0x67, ...UNKNOWN_SIZE, ...body]);
+}
+
+describe('webmTrackKinds', () => {
+  test('reads the track list of recorder output (unknown-size Segment)', () => {
+    expect(webmTrackKinds(webmFile([2]))).toEqual({ audio: true, video: false });
+    expect(webmTrackKinds(webmFile([1, 2]))).toEqual({ audio: true, video: true });
+  });
+
+  test('is undefined for other bytes, or with no track list before the media data', () => {
+    expect(webmTrackKinds(new TextEncoder().encode('not a webm'))).toBeUndefined();
+    expect(webmTrackKinds(new Uint8Array(0))).toBeUndefined();
+    expect(webmTrackKinds(webmFile([2], { tracksAfterCluster: true }))).toBeUndefined();
+    // Cut off in the middle of the header.
+    expect(webmTrackKinds(webmFile([2]).subarray(0, 6))).toBeUndefined();
+  });
+});
+
+describe('teams .webm served with a generic type, through the channel pipeline', () => {
+  // SharePoint may serve a .webm as application/octet-stream: the track list decides.
+  test('an audio-only recording is transcribed; one with a video track is refused', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () =>
+      new Response(webmFile([2]), { headers: { 'Content-Type': 'application/octet-stream' } }),
+    );
+    const audio = teamsPipeline();
+    await audio.post([fileDownloadInfo('voice.webm', 'webm')]);
+    expect(audio.transcriptions).toEqual([{ filename: 'voice.webm', contentType: 'audio/webm' }]);
+    expect(audio.invocations[0]).toEqual({ prompt: 'the spoken words' });
+
+    fileRoutes.set(DOWNLOAD_URL, () =>
+      new Response(webmFile([1, 2]), { headers: { 'Content-Type': 'application/octet-stream' } }),
+    );
     const video = teamsPipeline();
     await video.post([fileDownloadInfo('capture.webm', 'webm')]);
     expect(video.transcriptions).toEqual([]);

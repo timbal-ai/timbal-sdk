@@ -83,6 +83,86 @@ export function sniffImageType(data: Uint8Array): string | undefined {
   return undefined;
 }
 
+/** Whether a served type says nothing about the file (missing or generic binary). */
+export function isGenericType(mime: string | undefined): boolean {
+  return !mime || mime === 'application/octet-stream' || mime === 'binary/octet-stream';
+}
+
+// Matroska / WebM element IDs (EBML).
+const EBML_HEADER = 0x1a45dfa3;
+const SEGMENT = 0x18538067;
+const TRACKS = 0x1654ae6b;
+const TRACK_ENTRY = 0xae;
+const TRACK_TYPE = 0x83;
+const CLUSTER = 0x1f43b675;
+
+/**
+ * The EBML variable-length integer at `at`: an element ID (`keepMarker`)
+ * or a size, whose value bits all set mean "unknown size".
+ */
+function readVint(
+  data: Uint8Array,
+  at: number,
+  keepMarker: boolean,
+): { value: number; length: number; unknown: boolean } | undefined {
+  const first = data[at];
+  if (first === undefined || first === 0) return undefined;
+  let length = 1;
+  while (!(first & (0x80 >> (length - 1)))) length++;
+  if (at + length > data.length) return undefined;
+  const markerless = first & (0xff >> length);
+  let value = keepMarker ? first : markerless;
+  let allOnes = markerless === 0xff >> length;
+  for (let i = 1; i < length; i++) {
+    const byte = data[at + i] ?? 0;
+    value = value * 256 + byte;
+    if (byte !== 0xff) allOnes = false;
+  }
+  return { value, length, unknown: !keepMarker && allOnes };
+}
+
+/**
+ * Which kinds of track a WebM (Matroska) file holds, from the `Tracks`
+ * element at its start, or `undefined` when `data` isn't WebM or lists no
+ * tracks. Tracks come before the first `Cluster` (the media data), so the
+ * scan stops there and reads at most the first megabyte. Recorder output
+ * with an unknown-size `Segment` is read too.
+ */
+export function webmTrackKinds(data: Uint8Array): { audio: boolean; video: boolean } | undefined {
+  const head = data.subarray(0, 1 << 20);
+  if (readVint(head, 0, true)?.value !== EBML_HEADER) return undefined;
+  const kinds = { audio: false, video: false };
+  let found = false;
+
+  // False stops the whole scan: a Cluster (no tracks after it) or bad bytes.
+  const walk = (start: number, end: number, depth: number): boolean => {
+    let at = start;
+    while (at < end) {
+      const id = readVint(head, at, true);
+      const size = id && readVint(head, at + id.length, false);
+      if (!id || !size) return false;
+      if (id.value === CLUSTER) return false;
+      const body = at + id.length + size.length;
+      const bodyEnd = size.unknown ? end : Math.min(end, body + size.value);
+      if (depth < 3 && (id.value === SEGMENT || id.value === TRACKS || id.value === TRACK_ENTRY)) {
+        if (!walk(body, bodyEnd, depth + 1)) return false;
+      } else if (id.value === TRACK_TYPE) {
+        let type = 0;
+        for (let i = body; i < bodyEnd && i < body + 8; i++) type = type * 256 + (head[i] ?? 0);
+        found = true;
+        if (type === 1) kinds.video = true;
+        else if (type === 2) kinds.audio = true;
+      }
+      // An unknown-size element runs to `end`: it was the last one here.
+      if (size.unknown) return true;
+      at = bodyEnd;
+    }
+    return true;
+  };
+  walk(0, head.length, 0);
+  return found ? kinds : undefined;
+}
+
 /**
  * Reads `res` into memory, refusing bodies over `maxBytes` (by the declared
  * `Content-Length` before reading, and by the bytes actually read).
