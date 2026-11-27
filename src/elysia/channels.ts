@@ -2,6 +2,14 @@ import { Elysia } from 'elysia';
 import { Timbal } from '../lib/timbal';
 import { DedupeCache } from '../channels/dedupe';
 import { StreamingReply } from '../channels/reply';
+import {
+  agentReadableUpload,
+  isAudioContentType,
+  looksLikeText,
+  toUtf8,
+  unsupportedAttachmentNote,
+} from '../channels/attachments';
+import { parseEmail, type EmailAttachment } from '../channels/email';
 import { WorkforceTextCollector } from '../channels/collect';
 import { channelBindingsFromEnv } from '../channels/env';
 import { resolvePublicOrigin } from '../channels/origin';
@@ -14,7 +22,35 @@ import { getCachedRuntimeChannels } from '../channels/runtime';
 import { getCachedProject } from '../auth/config';
 import { registerConfigRefreshHook } from '../config/refresh';
 import type { ProjectChannelSpec } from '../types';
-import type { ChannelBinding, ChannelEvent, WebhookRequest } from '../channels/types';
+import type {
+  ChannelAttachment,
+  ChannelBinding,
+  ChannelEvent,
+  WebhookRequest,
+} from '../channels/types';
+
+function unsupportedAttachment(fileName: string, contentType: string): Error {
+  return new Error(`Agents can't read this attachment type: ${fileName} (${contentType})`);
+}
+
+/**
+ * Emails inside emails (forwards) whose files are followed. Deeper emails
+ * are still sent as their text, which names the files left out.
+ */
+const MAX_EMAIL_DEPTH = 5;
+/** Files taken from the emails of one message, all depths together. */
+const MAX_EMAIL_FILES = 20;
+
+/** A file found inside an email, as an attachment of the message. */
+function emailAttachment(file: EmailAttachment): ChannelAttachment {
+  return {
+    kind: file.contentType.startsWith('image/') ? 'image' : 'document',
+    fileName: file.fileName,
+    contentType: file.contentType,
+    sizeBytes: file.data.byteLength,
+    download: async () => ({ ...file }),
+  };
+}
 
 /**
  * Path prefixes that must bypass `timbalAuth` ingress. Webhooks authenticate
@@ -275,11 +311,25 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * (`TIMBAL_PROJECT_SECRET`) — then send prompt content parts, the same
    * shape the platform chat UI uses.
    *
-   * Audio attachments (WhatsApp voice notes) are transcribed with the
+   * Audio attachments (WhatsApp voice notes, and any file with an audio
+   * type, such as a WAV sent as a Telegram document) are transcribed with the
    * platform's transcription service and sent as text instead of a file:
    * agents accept few audio formats (voice notes are Ogg/Opus) and most chat
    * models take no audio at all. When a transcript is all there is (with
    * the caption, if any), the plain `{ prompt: text }` shape is used.
+   *
+   * Other files are sent only when agents can read them (images, PDF, Word,
+   * Excel, text — see {@link agentReadableUpload}). Anything else is not
+   * uploaded (nor downloaded, when the adapter declares its name and type):
+   * a text note naming the file takes its place, so the agent can ask for a
+   * format it reads, and `onError` gets the refusal. A file meant to be read
+   * as text whose bytes look binary (a gzip declared `text/csv`) is refused
+   * the same way.
+   *
+   * An email (`.eml`) is uploaded as its readable text (main headers and
+   * body, see {@link parseEmail}); each file attached to it follows the
+   * email through the same checks, up to a nesting depth and a file count.
+   * Text is uploaded as UTF-8 (BOM-marked UTF-16 is converted).
    */
   async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
     const attachments = event.attachments ?? [];
@@ -288,18 +338,69 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     const parts: Array<Record<string, unknown>> = [];
     if (event.text) parts.push({ type: 'text', text: event.text });
     const failures: unknown[] = [];
+    // A file agents can't read leaves a note in the prompt instead.
+    const refuse = (fileName: string, contentType: string): void => {
+      parts.push({ type: 'text', text: unsupportedAttachmentNote(fileName) });
+      failures.push(unsupportedAttachment(fileName, contentType));
+    };
     let transcribed = false;
-    for (const attachment of attachments) {
+    // Files found inside an email join the queue right after it (array
+    // iterators are live, so they are visited in turn).
+    const queue = attachments.map((attachment) => ({ attachment, emailDepth: 0 }));
+    let emailFilesLeft = MAX_EMAIL_FILES;
+    for (const [i, { attachment, emailDepth }] of queue.entries()) {
       try {
+        const declaredAudio =
+          attachment.kind === 'audio' || isAudioContentType(attachment.contentType);
+        // Skip the download when the declared name and type already rule it out.
+        if (
+          !declaredAudio &&
+          attachment.fileName &&
+          attachment.contentType &&
+          !agentReadableUpload(attachment.fileName, attachment.contentType)
+        ) {
+          refuse(attachment.fileName, attachment.contentType);
+          continue;
+        }
         const { data, contentType, fileName } = await attachment.download();
-        if (attachment.kind === 'audio') {
+        if (declaredAudio || isAudioContentType(contentType)) {
           const { text } = await timbal.transcribeAudio(data, fileName, contentType);
           if (!text.trim()) throw new Error(`No speech recognized in ${fileName}`);
           parts.push({ type: 'text', text: text.trim() });
           transcribed = true;
           continue;
         }
-        const tmp = await timbal.uploadTempFileFromBuffer(data, fileName, contentType);
+        // Uploaded under a name and type the framework recognizes
+        // (`Report.DOCX` → `Report.docx`, `image/jpg` → `image/jpeg`).
+        const upload = agentReadableUpload(fileName, contentType);
+        if (!upload) {
+          refuse(fileName, contentType);
+          continue;
+        }
+        // Text is uploaded as UTF-8: the framework reads UTF-16 as Windows-1252.
+        let body = upload.kind === 'binary' ? data : toUtf8(data);
+        if (upload.kind === 'email') {
+          const email = parseEmail(body);
+          const files =
+            emailDepth < MAX_EMAIL_DEPTH ? email.attachments.slice(0, emailFilesLeft) : [];
+          emailFilesLeft -= files.length;
+          const left = email.attachments.slice(files.length).map((file) => file.fileName);
+          const note = left.length > 0 ? `\n\n[Not included (nested too deep, or too many files): ${left.join(', ')}]` : '';
+          body = new TextEncoder().encode(email.text + note);
+          queue.splice(
+            i + 1,
+            0,
+            ...files.map((file) => ({
+              attachment: emailAttachment(file),
+              emailDepth: emailDepth + 1,
+            })),
+          );
+        }
+        if (upload.kind !== 'binary' && !looksLikeText(body)) {
+          refuse(fileName, contentType);
+          continue;
+        }
+        const tmp = await timbal.uploadTempFileFromBuffer(body, upload.fileName, upload.contentType);
         parts.push({ type: 'file', file: tmp.url });
       } catch (err) {
         // Per-attachment fail-soft: a 20MB-cap photo shouldn't sink the

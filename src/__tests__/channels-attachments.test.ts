@@ -1,0 +1,229 @@
+import { test, expect, describe } from 'bun:test';
+import {
+  agentReadableUpload,
+  isAudioContentType,
+  looksLikeText,
+  toUtf8,
+  unsupportedAttachmentNote,
+} from '../channels/attachments';
+
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+describe('agentReadableUpload', () => {
+  test('keeps names with a supported binary extension, with their standard type', () => {
+    expect(agentReadableUpload('photo.jpg', 'image/jpeg')).toEqual({
+      fileName: 'photo.jpg',
+      contentType: 'image/jpeg',
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('scan.pdf', 'application/octet-stream')).toEqual({
+      fileName: 'scan.pdf',
+      contentType: 'application/pdf',
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('report.docx', '')).toEqual({
+      fileName: 'report.docx',
+      contentType: DOCX,
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('sheet.xlsx', 'application/zip')).toEqual({
+      fileName: 'sheet.xlsx',
+      contentType: XLSX,
+      kind: 'binary',
+    });
+  });
+
+  // The framework matches .docx/.xlsx case-sensitively: an uppercase
+  // extension would be decoded as text (zip bytes) instead.
+  test('lowercases the extension', () => {
+    expect(agentReadableUpload('Report.DOCX', DOCX)).toEqual({
+      fileName: 'Report.docx',
+      contentType: DOCX,
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('Q3.Sheet.XLSX', XLSX)?.fileName).toBe('Q3.Sheet.xlsx');
+    expect(agentReadableUpload('IMG_1.JPG', 'image/jpeg')?.fileName).toBe('IMG_1.jpg');
+  });
+
+  // The type the file is served with decides images and PDFs, and the model
+  // APIs reject `image/jpg`.
+  test('uploads non-standard spellings of supported types under the standard one', () => {
+    expect(agentReadableUpload('photo.jpg', 'image/jpg')?.contentType).toBe('image/jpeg');
+    expect(agentReadableUpload('photo.jpg', 'IMAGE/PJPEG')?.contentType).toBe('image/jpeg');
+    expect(agentReadableUpload('scan.pdf', 'application/x-pdf')?.contentType).toBe(
+      'application/pdf',
+    );
+    expect(agentReadableUpload('image_1', 'image/jpg')).toEqual({
+      fileName: 'image_1.jpg',
+      contentType: 'image/jpeg',
+      kind: 'binary',
+    });
+  });
+
+  // The framework picks Word/Excel by extension and images/PDFs by type: a
+  // mismatched pair sends a DOCX down the text path as zip bytes.
+  test('a declared supported type wins, and the name gets its extension', () => {
+    expect(agentReadableUpload('report.pdf', DOCX)).toEqual({
+      fileName: 'report.docx',
+      contentType: DOCX,
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('photo.jpg', 'image/png')).toEqual({
+      fileName: 'photo.png',
+      contentType: 'image/png',
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('photo.jpeg', 'image/jpeg')?.fileName).toBe('photo.jpeg');
+    // An extension that isn't a supported one is kept and appended to.
+    expect(agentReadableUpload('report.final', 'application/pdf')?.fileName).toBe(
+      'report.final.pdf',
+    );
+  });
+
+  // The framework's .eml handling fails the run on the OpenAI Responses route.
+  test('uploads emails as plain text', () => {
+    for (const [name, type] of [
+      ['Mail.eml', 'message/rfc822'],
+      ['Mail.EML', 'message/rfc822'],
+      ['Mail.eml', 'application/octet-stream'],
+    ]) {
+      expect(agentReadableUpload(name!, type!)).toEqual({
+        fileName: 'Mail.eml.txt',
+        contentType: 'text/plain',
+        kind: 'email',
+      });
+    }
+    expect(agentReadableUpload('email_1', 'message/rfc822')?.fileName).toBe('email_1.eml.txt');
+  });
+
+  // An image/* type would send the XML down the framework's image path.
+  test('uploads SVG as text', () => {
+    expect(agentReadableUpload('drawing.svg', 'image/svg+xml')).toEqual({
+      fileName: 'drawing.svg',
+      contentType: 'text/plain',
+      kind: 'text',
+    });
+    expect(agentReadableUpload('drawing', 'image/svg+xml')?.contentType).toBe('text/plain');
+  });
+
+  test('refuses a text extension declared as video or audio', () => {
+    expect(agentReadableUpload('segment.ts', 'video/mp2t')).toBeNull();
+    expect(agentReadableUpload('main.ts', 'application/octet-stream')?.fileName).toBe('main.ts');
+  });
+
+  test('recognizes a name that is only an extension', () => {
+    expect(agentReadableUpload('.env', 'application/octet-stream')).toEqual({
+      fileName: '.env',
+      contentType: 'text/plain',
+      kind: 'text',
+    });
+  });
+
+  test('adds the extension of a supported content type', () => {
+    expect(agentReadableUpload('document_1', 'application/pdf')).toEqual({
+      fileName: 'document_1.pdf',
+      contentType: 'application/pdf',
+      kind: 'binary',
+    });
+    expect(agentReadableUpload('image_1', 'image/png; q=1')).toEqual({
+      fileName: 'image_1.png',
+      contentType: 'image/png',
+      kind: 'binary',
+    });
+  });
+
+  test('keeps text files as they are', () => {
+    expect(agentReadableUpload('main.py', 'text/x-python')).toEqual({
+      fileName: 'main.py',
+      contentType: 'text/x-python',
+      kind: 'text',
+    });
+    expect(agentReadableUpload('data', 'application/json')?.fileName).toBe('data');
+    expect(agentReadableUpload('feed.atom', 'application/atom+xml')?.fileName).toBe('feed.atom');
+    expect(agentReadableUpload('app', 'application/javascript')?.fileName).toBe('app');
+    expect(agentReadableUpload('config', 'application/x-yaml')?.fileName).toBe('config');
+  });
+
+  test('keeps text files by extension when the type is generic, typed as text', () => {
+    for (const name of ['notes.txt', 'README.md', 'main.py', 'app.js', 'x.json']) {
+      expect(agentReadableUpload(name, 'application/octet-stream')).toEqual({
+        fileName: name,
+        contentType: 'text/plain',
+        kind: 'text',
+      });
+    }
+    expect(agentReadableUpload('data.CSV', 'application/octet-stream')?.fileName).toBe('data.csv');
+  });
+
+  // The framework would decode the compressed bytes as text.
+  test('refuses compressed files whatever type they declare', () => {
+    expect(agentReadableUpload('data.csv.gz', 'text/csv')).toBeNull();
+    expect(agentReadableUpload('drawing.svgz', 'image/svg+xml')).toBeNull();
+    expect(agentReadableUpload('report.pdf.GZ', 'application/pdf')).toBeNull();
+    expect(agentReadableUpload('logs.tgz', 'application/octet-stream')).toBeNull();
+  });
+
+  test('refuses images the model APIs do not accept', () => {
+    expect(agentReadableUpload('scan.bmp', 'image/bmp')).toBeNull();
+    expect(agentReadableUpload('scan.tiff', 'image/tiff')).toBeNull();
+  });
+
+  test('refuses binary formats agents cannot read', () => {
+    expect(agentReadableUpload('deck.pptx', 'application/vnd.ms-powerpoint')).toBeNull();
+    expect(agentReadableUpload('archive.zip', 'application/zip')).toBeNull();
+    expect(agentReadableUpload('IMG_1.HEIC', 'image/heic')).toBeNull();
+    expect(agentReadableUpload('blob', 'application/octet-stream')).toBeNull();
+    expect(agentReadableUpload('noext', '')).toBeNull();
+  });
+});
+
+describe('unsupportedAttachmentNote', () => {
+  test('names the file and what agents can read', () => {
+    const note = unsupportedAttachmentNote('deck.pptx');
+    expect(note).toContain('"deck.pptx"');
+    expect(note).toContain('PDF');
+  });
+});
+
+describe('isAudioContentType', () => {
+  test('matches audio types, parameters and case aside', () => {
+    expect(isAudioContentType('audio/wav')).toBe(true);
+    expect(isAudioContentType('AUDIO/ogg; codecs=opus')).toBe(true);
+    expect(isAudioContentType('video/mp4')).toBe(false);
+    expect(isAudioContentType(undefined)).toBe(false);
+  });
+});
+
+describe('looksLikeText', () => {
+  const bytes = (...b: number[]) => Uint8Array.from(b);
+
+  test('accepts text, including UTF-8 and UTF-16 with a byte-order mark', () => {
+    expect(looksLikeText(new TextEncoder().encode('name,amount\nalíce,10\n'))).toBe(true);
+    expect(looksLikeText(bytes(0xff, 0xfe, 0x68, 0x00, 0x69, 0x00))).toBe(true);
+    expect(looksLikeText(new Uint8Array(0))).toBe(true);
+  });
+
+  test('refuses gzip, zip and bytes with NULs', () => {
+    expect(looksLikeText(Bun.gzipSync(new TextEncoder().encode('a,b\n1,2\n')))).toBe(false);
+    expect(looksLikeText(bytes(0x50, 0x4b, 0x03, 0x04, 0x14))).toBe(false);
+    expect(looksLikeText(bytes(0x68, 0x00, 0x69))).toBe(false);
+  });
+});
+
+describe('toUtf8', () => {
+  const text = 'Name\tCity\nAna\tBarcelona\n';
+
+  test('converts BOM-marked UTF-16 in both byte orders', () => {
+    const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]);
+    const be = Buffer.from(le.subarray(2)).swap16();
+    const beWithBom = Buffer.concat([Buffer.from([0xfe, 0xff]), be]);
+    expect(new TextDecoder().decode(toUtf8(new Uint8Array(le)))).toBe(text);
+    expect(new TextDecoder().decode(toUtf8(new Uint8Array(beWithBom)))).toBe(text);
+  });
+
+  test('leaves anything else unchanged', () => {
+    const utf8 = new TextEncoder().encode(text);
+    expect(toUtf8(utf8)).toBe(utf8);
+  });
+});
