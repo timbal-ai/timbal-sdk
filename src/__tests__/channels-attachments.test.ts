@@ -18,6 +18,19 @@ describe('agentReadableFileName', () => {
     expect(agentReadableFileName('main.py', 'text/x-python')).toBe('main.py');
     expect(agentReadableFileName('data', 'application/json')).toBe('data');
     expect(agentReadableFileName('feed.atom', 'application/atom+xml')).toBe('feed.atom');
+    expect(agentReadableFileName('app', 'application/javascript')).toBe('app');
+    expect(agentReadableFileName('config', 'application/x-yaml')).toBe('config');
+  });
+
+  test('keeps text files by extension when the type is generic', () => {
+    for (const name of ['notes.txt', 'data.CSV', 'README.md', 'main.py', 'app.js', 'x.json']) {
+      expect(agentReadableFileName(name, 'application/octet-stream')).toBe(name);
+    }
+  });
+
+  test('refuses images the model APIs do not accept', () => {
+    expect(agentReadableFileName('scan.bmp', 'image/bmp')).toBeNull();
+    expect(agentReadableFileName('scan.tiff', 'image/tiff')).toBeNull();
   });
 
   test('refuses binary formats agents cannot read', () => {
