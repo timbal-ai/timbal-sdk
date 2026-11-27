@@ -1,12 +1,11 @@
 /**
  * Which inbound attachments Timbal agents can read.
  *
- * The agent framework infers a file's type from its URL's extension (the
- * temp-file URL keeps the uploaded file name) and turns images, PDFs, Word
- * and Excel files into model input. Anything else is decoded as text — fine
- * for text files, but a binary file (pptx, zip, HEIC, ...) becomes bytes of
- * garbage in the prompt, and a large one overflows the model's context and
- * fails the run.
+ * The agent framework works out a file's type from its URL's extension (the
+ * temp-file URL keeps the uploaded file name) and the type it is served
+ * with, and turns images, PDFs, Word and Excel files into model input.
+ * Anything else is decoded as text — fine for text files, but a binary file
+ * (pptx, zip, HEIC, ...) becomes junk text in the prompt.
  */
 
 /**
@@ -41,7 +40,7 @@ const TEXT_EXTENSIONS = new Set([
   'txt', 'text', 'log', 'md', 'markdown', 'rst',
   'csv', 'tsv', 'json', 'jsonl', 'ndjson', 'xml', 'html', 'htm', 'xhtml',
   'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env', 'properties',
-  'sql', 'graphql', 'eml', 'ics', 'vcf', 'srt', 'vtt', 'tex',
+  'sql', 'graphql', 'ics', 'vcf', 'srt', 'vtt', 'tex', 'svg',
   'py', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'java', 'kt', 'go', 'rs', 'rb',
   'php', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'swift', 'scala', 'r', 'lua',
   'sh', 'bash', 'zsh', 'ps1', 'bat', 'css', 'scss', 'vue', 'svelte',
@@ -86,11 +85,36 @@ function normalizeMime(contentType: string): string {
   return MIME_ALIASES.get(mime) ?? mime;
 }
 
-/** Splits `Report.DOCX` into `Report` and `docx`; no extension → `undefined`. */
+/**
+ * Splits `Report.DOCX` into `Report` and `docx`, and `.env` into `` and
+ * `env`; no extension → `undefined`.
+ */
 function splitExtension(fileName: string): { base: string; ext: string } | undefined {
   const dot = fileName.lastIndexOf('.');
-  if (dot <= 0 || dot === fileName.length - 1) return undefined;
+  if (dot < 0 || dot === fileName.length - 1) return undefined;
   return { base: fileName.slice(0, dot), ext: fileName.slice(dot + 1).toLowerCase() };
+}
+
+/**
+ * Text is uploaded with a text type. An `image/*` one (SVG) would send it
+ * down the framework's image path, which rejects it.
+ */
+function textContentType(mime: string, contentType: string): string {
+  return isTextual(mime) && !mime.startsWith('image/') ? contentType : 'text/plain';
+}
+
+/**
+ * Emails are uploaded as plain text. The framework's `.eml` handling isn't
+ * implemented on the OpenAI Responses route (its default for OpenAI models)
+ * and fails the run there; as text, every model reads the message.
+ */
+function emailAsText(base: string): AgentReadableUpload {
+  return { fileName: `${base}.eml.txt`, contentType: 'text/plain' };
+}
+
+/** Whether a content type is audio, which the pipeline transcribes. */
+export function isAudioContentType(contentType: string | undefined): boolean {
+  return normalizeMime(contentType ?? '').startsWith('audio/');
 }
 
 /** The name and content type to upload an attachment under. */
@@ -105,38 +129,54 @@ export interface AgentReadableUpload {
  *
  * The framework picks Word, Excel and email handling by a case-sensitive
  * extension match, and the type the file is served with decides images and
- * PDFs. So:
+ * PDFs, so the two must agree:
  *
- * - A name with a supported extension is kept, with the extension
- *   lowercased (`Report.DOCX` → `Report.docx`).
- * - A supported binary file is uploaded with its standard content type: the
- *   declared one when that is a supported type, else the extension's
- *   (`photo.jpg` + `image/jpg` or `application/octet-stream` → `image/jpeg`).
- * - A name without a supported extension gets the one of its supported
- *   content type (`report` + `application/pdf` → `report.pdf`).
- * - Other text keeps its name, recognized by its content type: the framework
- *   decodes it as text.
+ * - A supported binary file gets its standard type: the declared one when
+ *   that is supported, else its extension's (`photo.jpg` + `image/jpg` or
+ *   `application/octet-stream` → `image/jpeg`). Its name gets that type's
+ *   extension, lowercased (`Report.DOCX` → `Report.docx`): a mismatched
+ *   supported one is replaced (`report.pdf` + Word → `report.docx`), any
+ *   other kept and appended to (`document_42` + PDF → `document_42.pdf`).
+ * - An email is uploaded as text (`Mail.eml` → `Mail.eml.txt`).
+ * - Other text is recognized by its extension or its type, and uploaded with
+ *   a text type. A text extension declared as video or audio is refused:
+ *   `segment.ts` + `video/mp2t` is a video, not TypeScript.
  */
 export function agentReadableUpload(
   fileName: string,
   contentType: string,
 ): AgentReadableUpload | null {
   const mime = normalizeMime(contentType);
-  const declaredExt = AGENT_BINARY_EXTENSIONS.get(mime);
   const parts = splitExtension(fileName);
+  const ext = parts?.ext;
+  const extType = ext ? AGENT_BINARY_TYPES.get(ext) : undefined;
 
-  const extType = parts && AGENT_BINARY_TYPES.get(parts.ext);
-  if (parts && extType) {
-    return {
-      fileName: `${parts.base}.${parts.ext}`,
-      contentType: declaredExt ? mime : extType,
-    };
+  const declaredExt = AGENT_BINARY_EXTENSIONS.get(mime);
+  if (declaredExt) {
+    if (parts && extType === mime) return { fileName: `${parts.base}.${ext}`, contentType: mime };
+    const base = parts && extType ? parts.base : fileName;
+    return { fileName: `${base}.${declaredExt}`, contentType: mime };
   }
-  if (parts && TEXT_EXTENSIONS.has(parts.ext)) {
-    return { fileName: `${parts.base}.${parts.ext}`, contentType };
+  if (parts && extType) return { fileName: `${parts.base}.${ext}`, contentType: extType };
+
+  if (parts && ext === 'eml') return emailAsText(parts.base);
+  if (parts && ext && TEXT_EXTENSIONS.has(ext)) {
+    if (mime.startsWith('video/') || mime.startsWith('audio/')) return null;
+    return { fileName: `${parts.base}.${ext}`, contentType: textContentType(mime, contentType) };
   }
 
-  if (declaredExt) return { fileName: `${fileName}.${declaredExt}`, contentType: mime };
+  if (mime === 'message/rfc822') return emailAsText(fileName);
+  return isTextual(mime) ? { fileName, contentType: textContentType(mime, contentType) } : null;
+}
 
-  return isTextual(mime) ? { fileName, contentType } : null;
+/**
+ * The prompt text that stands in for an attachment agents can't read, so
+ * the agent knows a file was sent and can ask for a format it reads instead
+ * of answering as if nothing was attached.
+ */
+export function unsupportedAttachmentNote(fileName: string): string {
+  return (
+    `[Attachment "${fileName}" was not included: this file type can't be read. ` +
+    'Supported: images (JPEG, PNG, GIF, WebP), PDF, Word (.docx), Excel (.xlsx) and text files.]'
+  );
 }

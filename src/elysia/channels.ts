@@ -2,7 +2,11 @@ import { Elysia } from 'elysia';
 import { Timbal } from '../lib/timbal';
 import { DedupeCache } from '../channels/dedupe';
 import { StreamingReply } from '../channels/reply';
-import { agentReadableUpload } from '../channels/attachments';
+import {
+  agentReadableUpload,
+  isAudioContentType,
+  unsupportedAttachmentNote,
+} from '../channels/attachments';
 import { WorkforceTextCollector } from '../channels/collect';
 import { channelBindingsFromEnv } from '../channels/env';
 import { resolvePublicOrigin } from '../channels/origin';
@@ -280,16 +284,18 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * (`TIMBAL_PROJECT_SECRET`) — then send prompt content parts, the same
    * shape the platform chat UI uses.
    *
-   * Audio attachments (WhatsApp voice notes) are transcribed with the
+   * Audio attachments (WhatsApp voice notes, and any file with an audio
+   * type, such as a WAV sent as a Telegram document) are transcribed with the
    * platform's transcription service and sent as text instead of a file:
    * agents accept few audio formats (voice notes are Ogg/Opus) and most chat
    * models take no audio at all. When a transcript is all there is (with
    * the caption, if any), the plain `{ prompt: text }` shape is used.
    *
    * Other files are sent only when agents can read them (images, PDF, Word,
-   * Excel, text — see {@link agentReadableUpload}); anything else fails
-   * that attachment, before it is downloaded when the adapter declares its
-   * name and type.
+   * Excel, text — see {@link agentReadableUpload}). Anything else is not
+   * uploaded (nor downloaded, when the adapter declares its name and type):
+   * a text note naming the file takes its place, so the agent can ask for a
+   * format it reads, and `onError` gets the refusal.
    */
   async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
     const attachments = event.attachments ?? [];
@@ -298,20 +304,28 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     const parts: Array<Record<string, unknown>> = [];
     if (event.text) parts.push({ type: 'text', text: event.text });
     const failures: unknown[] = [];
+    // A file agents can't read leaves a note in the prompt instead.
+    const refuse = (fileName: string, contentType: string): void => {
+      parts.push({ type: 'text', text: unsupportedAttachmentNote(fileName) });
+      failures.push(unsupportedAttachment(fileName, contentType));
+    };
     let transcribed = false;
     for (const attachment of attachments) {
       try {
+        const declaredAudio =
+          attachment.kind === 'audio' || isAudioContentType(attachment.contentType);
         // Skip the download when the declared name and type already rule it out.
         if (
-          attachment.kind !== 'audio' &&
+          !declaredAudio &&
           attachment.fileName &&
           attachment.contentType &&
           !agentReadableUpload(attachment.fileName, attachment.contentType)
         ) {
-          throw unsupportedAttachment(attachment.fileName, attachment.contentType);
+          refuse(attachment.fileName, attachment.contentType);
+          continue;
         }
         const { data, contentType, fileName } = await attachment.download();
-        if (attachment.kind === 'audio') {
+        if (declaredAudio || isAudioContentType(contentType)) {
           const { text } = await timbal.transcribeAudio(data, fileName, contentType);
           if (!text.trim()) throw new Error(`No speech recognized in ${fileName}`);
           parts.push({ type: 'text', text: text.trim() });
@@ -321,7 +335,10 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
         // Uploaded under a name and type the framework recognizes
         // (`Report.DOCX` → `Report.docx`, `image/jpg` → `image/jpeg`).
         const upload = agentReadableUpload(fileName, contentType);
-        if (!upload) throw unsupportedAttachment(fileName, contentType);
+        if (!upload) {
+          refuse(fileName, contentType);
+          continue;
+        }
         const tmp = await timbal.uploadTempFileFromBuffer(data, upload.fileName, upload.contentType);
         parts.push({ type: 'file', file: tmp.url });
       } catch (err) {

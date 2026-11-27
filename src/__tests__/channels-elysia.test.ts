@@ -8,6 +8,7 @@ import {
 } from '../elysia/channels';
 import { clearProjectAuthConfigCache } from '../auth/config';
 import { clearRuntimeChannelsCache } from '../channels/runtime';
+import { unsupportedAttachmentNote } from '../channels/attachments';
 import { deriveTelegramSecretToken } from '../channels/adapters/telegram';
 import { whatsapp } from '../channels/adapters/whatsapp';
 import { clearConfigRefreshHooks } from '../config/refresh';
@@ -515,7 +516,26 @@ describe('timbalChannels plugin', () => {
       });
     });
 
-    test('an attachment agents cannot read is refused before download', async () => {
+    test('an audio file sent as a document is transcribed', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads, transcriptions } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      // Telegram gives a WAV sent as a file the `document` kind.
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'memo.wav', type: 'audio/wav', kind: 'document' }],
+      });
+      await settle();
+
+      expect(uploads).toEqual([]);
+      expect(transcriptions).toEqual([{ filename: 'memo.wav', contentType: 'audio/wav' }]);
+      expect(invocations[0]!.input).toEqual({ prompt: 'the spoken words' });
+    });
+
+    test('a file agents cannot read is not downloaded; the agent gets a note instead', async () => {
       const { adapter, sent } = makeMediaAdapter();
       const { timbal, invocations, uploads } = makeUploadingTimbal();
       const errors: unknown[] = [];
@@ -536,12 +556,15 @@ describe('timbalChannels plugin', () => {
       await settle();
 
       expect(uploads).toEqual([]);
-      expect(invocations).toHaveLength(0);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [{ type: 'text', text: unsupportedAttachmentNote('deck.pptx') }],
+      });
       expect(String(errors[0])).toContain("Agents can't read this attachment type: deck.pptx");
-      expect(sent).toEqual(['cannot read that file']);
+      // The agent answers (it can ask for another format); no error notice.
+      expect(sent).toEqual(['seen it']);
     });
 
-    test('an unreadable attachment next to a caption still runs on the caption', async () => {
+    test('a file agents cannot read sits next to the caption as a note', async () => {
       const { adapter } = makeMediaAdapter();
       const { timbal, invocations, uploads } = makeUploadingTimbal();
       const errors: unknown[] = [];
@@ -556,14 +579,40 @@ describe('timbalChannels plugin', () => {
       await post(app, channelPath('a', 'media'), {
         id: 'e1',
         text: 'see attached',
-        files: [{ name: 'archive.zip', type: 'application/zip' }],
+        files: [
+          { name: 'archive.zip', type: 'application/zip' },
+          { name: 'scan.pdf', type: 'application/pdf' },
+        ],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual(['scan.pdf']);
+      expect(errors).toHaveLength(1);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: 'see attached' },
+          { type: 'text', text: unsupportedAttachmentNote('archive.zip') },
+          { type: 'file', file: 'https://cdn.test/tmp/scan.pdf' },
+        ],
+      });
+    });
+
+    test('a file refused after download (no declared type) also leaves a note', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'blob', type: '' }],
       });
       await settle();
 
       expect(uploads).toEqual([]);
-      expect(errors).toHaveLength(1);
       expect(invocations[0]!.input).toEqual({
-        prompt: [{ type: 'text', text: 'see attached' }],
+        prompt: [{ type: 'text', text: unsupportedAttachmentNote('blob') }],
       });
     });
 
@@ -658,7 +707,8 @@ describe('timbalChannels plugin', () => {
         id: 'e1',
         text: 'two files',
         files: [
-          { name: 'huge.mov', type: 'video/quicktime', fail: true },
+          // Readable type, so it fails on download (not refused before).
+          { name: 'huge.jpg', type: 'image/jpeg', fail: true },
           { name: 'ok.pdf', type: 'application/pdf' },
         ],
       });
@@ -691,7 +741,7 @@ describe('timbalChannels plugin', () => {
 
       await post(app, channelPath('a', 'media'), {
         id: 'e1',
-        files: [{ name: 'broken.bin', type: 'application/octet-stream', fail: true }],
+        files: [{ name: 'broken.pdf', type: 'application/pdf', fail: true }],
       });
       await settle();
 

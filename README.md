@@ -1097,7 +1097,7 @@ app.use(timbalChannels({
 }));
 ```
 
-The default workforce input is `{ prompt: event.text }`; events with attachments (Telegram photos/documents) are re-uploaded to Timbal temp storage and sent as prompt content parts (`{ prompt: [{ type: "text", … }, { type: "file", file: url }] }`) — the same shape the platform chat UI produces. `buildInput` takes full control, including attachments via `event.attachments`; `event.conversationId` (Slack `channel:thread_ts`, Telegram `chat.id`, Teams `conversation.id`) is the key for anything conversation-scoped.
+The default workforce input is `{ prompt: event.text }`; events with attachments (Telegram photos/documents) are re-uploaded to Timbal temp storage and sent as prompt content parts (`{ prompt: [{ type: "text", … }, { type: "file", file: url }] }`) — the same shape the platform chat UI produces. Files agents can't read (pptx, zip, HEIC, …) are not uploaded: a short text note naming the file takes their place, so the agent can ask for a format it reads. `buildInput` takes full control, including attachments via `event.attachments`; `event.conversationId` (Slack `channel:thread_ts`, Telegram `chat.id`, Teams `conversation.id`) is the key for anything conversation-scoped.
 
 ### Options
 
