@@ -2,6 +2,7 @@ import { test, expect, describe } from 'bun:test';
 import {
   agentReadableUpload,
   isAudioContentType,
+  looksLikeText,
   unsupportedAttachmentNote,
 } from '../channels/attachments';
 
@@ -13,18 +14,22 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('photo.jpg', 'image/jpeg')).toEqual({
       fileName: 'photo.jpg',
       contentType: 'image/jpeg',
+      kind: 'binary',
     });
     expect(agentReadableUpload('scan.pdf', 'application/octet-stream')).toEqual({
       fileName: 'scan.pdf',
       contentType: 'application/pdf',
+      kind: 'binary',
     });
     expect(agentReadableUpload('report.docx', '')).toEqual({
       fileName: 'report.docx',
       contentType: DOCX,
+      kind: 'binary',
     });
     expect(agentReadableUpload('sheet.xlsx', 'application/zip')).toEqual({
       fileName: 'sheet.xlsx',
       contentType: XLSX,
+      kind: 'binary',
     });
   });
 
@@ -34,6 +39,7 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('Report.DOCX', DOCX)).toEqual({
       fileName: 'Report.docx',
       contentType: DOCX,
+      kind: 'binary',
     });
     expect(agentReadableUpload('Q3.Sheet.XLSX', XLSX)?.fileName).toBe('Q3.Sheet.xlsx');
     expect(agentReadableUpload('IMG_1.JPG', 'image/jpeg')?.fileName).toBe('IMG_1.jpg');
@@ -50,6 +56,7 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('image_1', 'image/jpg')).toEqual({
       fileName: 'image_1.jpg',
       contentType: 'image/jpeg',
+      kind: 'binary',
     });
   });
 
@@ -59,10 +66,12 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('report.pdf', DOCX)).toEqual({
       fileName: 'report.docx',
       contentType: DOCX,
+      kind: 'binary',
     });
     expect(agentReadableUpload('photo.jpg', 'image/png')).toEqual({
       fileName: 'photo.png',
       contentType: 'image/png',
+      kind: 'binary',
     });
     expect(agentReadableUpload('photo.jpeg', 'image/jpeg')?.fileName).toBe('photo.jpeg');
     // An extension that isn't a supported one is kept and appended to.
@@ -81,6 +90,7 @@ describe('agentReadableUpload', () => {
       expect(agentReadableUpload(name!, type!)).toEqual({
         fileName: 'Mail.eml.txt',
         contentType: 'text/plain',
+        kind: 'email',
       });
     }
     expect(agentReadableUpload('email_1', 'message/rfc822')?.fileName).toBe('email_1.eml.txt');
@@ -91,6 +101,7 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('drawing.svg', 'image/svg+xml')).toEqual({
       fileName: 'drawing.svg',
       contentType: 'text/plain',
+      kind: 'text',
     });
     expect(agentReadableUpload('drawing', 'image/svg+xml')?.contentType).toBe('text/plain');
   });
@@ -104,6 +115,7 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('.env', 'application/octet-stream')).toEqual({
       fileName: '.env',
       contentType: 'text/plain',
+      kind: 'text',
     });
   });
 
@@ -111,10 +123,12 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('document_1', 'application/pdf')).toEqual({
       fileName: 'document_1.pdf',
       contentType: 'application/pdf',
+      kind: 'binary',
     });
     expect(agentReadableUpload('image_1', 'image/png; q=1')).toEqual({
       fileName: 'image_1.png',
       contentType: 'image/png',
+      kind: 'binary',
     });
   });
 
@@ -122,6 +136,7 @@ describe('agentReadableUpload', () => {
     expect(agentReadableUpload('main.py', 'text/x-python')).toEqual({
       fileName: 'main.py',
       contentType: 'text/x-python',
+      kind: 'text',
     });
     expect(agentReadableUpload('data', 'application/json')?.fileName).toBe('data');
     expect(agentReadableUpload('feed.atom', 'application/atom+xml')?.fileName).toBe('feed.atom');
@@ -134,9 +149,18 @@ describe('agentReadableUpload', () => {
       expect(agentReadableUpload(name, 'application/octet-stream')).toEqual({
         fileName: name,
         contentType: 'text/plain',
+        kind: 'text',
       });
     }
     expect(agentReadableUpload('data.CSV', 'application/octet-stream')?.fileName).toBe('data.csv');
+  });
+
+  // The framework would decode the compressed bytes as text.
+  test('refuses compressed files whatever type they declare', () => {
+    expect(agentReadableUpload('data.csv.gz', 'text/csv')).toBeNull();
+    expect(agentReadableUpload('drawing.svgz', 'image/svg+xml')).toBeNull();
+    expect(agentReadableUpload('report.pdf.GZ', 'application/pdf')).toBeNull();
+    expect(agentReadableUpload('logs.tgz', 'application/octet-stream')).toBeNull();
   });
 
   test('refuses images the model APIs do not accept', () => {
@@ -167,5 +191,21 @@ describe('isAudioContentType', () => {
     expect(isAudioContentType('AUDIO/ogg; codecs=opus')).toBe(true);
     expect(isAudioContentType('video/mp4')).toBe(false);
     expect(isAudioContentType(undefined)).toBe(false);
+  });
+});
+
+describe('looksLikeText', () => {
+  const bytes = (...b: number[]) => Uint8Array.from(b);
+
+  test('accepts text, including UTF-8 and UTF-16 with a byte-order mark', () => {
+    expect(looksLikeText(new TextEncoder().encode('name,amount\nalíce,10\n'))).toBe(true);
+    expect(looksLikeText(bytes(0xff, 0xfe, 0x68, 0x00, 0x69, 0x00))).toBe(true);
+    expect(looksLikeText(new Uint8Array(0))).toBe(true);
+  });
+
+  test('refuses gzip, zip and bytes with NULs', () => {
+    expect(looksLikeText(Bun.gzipSync(new TextEncoder().encode('a,b\n1,2\n')))).toBe(false);
+    expect(looksLikeText(bytes(0x50, 0x4b, 0x03, 0x04, 0x14))).toBe(false);
+    expect(looksLikeText(bytes(0x68, 0x00, 0x69))).toBe(false);
   });
 });

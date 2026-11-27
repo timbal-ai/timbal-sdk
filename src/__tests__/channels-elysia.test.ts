@@ -354,8 +354,9 @@ describe('timbalChannels plugin', () => {
   describe('attachments', () => {
     /**
      * Media-aware fake adapter: body is `{ id, text, files: [{name, type,
-     * fail?}] }`; each file becomes an attachment whose download() yields
-     * one byte per name char (or throws when `fail`).
+     * fail?, content?}] }`; each file becomes an attachment whose download()
+     * yields `content` (one char per byte), else the name's bytes (or throws
+     * when `fail`).
      */
     function makeMediaAdapter() {
       const base = makeAdapter('media');
@@ -369,6 +370,7 @@ describe('timbalChannels plugin', () => {
               name: string;
               type: string;
               fail?: boolean;
+              content?: string;
               kind?: 'image' | 'document' | 'audio';
             }[];
           };
@@ -379,7 +381,7 @@ describe('timbalChannels plugin', () => {
             async download() {
               if (f.fail) throw new Error(`download failed: ${f.name}`);
               return {
-                data: new Uint8Array(f.name.length),
+                data: new Uint8Array(Buffer.from(f.content ?? f.name, 'latin1')),
                 contentType: f.type,
                 fileName: f.name,
               };
@@ -405,10 +407,12 @@ describe('timbalChannels plugin', () => {
         { type: 'delta', delta: 'seen it' },
       ]);
       const uploads: { filename: string; contentType?: string; bytes: number }[] = [];
+      const uploaded = new Map<string, string>();
       const transcriptions: { filename: string; contentType: string }[] = [];
       (timbal as unknown as Record<string, unknown>).uploadTempFileFromBuffer =
         async (data: Uint8Array, filename: string, contentType?: string) => {
           uploads.push({ filename, contentType, bytes: data.byteLength });
+          uploaded.set(filename, new TextDecoder().decode(data));
           return { url: `https://cdn.test/tmp/${filename}` };
         };
       (timbal as unknown as Record<string, unknown>).transcribeAudio = async (
@@ -419,7 +423,7 @@ describe('timbalChannels plugin', () => {
         transcriptions.push({ filename, contentType });
         return { text: transcript };
       };
-      return { timbal, invocations, uploads, transcriptions };
+      return { timbal, invocations, uploads, uploaded, transcriptions };
     }
 
     test('a voice note is transcribed and sent as a plain text prompt', async () => {
@@ -513,6 +517,84 @@ describe('timbalChannels plugin', () => {
           { type: 'text', text: 'what does this say?' },
           { type: 'file', file: 'https://cdn.test/tmp/scan.pdf' },
         ],
+      });
+    });
+
+    test('an email is sent as its text, and its attachments follow it', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads, uploaded } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+      const email = [
+        'From: ana@example.com',
+        'Subject: Invoice',
+        'Content-Type: multipart/mixed; boundary="b"',
+        '',
+        '--b',
+        'Content-Type: text/plain',
+        '',
+        'Invoice and deck attached.',
+        '--b',
+        'Content-Type: application/pdf',
+        'Content-Disposition: attachment; filename="invoice.pdf"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        Buffer.from('%PDF-1.4 invoice').toString('base64'),
+        '--b',
+        'Content-Type: application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'Content-Disposition: attachment; filename="deck.pptx"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        Buffer.from('PK deck').toString('base64'),
+        '--b--',
+      ].join('\r\n');
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        text: 'fwd',
+        files: [{ name: 'Mail.eml', type: 'message/rfc822', content: email }],
+      });
+      await settle();
+
+      expect(uploads.map(({ filename, contentType }) => ({ filename, contentType }))).toEqual([
+        { filename: 'Mail.eml.txt', contentType: 'text/plain' },
+        { filename: 'invoice.pdf', contentType: 'application/pdf' },
+      ]);
+      expect(uploaded.get('Mail.eml.txt')).toBe(
+        'From: ana@example.com\nSubject: Invoice\nAttachments: invoice.pdf, deck.pptx\n\n' +
+          'Invoice and deck attached.',
+      );
+      expect(uploaded.get('invoice.pdf')).toBe('%PDF-1.4 invoice');
+      expect(invocations[0]!.input).toEqual({
+        prompt: [
+          { type: 'text', text: 'fwd' },
+          { type: 'file', file: 'https://cdn.test/tmp/Mail.eml.txt' },
+          { type: 'file', file: 'https://cdn.test/tmp/invoice.pdf' },
+          { type: 'text', text: unsupportedAttachmentNote('deck.pptx') },
+        ],
+      });
+    });
+
+    test('a text file whose bytes are compressed is refused after download', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+      const gzipped = Buffer.from(Bun.gzipSync(new TextEncoder().encode('a,b\n1,2\n'))).toString(
+        'latin1',
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'data.csv', type: 'text/csv', content: gzipped }],
+      });
+      await settle();
+
+      expect(uploads).toEqual([]);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [{ type: 'text', text: unsupportedAttachmentNote('data.csv') }],
       });
     });
 

@@ -5,8 +5,10 @@ import { StreamingReply } from '../channels/reply';
 import {
   agentReadableUpload,
   isAudioContentType,
+  looksLikeText,
   unsupportedAttachmentNote,
 } from '../channels/attachments';
+import { parseEmail, type EmailAttachment } from '../channels/email';
 import { WorkforceTextCollector } from '../channels/collect';
 import { channelBindingsFromEnv } from '../channels/env';
 import { resolvePublicOrigin } from '../channels/origin';
@@ -19,10 +21,31 @@ import { getCachedRuntimeChannels } from '../channels/runtime';
 import { getCachedProject } from '../auth/config';
 import { registerConfigRefreshHook } from '../config/refresh';
 import type { ProjectChannelSpec } from '../types';
-import type { ChannelBinding, ChannelEvent, WebhookRequest } from '../channels/types';
+import type {
+  ChannelAttachment,
+  ChannelBinding,
+  ChannelEvent,
+  WebhookRequest,
+} from '../channels/types';
 
 function unsupportedAttachment(fileName: string, contentType: string): Error {
   return new Error(`Agents can't read this attachment type: ${fileName} (${contentType})`);
+}
+
+/** Emails inside emails (forwards) parsed before the rest is sent as is. */
+const MAX_EMAIL_DEPTH = 3;
+/** Files taken from one email; the email's text still lists them all. */
+const MAX_EMAIL_ATTACHMENTS = 20;
+
+/** A file found inside an email, as an attachment of the message. */
+function emailAttachment(file: EmailAttachment): ChannelAttachment {
+  return {
+    kind: file.contentType.startsWith('image/') ? 'image' : 'document',
+    fileName: file.fileName,
+    contentType: file.contentType,
+    sizeBytes: file.data.byteLength,
+    download: async () => ({ ...file }),
+  };
 }
 
 /**
@@ -295,7 +318,13 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * Excel, text — see {@link agentReadableUpload}). Anything else is not
    * uploaded (nor downloaded, when the adapter declares its name and type):
    * a text note naming the file takes its place, so the agent can ask for a
-   * format it reads, and `onError` gets the refusal.
+   * format it reads, and `onError` gets the refusal. A file meant to be read
+   * as text whose bytes look binary (a gzip declared `text/csv`) is refused
+   * the same way.
+   *
+   * An email (`.eml`) is uploaded as its readable text (main headers and
+   * body, see {@link parseEmail}); each file attached to it follows the
+   * email through the same checks.
    */
   async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
     const attachments = event.attachments ?? [];
@@ -310,7 +339,10 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
       failures.push(unsupportedAttachment(fileName, contentType));
     };
     let transcribed = false;
-    for (const attachment of attachments) {
+    // Files found inside an email join the queue right after it (array
+    // iterators are live, so they are visited in turn).
+    const queue = attachments.map((attachment) => ({ attachment, emailDepth: 0 }));
+    for (const [i, { attachment, emailDepth }] of queue.entries()) {
       try {
         const declaredAudio =
           attachment.kind === 'audio' || isAudioContentType(attachment.contentType);
@@ -339,7 +371,25 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           refuse(fileName, contentType);
           continue;
         }
-        const tmp = await timbal.uploadTempFileFromBuffer(data, upload.fileName, upload.contentType);
+        let body = data;
+        if (upload.kind === 'email' && emailDepth < MAX_EMAIL_DEPTH) {
+          const email = parseEmail(data);
+          body = new TextEncoder().encode(email.text);
+          const files = email.attachments.slice(0, MAX_EMAIL_ATTACHMENTS);
+          queue.splice(
+            i + 1,
+            0,
+            ...files.map((file) => ({
+              attachment: emailAttachment(file),
+              emailDepth: emailDepth + 1,
+            })),
+          );
+        }
+        if (upload.kind !== 'binary' && !looksLikeText(body)) {
+          refuse(fileName, contentType);
+          continue;
+        }
+        const tmp = await timbal.uploadTempFileFromBuffer(body, upload.fileName, upload.contentType);
         parts.push({ type: 'file', file: tmp.url });
       } catch (err) {
         // Per-attachment fail-soft: a 20MB-cap photo shouldn't sink the

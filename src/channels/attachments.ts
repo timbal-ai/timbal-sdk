@@ -46,6 +46,16 @@ const TEXT_EXTENSIONS = new Set([
   'sh', 'bash', 'zsh', 'ps1', 'bat', 'css', 'scss', 'vue', 'svelte',
 ]);
 
+/**
+ * Compressed files. The framework would decode the compressed bytes as text
+ * (`data.csv.gz` declared `text/csv`), so they are refused whatever type
+ * they declare.
+ */
+const COMPRESSED_EXTENSIONS = new Set([
+  'gz', 'gzip', 'tgz', 'svgz', 'bz2', 'tbz', 'tbz2', 'xz', 'txz', 'lz', 'lzma',
+  'zst', 'z', 'br', 'zip', '7z', 'rar', 'tar',
+]);
+
 /** Content types the framework reads fine as text, whatever the extension. */
 function isTextual(mime: string): boolean {
   return (
@@ -109,7 +119,7 @@ function textContentType(mime: string, contentType: string): string {
  * and fails the run there; as text, every model reads the message.
  */
 function emailAsText(base: string): AgentReadableUpload {
-  return { fileName: `${base}.eml.txt`, contentType: 'text/plain' };
+  return { fileName: `${base}.eml.txt`, contentType: 'text/plain', kind: 'email' };
 }
 
 /** Whether a content type is audio, which the pipeline transcribes. */
@@ -121,6 +131,12 @@ export function isAudioContentType(contentType: string | undefined): boolean {
 export interface AgentReadableUpload {
   fileName: string;
   contentType: string;
+  /**
+   * `binary`: an image, PDF, Word or Excel file. `text`: read as text, so
+   * its bytes should look like text. `email`: parse it (see `parseEmail`)
+   * and upload its text.
+   */
+  kind: 'binary' | 'text' | 'email';
 }
 
 /**
@@ -138,6 +154,7 @@ export interface AgentReadableUpload {
  *   supported one is replaced (`report.pdf` + Word → `report.docx`), any
  *   other kept and appended to (`document_42` + PDF → `document_42.pdf`).
  * - An email is uploaded as text (`Mail.eml` → `Mail.eml.txt`).
+ * - A compressed file is refused (`data.csv.gz`, `drawing.svgz`).
  * - Other text is recognized by its extension or its type, and uploaded with
  *   a text type. A text extension declared as video or audio is refused:
  *   `segment.ts` + `video/mp2t` is a video, not TypeScript.
@@ -149,24 +166,48 @@ export function agentReadableUpload(
   const mime = normalizeMime(contentType);
   const parts = splitExtension(fileName);
   const ext = parts?.ext;
+  if (ext && COMPRESSED_EXTENSIONS.has(ext)) return null;
   const extType = ext ? AGENT_BINARY_TYPES.get(ext) : undefined;
 
   const declaredExt = AGENT_BINARY_EXTENSIONS.get(mime);
   if (declaredExt) {
-    if (parts && extType === mime) return { fileName: `${parts.base}.${ext}`, contentType: mime };
+    if (parts && extType === mime) {
+      return { fileName: `${parts.base}.${ext}`, contentType: mime, kind: 'binary' };
+    }
     const base = parts && extType ? parts.base : fileName;
-    return { fileName: `${base}.${declaredExt}`, contentType: mime };
+    return { fileName: `${base}.${declaredExt}`, contentType: mime, kind: 'binary' };
   }
-  if (parts && extType) return { fileName: `${parts.base}.${ext}`, contentType: extType };
+  if (parts && extType) {
+    return { fileName: `${parts.base}.${ext}`, contentType: extType, kind: 'binary' };
+  }
 
   if (parts && ext === 'eml') return emailAsText(parts.base);
   if (parts && ext && TEXT_EXTENSIONS.has(ext)) {
     if (mime.startsWith('video/') || mime.startsWith('audio/')) return null;
-    return { fileName: `${parts.base}.${ext}`, contentType: textContentType(mime, contentType) };
+    return {
+      fileName: `${parts.base}.${ext}`,
+      contentType: textContentType(mime, contentType),
+      kind: 'text',
+    };
   }
 
   if (mime === 'message/rfc822') return emailAsText(fileName);
-  return isTextual(mime) ? { fileName, contentType: textContentType(mime, contentType) } : null;
+  return isTextual(mime)
+    ? { fileName, contentType: textContentType(mime, contentType), kind: 'text' }
+    : null;
+}
+
+/**
+ * Whether bytes meant to be read as text look like text: no gzip or zip
+ * signature and no NUL byte in the first 8 KiB. UTF-16 (which has NUL
+ * bytes) is recognized by its byte-order mark.
+ */
+export function looksLikeText(data: Uint8Array): boolean {
+  const head = data.subarray(0, 8192);
+  if ((head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff)) return true;
+  if (head[0] === 0x1f && head[1] === 0x8b) return false;
+  if (head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) return false;
+  return !head.includes(0);
 }
 
 /**
