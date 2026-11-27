@@ -1099,6 +1099,13 @@ app.use(timbalChannels({
 
 The default workforce input is `{ prompt: event.text }`; events with attachments (Telegram photos/documents, WhatsApp media, Slack files, Teams files and inline images) are re-uploaded to Timbal temp storage and sent as prompt content parts (`{ prompt: [{ type: "text", … }, { type: "file", file: url }] }`) — the same shape the platform chat UI produces. Files agents can't read (pptx, zip, HEIC, …) are not uploaded: a short text note naming the file takes their place, so the agent can ask for a format it reads. `buildInput` takes full control, including attachments via `event.attachments`; `event.conversationId` (Slack `channel:thread_ts`, Telegram `chat.id`, Teams `conversation.id`) is the key for anything conversation-scoped. Slack files need the bot token's `files:read` scope; Teams bots receive files in personal chats when the app manifest sets `supportsFiles`, and download them only from Teams activities, from `fileHosts` (default `sharepoint.com`). A file the bot can't fetch (hosted outside Slack, shared in a Teams channel) gets a note saying why.
 
+Teams file URLs lose their built-in `tempauth` credential on **March 1, 2027**. From then on, personal-chat file downloads need an app-only token that Entra issues only to a certificate or a federated identity credential, never to a client secret. To keep files working:
+
+- Give the `teams` adapter a `certificate` (`{ privateKey, certificate }` as PEM, or `privateKey` plus `thumbprintSha256`) or a `federatedToken` callback that returns the external token your app registration trusts (`federatedTokenFile(path)` reads one from a file, as Azure Workload Identity provides it). With env bindings, set `TEAMS_CERTIFICATE_PRIVATE_KEY` + `TEAMS_CERTIFICATE` (or `TEAMS_CERTIFICATE_THUMBPRINT_SHA256`), or `TEAMS_FEDERATED_TOKEN_FILE`. With either one set, `appPassword` becomes optional; when it is set, replies still use it.
+- Add the RSC permission `File.ReadSelected.User` (`type: "Application"`) under `authorization.permissions.resourceSpecific` in the app manifest. Teams accepts it from January 15, 2027.
+
+The adapter sends the file token only to URLs without `tempauth`, and only to the URL's own host. It requests the token for `https://<url host>/.default` in the file's tenant and caches it per tenant and host.
+
 ### Options
 
 ```typescript
@@ -1292,7 +1299,7 @@ Set by the platform on deployed apps (you normally never set these yourself):
 | `TIMBAL_PROJECT_ENV_ID` | Deployment environment id; used to derive the public webhook origin when `PUBLIC_ORIGIN` is unset |
 | `PUBLIC_ORIGIN`         | Explicit public origin for channel webhook URLs      |
 
-Channels, when running unlinked with env-convention bindings: `CHANNELS_WORKFORCE`, `TELEGRAM_BOT_TOKEN` / `TELEGRAM_SECRET_TOKEN`, `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET`, `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_APP_SECRET` / `WHATSAPP_VERIFY_TOKEN`, `TEAMS_APP_ID` / `TEAMS_APP_PASSWORD` / `TEAMS_TENANT_ID`.
+Channels, when running unlinked with env-convention bindings: `CHANNELS_WORKFORCE`, `TELEGRAM_BOT_TOKEN` / `TELEGRAM_SECRET_TOKEN`, `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET`, `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_APP_SECRET` / `WHATSAPP_VERIFY_TOKEN`, `TEAMS_APP_ID` / `TEAMS_APP_PASSWORD` / `TEAMS_TENANT_ID` / `TEAMS_CERTIFICATE_PRIVATE_KEY` / `TEAMS_CERTIFICATE` / `TEAMS_CERTIFICATE_THUMBPRINT_SHA256` / `TEAMS_FEDERATED_TOKEN_FILE`.
 
 
 ## License

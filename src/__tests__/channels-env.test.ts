@@ -1,5 +1,9 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, afterEach } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { channelBindingsFromEnv } from '../channels/env';
+import { clearTeamsAdapterCaches } from '../channels/adapters/teams';
 
 describe('channelBindingsFromEnv', () => {
   test('no channel credentials → no bindings (and no workforce required)', () => {
@@ -71,6 +75,71 @@ describe('channelBindingsFromEnv', () => {
     });
     expect(bindings).toHaveLength(1);
     expect(bindings[0]!.adapter.provider).toBe('teams');
+  });
+
+  test('teams binds with a certificate or a federated token file instead of a password', () => {
+    for (const credential of [
+      { TEAMS_CERTIFICATE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nAA==\\n-----END PRIVATE KEY-----' },
+      { TEAMS_FEDERATED_TOKEN_FILE: '/var/run/secrets/azure/tokens/azure-identity-token' },
+    ]) {
+      const bindings = channelBindingsFromEnv({
+        env: { TEAMS_APP_ID: 'app-1', CHANNELS_WORKFORCE: 'joi', ...credential },
+      });
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]!.adapter.provider).toBe('teams');
+    }
+  });
+
+  describe('teams federated token file', () => {
+    const realFetch = globalThis.fetch;
+    let dir: string | undefined;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      clearTeamsAdapterCaches();
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
+    test('its contents are read per token request and sent as the client assertion', async () => {
+      dir = mkdtempSync(join(tmpdir(), 'teams-fic-'));
+      const tokenFile = join(dir, 'token');
+      writeFileSync(tokenFile, 'projected-token-1\n');
+      const forms: URLSearchParams[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/oauth2/v2.0/token')) {
+          forms.push(new URLSearchParams(String(init?.body)));
+          return Response.json({ access_token: 'tok', expires_in: 0 });
+        }
+        return Response.json({ id: 'sent-1' });
+      }) as typeof fetch;
+
+      const [binding] = channelBindingsFromEnv({
+        env: { TEAMS_APP_ID: 'app-1', TEAMS_FEDERATED_TOKEN_FILE: tokenFile, CHANNELS_WORKFORCE: 'joi' },
+      });
+      const activity = {
+        type: 'message',
+        id: 'a-1',
+        text: 'hi',
+        serviceUrl: 'https://smba.test.example/',
+        from: { id: '29:user' },
+        recipient: { id: '28:app-1' },
+        conversation: { id: 'conv-1' },
+      };
+      const [event] = await binding!.adapter.parse({
+        rawBody: JSON.stringify(activity),
+        headers: new Headers(),
+        url: 'https://app.example.com/channels/joi/teams',
+        method: 'POST',
+      });
+      const delivery = binding!.adapter.delivery(event!);
+      await delivery.send('one');
+      writeFileSync(tokenFile, 'projected-token-2\n');
+      await delivery.send('two'); // expires_in 0: not cached, so the file is read again
+
+      expect(forms.map((f) => [f.get('client_assertion'), f.has('client_secret')])).toEqual([
+        ['projected-token-1', false],
+        ['projected-token-2', false],
+      ]);
+    });
   });
 
   test('both channels bind to the same workforce', () => {

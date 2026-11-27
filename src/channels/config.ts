@@ -4,6 +4,7 @@ import { telegram } from './adapters/telegram';
 import { slack } from './adapters/slack';
 import { whatsapp } from './adapters/whatsapp';
 import { teams } from './adapters/teams';
+import { teamsCredentialOptions } from './adapters/teams-auth';
 
 /**
  * Platform-driven channel configuration.
@@ -114,8 +115,32 @@ function buildAdapter(
       const appId = creds.app_id || env.TEAMS_APP_ID;
       const appPassword = creds.app_password || env.TEAMS_APP_PASSWORD;
       const tenantId = creds.tenant_id || env.TEAMS_TENANT_ID;
-      if (!appId || !appPassword) return null;
-      return teams({ appId, appPassword, tenantId });
+      // Certificate / federated credential: file downloads need one once
+      // Teams file URLs lose `tempauth` (March 1, 2027). A certificate is
+      // taken whole from one source — the platform when it supplies a key,
+      // else the env — so a rotated key never pairs with a stale env
+      // certificate or thumbprint.
+      const certificateSource = creds.certificate_private_key
+        ? {
+            privateKey: creds.certificate_private_key,
+            certificate: creds.certificate,
+            thumbprint: creds.certificate_thumbprint_sha256,
+          }
+        : {
+            privateKey: env.TEAMS_CERTIFICATE_PRIVATE_KEY,
+            certificate: env.TEAMS_CERTIFICATE,
+            thumbprint: env.TEAMS_CERTIFICATE_THUMBPRINT_SHA256,
+          };
+      const credentials = teamsCredentialOptions({
+        certificatePrivateKey: certificateSource.privateKey,
+        certificate: certificateSource.certificate,
+        certificateThumbprintSha256: certificateSource.thumbprint,
+        federatedTokenFile: env.TEAMS_FEDERATED_TOKEN_FILE,
+      });
+      if (!appId || (!appPassword && !credentials.certificate && !credentials.federatedToken)) {
+        return null;
+      }
+      return teams({ appId, appPassword: appPassword || undefined, tenantId, ...credentials });
     }
     default:
       return 'unknown';

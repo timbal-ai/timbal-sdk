@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { Elysia } from 'elysia';
-import { teams, clearTeamsAdapterCaches } from '../channels/adapters/teams';
+import { generateKeyPairSync } from 'node:crypto';
+import { teams, clearTeamsAdapterCaches, teamsTokenCacheSize } from '../channels/adapters/teams';
+import { certificateAuthentication, federatedTokenFile } from '../channels/adapters/teams-auth';
 import { unsupportedAttachmentNote } from '../channels/attachments';
 import { webmTrackKinds } from '../channels/download';
 import type { WebhookRequest } from '../channels/types';
@@ -107,7 +109,12 @@ interface RecordedFetch {
 let keyPair: CryptoKeyPair;
 let publicJwk: JsonWebKey & { kid?: string };
 let fetches: RecordedFetch[];
+/** Connector-token requests (scope api.botframework.com). */
 let tokenFetches: number;
+/** Every other token request: file tokens. */
+let fileTokenFetches: number;
+/** Overrides the token endpoint's answer to file-token requests. */
+let fileTokenRoute: ((body: URLSearchParams) => Response | Promise<Response>) | undefined;
 let realFetch: typeof fetch;
 /** File URLs the mock serves, by exact URL (checked before the connector routes). */
 let fileRoutes: Map<string, (init: RequestInit | undefined) => Response | Promise<Response>>;
@@ -124,6 +131,8 @@ beforeEach(async () => {
   publicJwk = { ...(await crypto.subtle.exportKey('jwk', keyPair.publicKey)), kid: KID };
   fetches = [];
   tokenFetches = 0;
+  fileTokenFetches = 0;
+  fileTokenRoute = undefined;
   fileRoutes = new Map();
   realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -143,6 +152,12 @@ beforeEach(async () => {
     if (url === METADATA_URL) return jsonResponse({ jwks_uri: JWKS_URL });
     if (url === JWKS_URL) return jsonResponse({ keys: [publicJwk] });
     if (url.startsWith(`${LOGIN_BASE}/`)) {
+      const form = new URLSearchParams(typeof init?.body === 'string' ? init.body : String(init?.body));
+      if (form.get('scope') !== 'https://api.botframework.com/.default') {
+        fileTokenFetches += 1;
+        if (fileTokenRoute) return fileTokenRoute(form);
+        return jsonResponse({ access_token: `file-token-${fileTokenFetches}`, expires_in: 3600 });
+      }
       tokenFetches += 1;
       return jsonResponse({ access_token: `connector-token-${tokenFetches}`, expires_in: 3600 });
     }
@@ -483,6 +498,9 @@ describe('teams adapter delivery', () => {
 
 const DOWNLOAD_URL =
   'https://contoso-my.sharepoint.test/personal/dani/_layouts/15/download.aspx?UniqueId=abc-123&tempauth=v1.tempauth-token';
+/** The same file's URL after March 1, 2027: no `tempauth`. */
+const BARE_DOWNLOAD_URL =
+  'https://contoso-my.sharepoint.test/personal/dani/_layouts/15/download.aspx?UniqueId=abc-123&ApiVersion=2.0';
 const INLINE_IMAGE_URL = `${SERVICE_URL}v3/attachments/0-weu-d1-abc/views/original`;
 const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -737,12 +755,16 @@ describe('teams adapter attachments', () => {
       /^Teams file download failed \(403\)$/,
     );
 
-    const bare = 'https://contoso-my.sharepoint.test/personal/dani/_layouts/15/download.aspx?UniqueId=abc';
-    fileRoutes.set(bare, () => new Response('unauthorized', { status: 401 }));
-    const [withoutTempauth] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf', bare)]);
+    // A client secret can't get a file token: the URL is tried as is.
+    fileRoutes.set(BARE_DOWNLOAD_URL, () => new Response('unauthorized', { status: 401 }));
+    const [withoutTempauth] = await parseAttachments([
+      fileDownloadInfo('invoice.pdf', 'pdf', BARE_DOWNLOAD_URL),
+    ]);
     await expect(withoutTempauth!.attachments![0]!.download()).rejects.toThrow(
-      'Teams file download failed (401): the URL has no tempauth credential and needs an access token, which this adapter does not send',
+      'Teams file download failed (401): the URL has no tempauth credential and needs a file token, which takes a certificate or federatedToken (not a client secret)',
     );
+    expect(fetches.find((f) => f.url === BARE_DOWNLOAD_URL)!.headers.authorization).toBeUndefined();
+    expect(fileTokenFetches).toBe(0);
   });
 
   test('an error page served instead of the file is refused', async () => {
@@ -993,5 +1015,507 @@ describe('teams .webm served with a generic type, through the channel pipeline',
     expect(video.invocations[0]).toEqual({
       prompt: [{ type: 'text', text: unsupportedAttachmentNote('capture.webm') }],
     });
+  });
+});
+
+// ── File tokens (file URLs without tempauth, from March 1, 2027) ──
+
+const FILE_TENANT = 'a1b2c3d4-0000-4000-8000-00000000f11e';
+const FILE_SCOPE = 'https://contoso-my.sharepoint.test/.default';
+/** Stand-in certificate bytes: only their SHA-256 thumbprint is used. */
+const CERT_DER = new Uint8Array([0x30, 0x82, 0x01, 0x0a, 0x02, 0x82, 0x01, 0x01, 0x00, 0xc3]);
+
+const pem = (label: string, der: ArrayBuffer | Uint8Array): string =>
+  `-----BEGIN ${label}-----\n${(Buffer.from(der as Uint8Array).toString('base64').match(/.{1,64}/g) ?? []).join('\n')}\n-----END ${label}-----\n`;
+
+const pemDer = (text: string): Uint8Array =>
+  new Uint8Array(Buffer.from(text.replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, ''), 'base64'));
+
+let certKeys: CryptoKeyPair;
+let certificate: { privateKey: string; certificate: string };
+let certThumbprint: string;
+
+beforeEach(async () => {
+  certKeys = await crypto.subtle.generateKey(
+    {
+      name: 'RSA-PSS',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: 'SHA-256',
+    },
+    true,
+    ['sign', 'verify'],
+  );
+  certificate = {
+    privateKey: pem('PRIVATE KEY', await crypto.subtle.exportKey('pkcs8', certKeys.privateKey)),
+    certificate: pem('CERTIFICATE', CERT_DER),
+  };
+  certThumbprint = b64url(await crypto.subtle.digest('SHA-256', CERT_DER));
+});
+
+const certAdapter = (overrides: Partial<Parameters<typeof teams>[0]> = {}) =>
+  teams({
+    appId: APP_ID,
+    appPassword: APP_PASSWORD,
+    certificate,
+    openIdMetadataUrl: METADATA_URL,
+    loginBase: LOGIN_BASE,
+    fileHosts: ['sharepoint.test'],
+    now: () => NOW,
+    ...overrides,
+  });
+
+const fileTokenRequests = () =>
+  fetches
+    .filter((f) => f.url.startsWith(LOGIN_BASE) && !f.body?.includes('api.botframework.com'))
+    .map((f) => ({ url: f.url, form: new URLSearchParams(f.body ?? '') }));
+
+/** A file attachment whose content names its tenant, as Teams sends it. */
+const tenantFile = (downloadUrl: string, tenantId: string | null = FILE_TENANT) => {
+  const attachment = fileDownloadInfo('invoice.pdf', 'pdf', downloadUrl);
+  return { ...attachment, content: { ...attachment.content, ...(tenantId ? { tenantId } : {}) } };
+};
+
+const serveFile = (url: string) =>
+  fileRoutes.set(url, () => new Response(PDF_BYTES, { headers: { 'Content-Type': 'application/pdf' } }));
+
+function decodeJwt(jwt: string) {
+  const [header, payload, signature] = jwt.split('.');
+  const json = (segment: string) => JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+  return {
+    header: json(header!),
+    payload: json(payload!),
+    signature: new Uint8Array(Buffer.from(signature!, 'base64url')),
+    signed: new TextEncoder().encode(`${header}.${payload}`),
+  };
+}
+
+async function verifiesWith(publicKey: CryptoKey, jwt: string): Promise<boolean> {
+  const { signature, signed } = decodeJwt(jwt);
+  return crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, publicKey, signature, signed);
+}
+
+describe('teams adapter file tokens', () => {
+  test('a file URL without tempauth downloads with a certificate token for its host, in its tenant', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+    const file = await event!.attachments![0]!.download();
+    expect(Array.from(file.data)).toEqual(Array.from(PDF_BYTES));
+
+    const download = fetches.find((f) => f.url === BARE_DOWNLOAD_URL)!;
+    expect(download.headers.authorization).toBe('Bearer file-token-1');
+
+    const [request] = fileTokenRequests();
+    const tokenUrl = `${LOGIN_BASE}/${FILE_TENANT}/oauth2/v2.0/token`;
+    expect(request!.url).toBe(tokenUrl);
+    expect(request!.form.get('grant_type')).toBe('client_credentials');
+    expect(request!.form.get('client_id')).toBe(APP_ID);
+    expect(request!.form.get('scope')).toBe(FILE_SCOPE);
+    expect(request!.form.get('client_assertion_type')).toBe(
+      'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+    );
+    // Never the client secret: Entra refuses file access with its token.
+    expect(request!.form.has('client_secret')).toBe(false);
+
+    const assertion = request!.form.get('client_assertion')!;
+    const { header, payload } = decodeJwt(assertion);
+    expect(header).toEqual({ alg: 'PS256', typ: 'JWT', 'x5t#S256': certThumbprint });
+    expect(payload).toMatchObject({
+      aud: tokenUrl,
+      iss: APP_ID,
+      sub: APP_ID,
+      nbf: NOW_SEC,
+      iat: NOW_SEC,
+      exp: NOW_SEC + 600,
+    });
+    expect(payload.jti).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await verifiesWith(certKeys.publicKey, assertion)).toBe(true);
+    // The bot's connector token isn't involved.
+    expect(tokenFetches).toBe(0);
+  });
+
+  test('a URL with tempauth gets no token, even with a certificate (name matched ignoring case)', async () => {
+    const mixedCase = BARE_DOWNLOAD_URL.replace('ApiVersion', 'TempAuth=v1.x&ApiVersion');
+    serveFile(DOWNLOAD_URL);
+    serveFile(mixedCase);
+    const [event] = await parseAttachments(
+      [tenantFile(DOWNLOAD_URL), tenantFile(mixedCase)],
+      '',
+      certAdapter(),
+    );
+    for (const attachment of event!.attachments!) await attachment.download();
+    for (const url of [DOWNLOAD_URL, mixedCase]) {
+      expect(fetches.find((f) => f.url === url)!.headers.authorization).toBeUndefined();
+    }
+    expect(fileTokenFetches).toBe(0);
+  });
+
+  test('file tokens are cached per tenant and host, and shared by concurrent downloads', async () => {
+    let clock = NOW;
+    const adapter = certAdapter({ now: () => clock });
+    const otherHost = 'https://fabrikam-my.sharepoint.test/personal/x/_layouts/15/download.aspx?UniqueId=z';
+    const otherTenant = `${BARE_DOWNLOAD_URL}&v=2`;
+    for (const url of [BARE_DOWNLOAD_URL, otherHost, otherTenant]) serveFile(url);
+
+    const [event] = await parseAttachments(
+      [
+        tenantFile(BARE_DOWNLOAD_URL),
+        tenantFile(BARE_DOWNLOAD_URL),
+        tenantFile(otherHost),
+        tenantFile(otherTenant, 'contoso.onmicrosoft.test'),
+      ],
+      '',
+      adapter,
+    );
+    const [first, second, elsewhere, otherTenantFile] = event!.attachments!;
+    await Promise.all([first!.download(), second!.download()]);
+    await first!.download();
+    expect(fileTokenFetches).toBe(1);
+
+    await elsewhere!.download();
+    await otherTenantFile!.download();
+    expect(
+      fileTokenRequests().map((r) => [r.url.split('/')[3], r.form.get('scope')]),
+    ).toEqual([
+      [FILE_TENANT, FILE_SCOPE],
+      [FILE_TENANT, 'https://fabrikam-my.sharepoint.test/.default'],
+      ['contoso.onmicrosoft.test', FILE_SCOPE],
+    ]);
+
+    // Near expiry (inside the 60s margin), the token is requested again.
+    clock = NOW + 3600_000 - 30_000;
+    await first!.download();
+    expect(fileTokenFetches).toBe(4);
+    expect(fetches.filter((f) => f.url === BARE_DOWNLOAD_URL).at(-1)!.headers.authorization).toBe(
+      'Bearer file-token-4',
+    );
+  });
+
+  test("without content.tenantId, the file's tenant is the activity's, then the tenantId option", async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    const tenantOf = async (activity: Record<string, unknown>, adapter = certAdapter()) => {
+      clearTeamsAdapterCaches();
+      fetches = [];
+      const [event] = await adapter.parse(
+        req(activityFixture({ text: '', attachments: [tenantFile(BARE_DOWNLOAD_URL, null)], ...activity })),
+      );
+      await event!.attachments![0]!.download();
+      return fileTokenRequests()[0]!.url.split('/')[3];
+    };
+    expect(await tenantOf({ channelData: { tenant: { id: 'channel-data-tenant' } } })).toBe(
+      'channel-data-tenant',
+    );
+    expect(
+      await tenantOf({ conversation: { id: CONVERSATION_ID, tenantId: 'conversation-tenant' } }),
+    ).toBe('conversation-tenant');
+    expect(await tenantOf({}, certAdapter({ tenantId: 'app-tenant' }))).toBe('app-tenant');
+
+    // A tenant that isn't an ID or domain never reaches the token URL.
+    clearTeamsAdapterCaches();
+    const [event] = await certAdapter().parse(
+      req(activityFixture({ text: '', attachments: [tenantFile(BARE_DOWNLOAD_URL, '../evil?')] })),
+    );
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file token needs a tenant ID, and the activity has none',
+    );
+  });
+
+  test('a federated token is sent as the client assertion', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    let calls = 0;
+    const adapter = teams({
+      appId: APP_ID,
+      federatedToken: async () => {
+        calls += 1;
+        return ' external-oidc-token\n';
+      },
+      openIdMetadataUrl: METADATA_URL,
+      loginBase: LOGIN_BASE,
+      fileHosts: ['sharepoint.test'],
+      now: () => NOW,
+    });
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    await event!.attachments![0]!.download();
+    const [request] = fileTokenRequests();
+    expect(request!.form.get('client_assertion')).toBe('external-oidc-token');
+    expect(request!.form.get('client_assertion_type')).toBe(
+      'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+    );
+    expect(fetches.find((f) => f.url === BARE_DOWNLOAD_URL)!.headers.authorization).toBe(
+      'Bearer file-token-1',
+    );
+    expect(calls).toBe(1);
+  });
+
+  test('the file token is not sent on a redirect to another file host', async () => {
+    const otherHost = 'https://contoso.sharepoint.test/Shared/invoice.pdf';
+    fileRoutes.set(BARE_DOWNLOAD_URL, () =>
+      new Response(null, { status: 302, headers: { Location: otherHost } }),
+    );
+    serveFile(otherHost);
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+    await event!.attachments![0]!.download();
+    const hops = fetches.filter((f) => f.url === BARE_DOWNLOAD_URL || f.url === otherHost);
+    expect(hops.map((f) => [f.url, f.headers.authorization])).toEqual([
+      [BARE_DOWNLOAD_URL, 'Bearer file-token-1'],
+      [otherHost, undefined],
+    ]);
+  });
+
+  // The token stays on the first host: a 401 from the next one isn't the
+  // RSC permission's fault.
+  test('a 401 after a redirect to another file host names the redirect, not the permission', async () => {
+    const otherHost = 'https://contoso.sharepoint.test/Shared/invoice.pdf';
+    fileRoutes.set(BARE_DOWNLOAD_URL, () =>
+      new Response(null, { status: 302, headers: { Location: otherHost } }),
+    );
+    fileRoutes.set(otherHost, () => new Response('unauthorized', { status: 401 }));
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+    const error = await event!.attachments![0]!.download().catch((e: Error) => e);
+    expect(String(error)).toContain(
+      'Teams file download failed (401): the file host redirected to another host, which the file token is not sent to',
+    );
+    expect(String(error)).not.toContain('File.ReadSelected.User');
+  });
+
+  // A stalled exchange is dropped after tokenTimeoutMs, so it can't hold up
+  // every later download.
+  test('a stalled token request is dropped, and the next download starts a fresh one', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    const adapter = certAdapter({ fileTimeoutMs: 20, tokenTimeoutMs: 40 });
+    fileTokenRoute = () => new Promise<Response>(() => {});
+    const [first] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    await expect(first!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download timed out after 20ms',
+    );
+
+    await new Promise((r) => setTimeout(r, 60)); // past tokenTimeoutMs
+    fileTokenRoute = undefined; // the endpoint answers again
+    const [second] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    const file = await second!.attachments![0]!.download();
+    expect(Array.from(file.data)).toEqual(Array.from(PDF_BYTES));
+    expect(fileTokenFetches).toBe(2);
+  });
+
+  // During a rotation, two adapters for the same app, tenant and scope.
+  test('adapters with different credentials do not share token requests', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    let retiringCalls = 0;
+    let healthyCalls = 0;
+    const retiring = certAdapter({
+      certificate: undefined,
+      federatedToken: async () => {
+        retiringCalls += 1;
+        return 'retired-assertion';
+      },
+    });
+    const healthy = certAdapter({
+      certificate: undefined,
+      federatedToken: async () => {
+        healthyCalls += 1;
+        return 'current-assertion';
+      },
+    });
+    fileTokenRoute = (form) =>
+      form.get('client_assertion') === 'retired-assertion'
+        ? jsonResponse({ error_description: 'AADSTS700027: Client assertion failed signature validation.' }, 401)
+        : jsonResponse({ access_token: 'file-token-current', expires_in: 3600 });
+
+    const [a] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', retiring);
+    const [b] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', healthy);
+    const [failed, succeeded] = await Promise.allSettled([
+      a!.attachments![0]!.download(),
+      b!.attachments![0]!.download(),
+    ]);
+    expect(failed.status).toBe('rejected');
+    expect(succeeded.status).toBe('fulfilled');
+    expect([retiringCalls, healthyCalls]).toEqual([1, 1]);
+
+    // Same adapter, concurrent downloads: still one shared request.
+    const before = fileTokenFetches;
+    clearTeamsAdapterCaches();
+    const [c] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL), tenantFile(BARE_DOWNLOAD_URL)], '', healthy);
+    await Promise.all(c!.attachments!.map((attachment) => attachment.download()));
+    expect(fileTokenFetches - before).toBe(1);
+  });
+
+  // Dynamic mode rebuilds adapters on every webhook: tokens must survive that.
+  test('a rebuilt adapter with the same certificate reuses the cached token', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    for (let i = 0; i < 3; i++) {
+      const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+      await event!.attachments![0]!.download();
+    }
+    expect(fileTokenFetches).toBe(1);
+
+    // A different certificate is a different credential: its own token.
+    const otherKeys = await crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const other = certAdapter({
+      certificate: {
+        privateKey: pem('PRIVATE KEY', await crypto.subtle.exportKey('pkcs8', otherKeys.privateKey)),
+        certificate: pem('CERTIFICATE', CERT_DER),
+      },
+    });
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', other);
+    await event!.attachments![0]!.download();
+    expect(fileTokenFetches).toBe(2);
+  });
+
+  test('federatedTokenFile returns one reader per path, so rebuilt adapters share tokens', () => {
+    expect(federatedTokenFile('/var/run/token')).toBe(federatedTokenFile('/var/run/token'));
+    expect(federatedTokenFile('/var/run/token')).not.toBe(federatedTokenFile('/var/run/other'));
+  });
+
+  test('expired tokens are dropped from the cache as new ones arrive', async () => {
+    let clock = NOW;
+    const adapter = certAdapter({ now: () => clock });
+    const other = BARE_DOWNLOAD_URL.replace('contoso-my.sharepoint.test', 'fabrikam-my.sharepoint.test');
+    serveFile(BARE_DOWNLOAD_URL);
+    serveFile(other);
+    const [first] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    await first!.attachments![0]!.download();
+    expect(teamsTokenCacheSize()).toBe(1);
+
+    clock += 2 * 3600 * 1000; // past the first token's expiry
+    const [second] = await parseAttachments([tenantFile(other)], '', adapter);
+    await second!.attachments![0]!.download();
+    expect(teamsTokenCacheSize()).toBe(1);
+  });
+
+  // Off the file hosts a redirect isn't followed at all, token or not.
+  test('a redirect off the file hosts is refused before it is fetched', async () => {
+    const elsewhere = 'https://cdn.example.test/invoice.pdf';
+    fileRoutes.set(BARE_DOWNLOAD_URL, () =>
+      new Response(null, { status: 302, headers: { Location: elsewhere } }),
+    );
+    serveFile(elsewhere);
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      "Teams file download led to a URL that isn't allowed (https://cdn.example.test)",
+    );
+    expect(fetches.some((f) => f.url === elsewhere)).toBe(false);
+  });
+
+  test("a refused file token fails the download with Entra's reason; a refused token names the RSC permission", async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    fileTokenRoute = () =>
+      jsonResponse({ error_description: 'AADSTS7000215: Invalid client secret provided.' }, 401);
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file token failed (401): AADSTS7000215: Invalid client secret provided.',
+    );
+    expect(fetches.some((f) => f.url === BARE_DOWNLOAD_URL)).toBe(false);
+
+    fileTokenRoute = undefined;
+    fileRoutes.set(BARE_DOWNLOAD_URL, () => new Response('forbidden', { status: 403 }));
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download failed (403): the file token was refused; the app manifest must grant the File.ReadSelected.User RSC permission',
+    );
+  });
+
+  test('without appPassword, connector tokens come from the certificate', async () => {
+    const adapter = certAdapter({ appPassword: undefined, tenantId: 'tenant-1' });
+    const [event] = await adapter.parse(req(activityFixture()));
+    await adapter.delivery(event!).send('hi');
+    const tokenReq = fetches.find((f) => f.url.startsWith(LOGIN_BASE))!;
+    const tokenUrl = `${LOGIN_BASE}/tenant-1/oauth2/v2.0/token`;
+    expect(tokenReq.url).toBe(tokenUrl);
+    const form = new URLSearchParams(tokenReq.body!);
+    expect(form.get('scope')).toBe('https://api.botframework.com/.default');
+    expect(form.has('client_secret')).toBe(false);
+    const assertion = form.get('client_assertion')!;
+    expect(decodeJwt(assertion).payload.aud).toBe(tokenUrl);
+    expect(await verifiesWith(certKeys.publicKey, assertion)).toBe(true);
+    expect(fetches.find((f) => f.url.startsWith(SERVICE_URL))!.headers.authorization).toBe(
+      'Bearer connector-token-1',
+    );
+  });
+
+  test('with appPassword, connector tokens still use the client secret', async () => {
+    const adapter = certAdapter();
+    const [event] = await adapter.parse(req(activityFixture()));
+    await adapter.delivery(event!).send('hi');
+    const form = new URLSearchParams(fetches.find((f) => f.url.startsWith(LOGIN_BASE))!.body!);
+    expect(form.get('client_secret')).toBe(APP_PASSWORD);
+    expect(form.has('client_assertion')).toBe(false);
+  });
+
+  test('the adapter needs a client secret, certificate or federated token', () => {
+    expect(() => teams({ appId: APP_ID })).toThrow(
+      'teams adapter requires an appPassword, certificate or federatedToken',
+    );
+  });
+});
+
+describe('teams certificate assertions', () => {
+  const TOKEN_URL = `${LOGIN_BASE}/${FILE_TENANT}/oauth2/v2.0/token`;
+  const assertionFor = async (cert: Parameters<typeof certificateAuthentication>[1]) =>
+    (await certificateAuthentication(APP_ID, cert, () => NOW)(TOKEN_URL)).client_assertion!;
+
+  test('a PKCS#1 key signs; a combined PEM with escaped newlines supplies the certificate', async () => {
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    expect(privateKey).toContain('BEGIN RSA PRIVATE KEY');
+    const combined = `${privateKey}${pem('CERTIFICATE', CERT_DER)}`.replace(/\n/g, '\\n');
+    const assertion = await assertionFor({ privateKey: combined });
+    expect(decodeJwt(assertion).header['x5t#S256']).toBe(certThumbprint);
+    const verifyKey = await crypto.subtle.importKey(
+      'spki',
+      pemDer(publicKey),
+      { name: 'RSA-PSS', hash: 'SHA-256' },
+      false,
+      ['verify'],
+    );
+    expect(await verifiesWith(verifyKey, assertion)).toBe(true);
+  });
+
+  test('a SHA-256 thumbprint in hex stands in for the certificate', async () => {
+    const hex = Buffer.from(certThumbprint, 'base64url').toString('hex').toUpperCase();
+    const colons = hex.match(/../g)!.join(':');
+    const assertion = await assertionFor({ privateKey: certificate.privateKey, thumbprintSha256: colons });
+    expect(decodeJwt(assertion).header['x5t#S256']).toBe(certThumbprint);
+  });
+
+  // A rotated certificate with a stale thumbprint still around: the PEM wins.
+  test('the certificate PEM decides the thumbprint over a stale thumbprintSha256', async () => {
+    const assertion = await assertionFor({ ...certificate, thumbprintSha256: 'cd'.repeat(32) });
+    expect(decodeJwt(assertion).header['x5t#S256']).toBe(certThumbprint);
+  });
+
+  test('each assertion has its own jti', async () => {
+    const auth = certificateAuthentication(APP_ID, certificate, () => NOW);
+    const [a, b] = await Promise.all([auth(TOKEN_URL), auth(TOKEN_URL)]);
+    expect(decodeJwt(a.client_assertion!).payload.jti).not.toBe(
+      decodeJwt(b.client_assertion!).payload.jti,
+    );
+  });
+
+  test('unusable certificates fail with what to fix', async () => {
+    const { privateKey } = certificate;
+    await expect(assertionFor({ privateKey })).rejects.toThrow(
+      'Teams certificate needs the certificate PEM (certificate) or its SHA-256 thumbprint (thumbprintSha256)',
+    );
+    await expect(
+      assertionFor({ privateKey, thumbprintSha256: 'A1'.repeat(20) }),
+    ).rejects.toThrow('Teams certificate thumbprintSha256 is a SHA-1 thumbprint');
+    await expect(assertionFor({ privateKey, thumbprintSha256: 'xyz' })).rejects.toThrow(
+      'Teams certificate thumbprintSha256 must be 64 hex characters',
+    );
+    await expect(
+      assertionFor({ privateKey: pem('ENCRYPTED PRIVATE KEY', CERT_DER), certificate: certificate.certificate }),
+    ).rejects.toThrow('Teams certificate privateKey is encrypted');
+    await expect(
+      assertionFor({ privateKey: certificate.certificate, certificate: certificate.certificate }),
+    ).rejects.toThrow('Teams certificate privateKey has no PEM private key');
+    await expect(
+      assertionFor({ privateKey: pem('EC PRIVATE KEY', CERT_DER), certificate: certificate.certificate }),
+    ).rejects.toThrow('Teams certificate privateKey must be an RSA key, not EC PRIVATE KEY');
   });
 });

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   ChannelAdapter,
   ChannelAttachment,
@@ -17,12 +18,35 @@ import {
   webmTrackKinds,
   withDeadline,
 } from '../download';
+import {
+  certificateAuthentication,
+  federatedAuthentication,
+  type ClientAuthentication,
+  type TeamsCertificate,
+  type TeamsFederatedToken,
+} from './teams-auth';
 
 export interface TeamsAdapterOptions {
   /** Entra Application (client) ID — JWT `aud` + connector token client_id. */
   appId: string;
-  /** Client secret from the app registration. */
-  appPassword: string;
+  /**
+   * Client secret from the app registration. Gets connector tokens (replies)
+   * but not file tokens. Optional when `certificate` or `federatedToken` is
+   * set, which then get connector tokens too.
+   */
+  appPassword?: string;
+  /**
+   * Certificate on the app registration. Gets the tokens that personal-chat
+   * file downloads need once their URLs lose `tempauth` (March 1, 2027).
+   * Takes precedence over `federatedToken`.
+   */
+  certificate?: TeamsCertificate;
+  /**
+   * Federated identity credential: returns the external token the app
+   * registration trusts, sent as the client assertion. Gets file tokens,
+   * like `certificate`.
+   */
+  federatedToken?: TeamsFederatedToken;
   /**
    * Entra tenant ID for the connector token endpoint. Required for
    * single-tenant app registrations; omit for multi-tenant (the token is
@@ -41,6 +65,12 @@ export interface TeamsAdapterOptions {
   fileHosts?: string[];
   /** Time allowed for one file download, in milliseconds. @default 60000 */
   fileTimeoutMs?: number;
+  /**
+   * Time allowed for one Entra token request (connector or file token), in
+   * milliseconds. A request still pending then is dropped, so the next
+   * download or reply starts a fresh one. @default 30000
+   */
+  tokenTimeoutMs?: number;
   /**
    * Largest file downloaded, in bytes; larger ones fail that attachment.
    * Files are held in memory and re-uploaded. @default 52428800 (50 MB)
@@ -76,12 +106,53 @@ interface TokenCacheEntry {
   token: string;
   expiresAt: number;
 }
+/** Connector and file tokens, by login origin, tenant, app, scope and credential. */
 const tokenCache = new Map<string, TokenCacheEntry>();
+/** Token requests in flight, so concurrent downloads share one. */
+const pendingTokens = new Map<string, Promise<TokenCacheEntry>>();
+/**
+ * Ids for federated token callbacks, by function: the same callback keeps
+ * its id across adapters (dynamic mode rebuilds them per webhook), a
+ * different one gets its own.
+ */
+const federatedIds = new WeakMap<TeamsFederatedToken, number>();
+let federatedSerial = 0;
 
-/** Reset the shared JWKS + connector-token caches (tests). */
+/*
+ * A credential's cache identity: stable across adapter instances built
+ * from the same settings, so they share cached tokens, and distinct for a
+ * different credential, so a failing one (mid-rotation) can't fail another.
+ */
+
+/** A certificate's identity: a digest of its settings. */
+function certificateId(cert: TeamsCertificate): string {
+  const { privateKey, certificate = '', thumbprintSha256 = '' } = cert;
+  const digest = createHash('sha256')
+    .update(`${privateKey}\0${certificate}\0${thumbprintSha256}`)
+    .digest('base64url');
+  return `certificate:${digest}`;
+}
+
+/** A federated token callback's identity: one id per function. */
+function federatedId(callback: TeamsFederatedToken): string {
+  let id = federatedIds.get(callback);
+  if (id === undefined) {
+    id = ++federatedSerial;
+    federatedIds.set(callback, id);
+  }
+  return `federated:${id}`;
+}
+
+/** How many tokens are cached (tests). */
+export function teamsTokenCacheSize(): number {
+  return tokenCache.size;
+}
+
+/** Reset the shared JWKS + token caches (tests). */
 export function clearTeamsAdapterCaches(): void {
   jwksCache.clear();
   tokenCache.clear();
+  pendingTokens.clear();
 }
 
 function b64urlToBytes(s: string): Uint8Array {
@@ -119,7 +190,8 @@ interface TeamsActivity {
   channelId?: string;
   from?: { id?: string; name?: string; aadObjectId?: string; role?: string };
   recipient?: { id?: string; name?: string };
-  conversation?: { id?: string; conversationType?: string };
+  conversation?: { id?: string; conversationType?: string; tenantId?: string };
+  channelData?: { tenant?: { id?: string } };
   entities?: TeamsMentionEntity[];
   attachments?: TeamsAttachment[];
 }
@@ -138,14 +210,36 @@ interface TeamsFileDownloadInfo {
   uniqueId?: string;
   /** The file's extension (`pdf`, `docx`, ...). */
   fileType?: string;
+  /** Tenant that holds the file; its file token is requested there. */
+  tenantId?: string;
 }
 
 /**
  * A file the user sent in a personal chat (bots whose manifest sets
- * `supportsFiles`). `content.downloadUrl` is a short-lived URL that carries
- * its own credential (`tempauth`), so the bot token is not sent to it.
+ * `supportsFiles`). Until March 1, 2027, `content.downloadUrl` carries its
+ * own credential (`tempauth`) and is fetched with no token. A URL without
+ * one needs an app-only token for `https://<url host>/.default`, got with a
+ * certificate or federated credential (Entra refuses a client secret's) in
+ * the file's tenant, and the RSC permission `File.ReadSelected.User` in the
+ * app manifest.
  */
 const FILE_DOWNLOAD_INFO = 'application/vnd.microsoft.teams.file.download.info';
+
+const CONNECTOR_SCOPE = 'https://api.botframework.com/.default';
+
+/** Whether a file URL carries its own `tempauth` credential (name matched ignoring case). */
+function hasTempauth(url: URL): boolean {
+  for (const name of url.searchParams.keys()) {
+    if (name.toLowerCase() === 'tempauth') return true;
+  }
+  return false;
+}
+
+/** A tenant ID (GUID) or domain, safe to put in the token endpoint path. */
+const TENANT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/;
+
+const validTenant = (tenant: unknown): string | undefined =>
+  typeof tenant === 'string' && TENANT_PATTERN.test(tenant) ? tenant : undefined;
 
 /**
  * Teams file types other than {@link FILE_DOWNLOAD_INFO} (`file.info`,
@@ -312,14 +406,17 @@ function cleanTeamsMentionText(
  *   extra composition (unlike Slack).
  * - Attachments: files sent in a personal chat
  *   (`application/vnd.microsoft.teams.file.download.info`) download from
- *   `content.downloadUrl` as received; inline images (`image/*` with a
+ *   `content.downloadUrl` as received: with no token while the URL carries
+ *   `tempauth`, else with a file token (`certificate` / `federatedToken`)
+ *   sent only to the URL's host. Inline images (`image/*` with a
  *   `contentUrl`) download with the connector token, which is sent only to
  *   the activity's `serviceUrl` host. Cards and the message's `text/html`
  *   copy are not files.
  * - Replies go to the **inbound** activity's `serviceUrl` via the Bot
  *   Connector REST API, authenticated with a client-credentials token
- *   (cached until expiry). `edit` maps to activity PUT, so streaming can be
- *   enabled later.
+ *   (cached until expiry; the client secret, else the certificate or
+ *   federated credential). `edit` maps to activity PUT, so streaming can
+ *   be enabled later.
  *
  * Webhook registration is manual (Azure Bot → Configuration → Messaging
  * endpoint), like Slack's manifest — no `registerWebhook`.
@@ -327,7 +424,6 @@ function cleanTeamsMentionText(
 export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   const { appId, appPassword, tenantId } = options;
   if (!appId) throw new Error('teams adapter requires an appId');
-  if (!appPassword) throw new Error('teams adapter requires an appPassword');
 
   const metadataUrl = options.openIdMetadataUrl ?? DEFAULT_OPENID_METADATA_URL;
   const loginBase = options.loginBase ?? 'https://login.microsoftonline.com';
@@ -335,6 +431,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   const now = options.now ?? Date.now;
   const fileHosts = (options.fileHosts ?? ['sharepoint.com']).map((h) => h.toLowerCase());
   const fileTimeoutMs = options.fileTimeoutMs ?? 60_000;
+  const tokenTimeoutMs = options.tokenTimeoutMs ?? 30_000;
   const maxFileBytes = options.maxFileBytes ?? 50 * 1024 * 1024;
   /** Whether `url` is on a file host or one of its subdomains. */
   const isFileHost = (url: URL): boolean => {
@@ -344,6 +441,33 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   // Multi-tenant bots request connector tokens against the shared
   // botframework.com tenant; single-tenant must use their own.
   const tokenTenant = tenantId || 'botframework.com';
+
+  /** A credential, and the id that keeps tokens it gets apart in the cache. */
+  interface Credential {
+    id: string;
+    authenticate: ClientAuthentication;
+  }
+  // File tokens: a certificate or federated credential only.
+  // Keyed by the credential itself (certificateId, federatedId), not the adapter:
+  // rebuilt adapters share tokens; a different credential never does.
+  const fileCredential: Credential | undefined = options.certificate
+    ? {
+        id: certificateId(options.certificate),
+        authenticate: certificateAuthentication(appId, options.certificate, now),
+      }
+    : options.federatedToken
+      ? {
+          id: federatedId(options.federatedToken),
+          authenticate: federatedAuthentication(options.federatedToken),
+        }
+      : undefined;
+  // Connector tokens: the client secret when set (as before), else the same.
+  const connectorCredential: Credential | undefined = appPassword
+    ? { id: `secret:${appPassword}`, authenticate: async () => ({ client_secret: appPassword }) }
+    : fileCredential;
+  if (!connectorCredential) {
+    throw new Error('teams adapter requires an appPassword, certificate or federatedToken');
+  }
 
   async function getSigningKey(kid: string): Promise<CryptoKey | null> {
     const nowMs = now();
@@ -387,38 +511,84 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     return entry!.keys.get(kid) ?? null;
   }
 
-  async function getConnectorToken(): Promise<string> {
-    const cacheKey = `${loginBase}|${tokenTenant}|${appId}|${appPassword}`;
-    const cached = tokenCache.get(cacheKey);
+  /** The cached token for `key`, else one from `request` (shared while in flight). */
+  async function cachedToken(
+    key: string,
+    request: () => Promise<TokenCacheEntry>,
+  ): Promise<string> {
+    const cached = tokenCache.get(key);
     // 60s early-expiry margin so a token never dies mid-send.
     if (cached && cached.expiresAt > now() + 60_000) return cached.token;
-
-    const res = await fetch(`${loginBase}/${tokenTenant}/oauth2/v2.0/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: appId,
-        client_secret: appPassword,
-        scope: 'https://api.botframework.com/.default',
-      }),
-    });
-    const payload = (await res.json().catch(() => null)) as {
-      access_token?: string;
-      expires_in?: number;
-      error_description?: string;
-    } | null;
-    if (!res.ok || !payload?.access_token) {
-      throw new Error(
-        `Teams connector token failed (${res.status}): ${payload?.error_description ?? 'unknown error'}`,
-      );
+    let pending = pendingTokens.get(key);
+    if (!pending) {
+      pending = request()
+        .then((entry) => {
+          // Drop expired tokens as new ones arrive, so the cache holds only
+          // live ones (tenants, hosts and credentials come and go).
+          const nowMs = now();
+          for (const [k, e] of tokenCache) if (e.expiresAt <= nowMs) tokenCache.delete(k);
+          tokenCache.set(key, entry);
+          return entry;
+        })
+        .finally(() => pendingTokens.delete(key));
+      pendingTokens.set(key, pending);
     }
-    tokenCache.set(cacheKey, {
-      token: payload.access_token,
-      expiresAt: now() + (payload.expires_in ?? 3600) * 1000,
-    });
-    return payload.access_token;
+    return (await pending).token;
   }
+
+  /**
+   * An app-only token for `scope` in `tenant` (client credentials grant).
+   * The request, shared by concurrent callers, is limited to
+   * `tokenTimeoutMs`: a stalled one is dropped, so the next caller starts
+   * a fresh one instead of waiting on it.
+   */
+  function token(tenant: string, scope: string, credential: Credential, label: string) {
+    const request = (signal: AbortSignal) => async (): Promise<TokenCacheEntry> => {
+      const tokenUrl = `${loginBase}/${tenant}/oauth2/v2.0/token`;
+      const res = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: appId,
+          scope,
+          ...(await credential.authenticate(tokenUrl)),
+        }),
+        signal,
+      });
+      const payload = (await res.json().catch(() => null)) as {
+        access_token?: string;
+        expires_in?: number;
+        error_description?: string;
+      } | null;
+      if (!res.ok || !payload?.access_token) {
+        throw new Error(
+          `${label} failed (${res.status}): ${payload?.error_description ?? 'unknown error'}`,
+        );
+      }
+      return {
+        token: payload.access_token,
+        expiresAt: now() + (payload.expires_in ?? 3600) * 1000,
+      };
+    };
+    return cachedToken(`${loginBase}|${tenant}|${appId}|${scope}|${credential.id}`, () =>
+      withDeadline(
+        tokenTimeoutMs,
+        () => new Error(`${label} timed out after ${tokenTimeoutMs}ms`),
+        (signal) => request(signal)(),
+      ),
+    );
+  }
+
+  const getConnectorToken = (): Promise<string> =>
+    token(tokenTenant, CONNECTOR_SCOPE, connectorCredential, 'Teams connector token');
+
+  /**
+   * The token for a file URL on `host` in `tenant`: scope
+   * `https://<host>/.default`, cached per tenant and host.
+   */
+  const getFileToken = (credential: Credential, tenant: string, host: string): Promise<string> =>
+    token(tenant, `https://${host}/.default`, credential, 'Teams file token');
 
   async function connectorCall(
     url: string,
@@ -458,38 +628,39 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   }
 
   /**
-   * GET an attachment's bytes. With `withToken`, the connector token goes
-   * to `url`'s origin only, never to a redirect elsewhere; `allowHop` limits
-   * where redirects may lead. An error page instead of the file is refused
-   * (see {@link isErrorPage}).
+   * GET an attachment's bytes. A `token` goes to `url`'s origin only, never
+   * to a redirect elsewhere; `allowHop` limits where redirects may lead. An
+   * error page instead of the file is refused (see {@link isErrorPage}), and
+   * `refusalHint` explains a failed status, knowing whether the hop that
+   * answered was sent the token.
    */
   async function fetchAttachment(
     url: URL,
     opts: {
-      withToken: boolean;
+      token?: () => Promise<string>;
       declared: string | undefined;
       allowHop?: (hop: URL) => boolean;
       signal: AbortSignal;
+      refusalHint?: (status: number, tokenSent: boolean) => string;
     },
   ): Promise<{ data: Uint8Array; served: string | undefined }> {
-    const token = opts.withToken ? await getConnectorToken() : undefined;
+    const token = opts.token ? await opts.token() : undefined;
+    // The last hop asked for: the one whose answer comes back.
+    let tokenSent = false;
     const res = await fetchFollowingRedirects(url, {
       signal: opts.signal,
-      headersFor: (hop): Record<string, string> =>
-        token && hop.origin === url.origin ? { Authorization: `Bearer ${token}` } : {},
+      headersFor: (hop): Record<string, string> => {
+        tokenSent = !!token && hop.origin === url.origin;
+        return tokenSent ? { Authorization: `Bearer ${token}` } : {};
+      },
       label: 'Teams file download',
       allowHop: opts.allowHop,
     });
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
-      // File URLs carry a `tempauth` credential; Microsoft drops it on
-      // March 1, 2027, after which downloads need a token this adapter
-      // can't get with a client secret.
-      const hint =
-        res.status === 401 && !opts.withToken && !url.searchParams.has('tempauth')
-          ? ': the URL has no tempauth credential and needs an access token, which this adapter does not send'
-          : '';
-      throw new Error(`Teams file download failed (${res.status})${hint}`);
+      throw new Error(
+        `Teams file download failed (${res.status})${opts.refusalHint?.(res.status, tokenSent) ?? ''}`,
+      );
     }
     const served = baseMimeType(res.headers.get('content-type'));
     const data = await readCapped(res, maxFileBytes, tooLarge);
@@ -512,6 +683,46 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
       contentType,
       unavailable: reason,
       download: () => Promise.reject(new Error(`Teams file ${fileName} is not available: ${reason}`)),
+    };
+  }
+
+  /**
+   * How a personal-chat file URL is fetched. With `tempauth`, as received
+   * and with no token. Without it, with a file token for the file's tenant
+   * (`content.tenantId`, else the activity's), which needs a certificate or
+   * federated credential.
+   */
+  function fileDownloadAuth(
+    url: URL,
+    info: TeamsFileDownloadInfo,
+    activity: TeamsActivity,
+  ): Pick<Parameters<typeof fetchAttachment>[1], 'token' | 'refusalHint'> {
+    if (hasTempauth(url)) return {};
+    if (!fileCredential) {
+      return {
+        refusalHint: (status) =>
+          status === 401
+            ? ': the URL has no tempauth credential and needs a file token, which takes a certificate or federatedToken (not a client secret)'
+            : '',
+      };
+    }
+    const credential = fileCredential;
+    const tenant =
+      validTenant(info.tenantId) ??
+      validTenant(activity.channelData?.tenant?.id) ??
+      validTenant(activity.conversation?.tenantId) ??
+      validTenant(tenantId);
+    return {
+      token: async () => {
+        if (!tenant) throw new Error('Teams file token needs a tenant ID, and the activity has none');
+        return getFileToken(credential, tenant, url.host);
+      },
+      refusalHint: (status, tokenSent) =>
+        status !== 401 && status !== 403
+          ? ''
+          : tokenSent
+            ? ': the file token was refused; the app manifest must grant the File.ReadSelected.User RSC permission'
+            : ': the file host redirected to another host, which the file token is not sent to',
     };
   }
 
@@ -568,7 +779,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
           download: () =>
             deadline(async (signal) => {
               const { data, served } = await fetchAttachment(url, {
-                withToken: false,
+                ...fileDownloadAuth(url, info, activity),
                 declared,
                 allowHop: isFileHost,
                 signal,
@@ -620,7 +831,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
             // `type` (e.g. `image/*`) for the error-page check: an image is
             // never HTML.
             const { data, served } = await fetchAttachment(url, {
-              withToken: true,
+              token: getConnectorToken,
               declared: declared ?? type,
               signal,
             });
