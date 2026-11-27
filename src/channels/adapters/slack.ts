@@ -1,15 +1,28 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ChannelAdapter,
+  ChannelAttachment,
+  ChannelAttachmentData,
   ChannelDelivery,
   ChannelEvent,
   WebhookRequest,
 } from '../types';
+import {
+  attachmentKind,
+  baseMimeType,
+  fetchFollowingRedirects,
+  isErrorPage,
+  readCapped,
+  withDeadline,
+} from '../download';
 
 export interface SlackAdapterOptions {
   /** App signing secret (Basic Information → App Credentials). */
   signingSecret: string;
-  /** Bot token (`xoxb-...`) with `chat:write` scope. */
+  /**
+   * Bot token (`xoxb-...`) with `chat:write` scope. Files users send reach
+   * the agent only with the `files:read` scope too.
+   */
   botToken: string;
   /**
    * Reply in a thread under the triggering message when the message arrived
@@ -22,10 +35,54 @@ export interface SlackAdapterOptions {
   replyInThread?: boolean;
   /** API origin override (tests). @default https://slack.com/api */
   apiBase?: string;
+  /**
+   * Hosts the bot token is sent to when downloading a file a user sent.
+   * A file URL on another host is refused, and a redirect to one is
+   * followed without the token. @default ['files.slack.com']
+   */
+  fileHosts?: string[];
+  /**
+   * Time allowed for one file download (lookup included), in milliseconds.
+   * @default 60000
+   */
+  fileTimeoutMs?: number;
+  /**
+   * Largest file downloaded, in bytes; larger ones fail that attachment.
+   * Files are held in memory and re-uploaded. @default 52428800 (50 MB)
+   */
+  maxFileBytes?: number;
   /** Max accepted signature timestamp skew, in seconds. @default 300 */
   maxSkewSeconds?: number;
   /** Injectable clock (tests). @default Date.now */
   now?: () => number;
+}
+
+/** Subset of Slack's file object. */
+interface SlackFile {
+  id?: string;
+  /** May be `null` for unnamed files. */
+  name?: string | null;
+  title?: string | null;
+  mimetype?: string;
+  /** `slack_audio` for an audio clip recorded in Slack. */
+  subtype?: string;
+  size?: number;
+  /**
+   * `hosted`, `external`, `snippet` or `post`; a Slack Connect stub says
+   * `file_access`.
+   */
+  mode?: string;
+  /** Hosted outside Slack: `url_private` is that host's URL, never sent the token. */
+  is_external?: boolean;
+  /**
+   * `check_file_info` on a Slack Connect file: the event carries only a
+   * stub, and `files.info` returns the full object.
+   */
+  file_access?: string;
+  /** Set when the workspace's plan limit hides the file. */
+  is_hidden_by_limit?: number | boolean;
+  url_private?: string;
+  url_private_download?: string;
 }
 
 /** Subset of Slack's Events API envelope we care about. */
@@ -43,7 +100,49 @@ interface SlackEnvelope {
     channel_type?: string;
     ts?: string;
     thread_ts?: string;
+    /** Files shared with the message (`subtype: 'file_share'`, or an `app_mention`). */
+    files?: SlackFile[];
   };
+}
+
+/** Modes whose `url_private` serves the file's bytes. */
+const DOWNLOADABLE_MODES = new Set(['hosted', 'snippet']);
+
+/**
+ * The URL to download a full file object from with the bot token, or
+ * `undefined` when there is none: files hosted outside Slack, Slack posts,
+ * and files hidden by the plan limit.
+ */
+function privateUrl(file: SlackFile): string | undefined {
+  if (file.mode !== undefined && !DOWNLOADABLE_MODES.has(file.mode)) return undefined;
+  if (file.is_external || file.is_hidden_by_limit) return undefined;
+  return file.url_private_download || file.url_private || undefined;
+}
+
+/**
+ * A file's type, with Slack's own audio clips typed as audio: a clip
+ * (`subtype: 'slack_audio'`) can arrive as `audio_message.mp4` declared
+ * `video/mp4`, and would otherwise be refused as video, not transcribed.
+ */
+function fileTypeOf(file: SlackFile): string | undefined {
+  const mime = baseMimeType(file.mimetype);
+  if (file.subtype !== 'slack_audio' || mime?.startsWith('audio/')) return mime;
+  return mime?.startsWith('video/') ? `audio/${mime.slice('video/'.length)}` : 'audio/mp4';
+}
+
+function fileNameOf(file: SlackFile, id: string): string {
+  return file.name || file.title || `file_${id}`;
+}
+
+/**
+ * Why a full file object can't be downloaded (finishing "was not
+ * included: …"), or `undefined` when it can.
+ */
+function unavailableReason(file: SlackFile): string | undefined {
+  if (privateUrl(file)) return undefined;
+  if (file.is_external) return 'it is hosted outside Slack, where the bot can\'t read it';
+  if (file.is_hidden_by_limit) return "it is hidden by the Slack workspace's plan limit";
+  return "Slack doesn't offer a download for this kind of file";
 }
 
 /**
@@ -62,9 +161,14 @@ function isDirectMessage(event: { channel_type?: string; channel?: string }): bo
  *   constant-time compare, ±5 min skew window) and answers the
  *   `url_verification` challenge inline.
  * - `parse` accepts `message` and `app_mention` events, skipping bot
- *   messages and message subtypes (edits, joins) to avoid loops and noise.
- *   `app_mention` duplicates of a `message` collapse via the shared
- *   `event_id`-less client dedupe key (`channel:ts`).
+ *   messages and message subtypes (edits, joins) to avoid loops and noise,
+ *   except `file_share`. `app_mention` duplicates of a `message` collapse
+ *   via the shared `event_id`-less client dedupe key (`channel:ts`).
+ * - Files in the message (`files`) become attachments, downloaded from
+ *   `url_private` with the bot token (`files:read` scope). The token goes
+ *   only to {@link SlackAdapterOptions.fileHosts}; files hosted outside
+ *   Slack are skipped. Slack Connect stubs (`file_access:
+ *   'check_file_info'`) are looked up with `files.info` on download.
  * - Replies: channel/group mentions thread under the triggering message;
  *   DMs reply top-level in the conversation. Both stream via
  *   `chat.postMessage` + `chat.update`.
@@ -82,6 +186,155 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
   const replyInThread = options.replyInThread ?? true;
   const maxSkewSeconds = options.maxSkewSeconds ?? 300;
   const now = options.now ?? Date.now;
+  const fileHosts = new Set((options.fileHosts ?? ['files.slack.com']).map((h) => h.toLowerCase()));
+  const fileTimeoutMs = options.fileTimeoutMs ?? 60_000;
+  const maxFileBytes = options.maxFileBytes ?? 50 * 1024 * 1024;
+  const tooLarge = () =>
+    new Error(`Slack file is larger than the ${maxFileBytes}-byte limit (maxFileBytes)`);
+
+  /** Whether the bot token may be sent to `url`. */
+  function isFileHost(url: URL): boolean {
+    return url.protocol === 'https:' && fileHosts.has(url.hostname.toLowerCase());
+  }
+
+  /**
+   * GET a file URL with the bot token. The token goes only to a file host,
+   * so a redirect elsewhere (e.g. a sign-in page) never receives it.
+   */
+  async function fetchPrivate(url: string, signal: AbortSignal): Promise<Response> {
+    const parsed = new URL(url);
+    if (!isFileHost(parsed)) {
+      throw new Error(
+        `Slack file URL is not on a Slack file host (${parsed.host}); not sending the bot token`,
+      );
+    }
+    return fetchFollowingRedirects(parsed, {
+      signal,
+      headersFor: (hop): Record<string, string> =>
+        isFileHost(hop) ? { Authorization: `Bearer ${botToken}` } : {},
+      label: 'Slack file download',
+    });
+  }
+
+  /** `files.info` → the full file object of a Slack Connect stub. */
+  async function fileInfo(fileId: string, signal: AbortSignal): Promise<SlackFile> {
+    const res = await fetch(`${apiBase}/files.info?file=${encodeURIComponent(fileId)}`, {
+      headers: { Authorization: `Bearer ${botToken}` },
+      signal,
+    });
+    const payload = (await res.json().catch(() => null)) as
+      | { ok?: boolean; error?: string; file?: SlackFile }
+      | null;
+    if (!res.ok || !payload?.ok || !payload.file) {
+      throw new Error(
+        `Slack files.info failed (${res.status}): ${payload?.error ?? 'unknown error'}`
+      );
+    }
+    return payload.file;
+  }
+
+  /**
+   * A full file object → its bytes. A body served as HTML for anything but
+   * an HTML file is a sign-in page: what `url_private` serves when the token
+   * lacks `files:read` (see {@link isErrorPage}).
+   */
+  async function readFile(
+    file: SlackFile,
+    id: string,
+    signal: AbortSignal,
+  ): Promise<ChannelAttachmentData> {
+    const url = privateUrl(file);
+    if (!url) {
+      throw new Error(`Slack file ${id} is hosted outside Slack or hidden; not downloadable`);
+    }
+    if ((file.size ?? 0) > maxFileBytes) throw tooLarge();
+    const res = await fetchPrivate(url, signal);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new Error(`Slack file download failed (${res.status})`);
+    }
+    const declared = fileTypeOf(file);
+    const served = baseMimeType(res.headers.get('content-type'));
+    const data = await readCapped(res, maxFileBytes, tooLarge);
+    if (isErrorPage(declared, served, data)) {
+      throw new Error(
+        'Slack file download returned a web page instead of the file (does the bot token have the files:read scope?)',
+      );
+    }
+    return {
+      data,
+      contentType: declared ?? served ?? 'application/octet-stream',
+      fileName: fileNameOf(file, id),
+    };
+  }
+
+  function download(run: (signal: AbortSignal) => Promise<ChannelAttachmentData>) {
+    return withDeadline(
+      fileTimeoutMs,
+      () => new Error(`Slack file download timed out after ${fileTimeoutMs}ms`),
+      run,
+    );
+  }
+
+  function parseFiles(files: SlackFile[] | undefined): ChannelAttachment[] {
+    const attachments: ChannelAttachment[] = [];
+    for (const file of files ?? []) {
+      const id = file.id;
+      if (!id) continue;
+
+      // Slack Connect: the event carries a stub (no name, type or URL).
+      // `describe` looks it up with files.info, so the pipeline can refuse
+      // a file agents can't read before its bytes are fetched; the download
+      // reuses that answer.
+      if (file.file_access === 'check_file_info') {
+        let info: Promise<SlackFile> | undefined;
+        const lookup = (): Promise<SlackFile> => {
+          if (!info) {
+            const pending = withDeadline(
+              fileTimeoutMs,
+              () => new Error(`Slack files.info timed out after ${fileTimeoutMs}ms`),
+              (signal) => fileInfo(id, signal),
+            );
+            // A failed lookup may be retried by the next call.
+            pending.catch(() => {
+              if (info === pending) info = undefined;
+            });
+            info = pending;
+          }
+          return info;
+        };
+        attachments.push({
+          kind: 'document',
+          describe: async () => {
+            const full = await lookup();
+            return {
+              fileName: fileNameOf(full, id),
+              contentType: fileTypeOf(full),
+              sizeBytes: full.size,
+              unavailable: unavailableReason(full),
+            };
+          },
+          download: async () => {
+            const full = await lookup();
+            return download((signal) => readFile(full, id, signal));
+          },
+        });
+        continue;
+      }
+
+      const contentType = fileTypeOf(file);
+      attachments.push({
+        kind: attachmentKind(contentType),
+        fileName: fileNameOf(file, id),
+        contentType,
+        sizeBytes: file.size,
+        // External, plan-hidden, posts, canvases: the agent is told why.
+        unavailable: unavailableReason(file),
+        download: () => download((signal) => readFile(file, id, signal)),
+      });
+    }
+    return attachments;
+  }
 
   function signatureValid(req: WebhookRequest): boolean {
     const timestamp = req.headers.get('x-slack-request-timestamp');
@@ -153,14 +406,18 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
       const event = envelope.event;
       const isMessage = event?.type === 'message' || event?.type === 'app_mention';
       // Skip bot messages (incl. our own replies — loop guard) and message
-      // subtypes: edits, deletes, channel joins, etc.
-      if (!isMessage || !event?.channel || !event.ts || event.bot_id || event.subtype) {
+      // subtypes: edits, deletes, channel joins, etc. `file_share` is a user
+      // message with files.
+      const subtypeOk = !event?.subtype || event.subtype === 'file_share';
+      if (!isMessage || !event?.channel || !event.ts || event.bot_id || !subtypeOk) {
         return [];
       }
 
-      // Strip a leading bot @-mention so the agent sees clean text.
+      // Strip a leading bot @-mention so the agent sees clean text. A bare
+      // file has no text — still a valid event.
       const text = (event.text ?? '').replace(/^\s*<@[A-Z0-9]+>\s*/, '').trim();
-      if (!text) return [];
+      const attachments = parseFiles(event.files);
+      if (!text && attachments.length === 0) return [];
 
       // Conversation identity: a channel conversation is a thread
       // (`channel:thread_ts`), but a DM is the whole 1:1 chat — like a
@@ -177,6 +434,7 @@ export function slack(options: SlackAdapterOptions): ChannelAdapter {
           conversationId,
           externalUserId: event.user,
           text,
+          ...(attachments.length > 0 ? { attachments } : {}),
           // `channel:ts`, not `event_id`: when a message both mentions the app
           // and lands in a subscribed channel, Slack sends `app_mention` AND
           // `message` as separate deliveries with distinct event_ids for the

@@ -8,67 +8,10 @@ import type {
   ChannelEvent,
   WebhookRequest,
 } from '../types';
+import { baseMimeType, htmlPlausible, looksLikeHtml, readCapped } from '../download';
 
 /** Sent on media downloads: some Meta media hosts refuse requests without one. */
 const MEDIA_USER_AGENT = `timbal-sdk/${SDK_VERSION}`;
-
-/** Whether `data` starts like an HTML document (an error page, not media). */
-function looksLikeHtml(data: Uint8Array): boolean {
-  const head = new TextDecoder()
-    .decode(data.subarray(0, 512))
-    .replace(/^\uFEFF/, '')
-    .trimStart()
-    .toLowerCase();
-  return head.startsWith('<!doctype html') || head.startsWith('<html');
-}
-
-/**
- * Declared types a user-sent *document* can have while really being HTML
- * (or unknown): an HTML body is accepted for these. Images, audio, PDFs and
- * other binary types never legitimately arrive as HTML.
- */
-function htmlPlausible(mime: string | undefined): boolean {
-  return (
-    !mime ||
-    mime.startsWith('text/') ||
-    mime === 'application/xhtml+xml' ||
-    mime === 'application/xml' ||
-    mime === 'application/octet-stream'
-  );
-}
-
-/** Reads `res` into memory, refusing bodies over `maxBytes`. */
-async function readCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
-  const tooLarge = () =>
-    new Error(`WhatsApp media is larger than the ${maxBytes}-byte limit (maxMediaBytes)`);
-  const declaredLength = Number(res.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    await res.body?.cancel().catch(() => {});
-    throw tooLarge();
-  }
-  if (!res.body) return new Uint8Array(await res.arrayBuffer());
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw tooLarge();
-    }
-    chunks.push(value);
-  }
-  const data = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    data.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return data;
-}
 
 export interface WhatsAppAdapterOptions {
   /** Graph API access token (system user or customer-scoped business token). */
@@ -223,12 +166,6 @@ const EXTENSIONS: Record<string, string> = {
   'application/pdf': 'pdf',
 };
 
-/** `audio/ogg; codecs=opus` → `audio/ogg`. */
-function baseMimeType(mime: string | undefined): string | undefined {
-  const base = mime?.split(';')[0]?.trim().toLowerCase();
-  return base || undefined;
-}
-
 function signatureValid(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
   if (!signatureHeader?.startsWith('sha256=')) return false;
   const expected = `sha256=${createHmac('sha256', appSecret).update(rawBody).digest('hex')}`;
@@ -324,7 +261,11 @@ export function whatsapp(options: WhatsAppAdapterOptions): ChannelAdapter {
         throw new Error(`WhatsApp media download failed (${res.status})`);
       }
       const served = baseMimeType(res.headers.get('content-type') ?? undefined);
-      const data = await readCapped(res, maxMediaBytes);
+      const data = await readCapped(
+        res,
+        maxMediaBytes,
+        () => new Error(`WhatsApp media is larger than the ${maxMediaBytes}-byte limit (maxMediaBytes)`),
+      );
       const expected = declared ?? baseMimeType(meta.mime_type);
       const htmlAllowed = isDocument && htmlPlausible(expected);
       if (!htmlAllowed && (served === 'text/html' || looksLikeHtml(data))) {

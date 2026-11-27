@@ -7,6 +7,7 @@ import {
   isAudioContentType,
   looksLikeText,
   toUtf8,
+  unavailableAttachmentNote,
   unsupportedAttachmentNote,
 } from '../channels/attachments';
 import { parseEmail, type EmailAttachment } from '../channels/email';
@@ -271,9 +272,10 @@ export async function resolveChannelBindings(
  * ```
  *
  * The default workforce input is `{ prompt: event.text }`. Events carrying
- * attachments (Telegram photos/documents, WhatsApp images/documents) are
- * re-uploaded to Timbal temp storage and sent as prompt content parts; audio
- * (WhatsApp voice notes) is transcribed and sent as text
+ * attachments (Telegram photos/documents, WhatsApp images/documents, Slack
+ * files, Teams files and inline images) are re-uploaded to Timbal temp
+ * storage and sent as prompt content parts; audio (WhatsApp voice notes,
+ * audio files) is transcribed and sent as text
  * (`{ prompt: [{type:'text',...}, {type:'file', file: url}] }`) — the same
  * shape the platform chat UI produces. Use `binding.buildInput` to thread
  * conversation/user context into components with richer input schemas (e.g.
@@ -322,7 +324,9 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * Excel, text — see {@link agentReadableUpload}). Anything else is not
    * uploaded (nor downloaded, when the adapter declares its name and type):
    * a text note naming the file takes its place, so the agent can ask for a
-   * format it reads, and `onError` gets the refusal. A file meant to be read
+   * format it reads, and `onError` gets the refusal. A file the adapter
+   * marks `unavailable` (hosted elsewhere, no access) gets a note saying why,
+   * and a file whose metadata needs a lookup is `describe`d first. A file meant to be read
    * as text whose bytes look binary (a gzip declared `text/csv`) is refused
    * the same way.
    *
@@ -350,16 +354,30 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     let emailFilesLeft = MAX_EMAIL_FILES;
     for (const [i, { attachment, emailDepth }] of queue.entries()) {
       try {
-        const declaredAudio =
-          attachment.kind === 'audio' || isAudioContentType(attachment.contentType);
+        // Metadata the provider only gives on request (Slack Connect files).
+        let { fileName: declaredName, contentType: declaredType, unavailable } = attachment;
+        if (attachment.describe && !unavailable && (!declaredName || !declaredType)) {
+          const described = await attachment.describe();
+          declaredName ??= described.fileName;
+          declaredType ??= described.contentType;
+          unavailable = described.unavailable;
+        }
+        // A file the adapter can't fetch: tell the agent, don't download.
+        if (unavailable) {
+          const name = declaredName ?? 'file';
+          parts.push({ type: 'text', text: unavailableAttachmentNote(name, unavailable) });
+          failures.push(new Error(`Attachment not available: ${name} (${unavailable})`));
+          continue;
+        }
+        const declaredAudio = attachment.kind === 'audio' || isAudioContentType(declaredType);
         // Skip the download when the declared name and type already rule it out.
         if (
           !declaredAudio &&
-          attachment.fileName &&
-          attachment.contentType &&
-          !agentReadableUpload(attachment.fileName, attachment.contentType)
+          declaredName &&
+          declaredType &&
+          !agentReadableUpload(declaredName, declaredType)
         ) {
-          refuse(attachment.fileName, attachment.contentType);
+          refuse(declaredName, declaredType);
           continue;
         }
         const { data, contentType, fileName } = await attachment.download();

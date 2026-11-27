@@ -9,7 +9,11 @@ import {
   verifyPlatformForward,
   whatsapp,
 } from '../channels/adapters/whatsapp';
-import type { WebhookRequest } from '../channels/types';
+import type { ChannelEvent, WebhookRequest } from '../channels/types';
+import { Elysia } from 'elysia';
+import { timbalChannels } from '../elysia/channels';
+import { unsupportedAttachmentNote } from '../channels/attachments';
+import type { Timbal } from '../lib/timbal';
 import { SDK_VERSION } from '../constants';
 
 function req(body: unknown, headers: Record<string, string> = {}): WebhookRequest {
@@ -664,6 +668,538 @@ describe('slack delivery (mocked API)', () => {
     });
     await flat.delivery(event).send('answer');
     expect(requests[0]!.body).toEqual({ channel: 'C0CHAN', text: 'answer' });
+  });
+});
+
+interface RecordedCall {
+  url: string;
+  auth: string | null;
+  redirect: RequestRedirect | undefined;
+}
+
+/** Replace `fetch` with `handler`, recording each call; returns the calls and a restore. */
+function mockFetch(
+  handler: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
+): { calls: RecordedCall[]; restore: () => void } {
+  const calls: RecordedCall[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({
+      url,
+      auth: new Headers(init?.headers).get('authorization'),
+      redirect: init?.redirect,
+    });
+    return handler(url, init);
+  }) as typeof fetch;
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
+  };
+}
+
+describe('slack files', () => {
+  const PDF_URL = 'https://files.slack.com/files-pri/T0TEAM-F0PDF/download/invoice.pdf';
+  const PDF = {
+    id: 'F0PDF',
+    name: 'invoice.pdf',
+    title: 'invoice',
+    mimetype: 'application/pdf',
+    filetype: 'pdf',
+    size: 4,
+    mode: 'hosted',
+    is_external: false,
+    url_private: 'https://files.slack.com/files-pri/T0TEAM-F0PDF/invoice.pdf',
+    url_private_download: PDF_URL,
+  };
+  const PNG = {
+    id: 'F0PNG',
+    name: 'image.png',
+    mimetype: 'image/png',
+    size: 70,
+    mode: 'hosted',
+    url_private: 'https://files.slack.com/files-pri/T0TEAM-F0PNG/image.png',
+  };
+  const BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
+
+  const adapter = slack({
+    signingSecret: SIGNING_SECRET,
+    botToken: 'xoxb-test',
+    apiBase: 'https://slack.test/api',
+  });
+
+  function fileShare(files: unknown[], overrides: Record<string, unknown> = {}) {
+    return req({
+      type: 'event_callback',
+      event: {
+        type: 'message',
+        subtype: 'file_share',
+        text: 'what do these say?',
+        user: 'U0USER',
+        channel: 'C0CHAN',
+        channel_type: 'channel',
+        ts: '1700000000.000100',
+        files,
+        ...overrides,
+      },
+    });
+  }
+
+  function attachmentFor(file: unknown, a = adapter) {
+    // Slack parses synchronously.
+    return (a.parse(fileShare([file])) as ChannelEvent[])[0]!.attachments![0]!;
+  }
+
+  let restore = () => {};
+  afterEach(() => {
+    restore();
+    restore = () => {};
+  });
+
+  // A Slack voice clip can be named `audio_message.mp4` and typed `video/mp4`.
+  const CLIP = {
+    ...PNG,
+    id: 'F0CLIP',
+    name: 'audio_message.mp4',
+    mimetype: 'video/mp4',
+    subtype: 'slack_audio',
+    url_private_download: 'https://files.slack.com/files-pri/T0-F0CLIP/download/audio_message.mp4',
+  };
+  const VIDEO = {
+    ...CLIP,
+    id: 'F0VID',
+    name: 'clip.mp4',
+    subtype: undefined,
+    url_private_download: 'https://files.slack.com/files-pri/T0-F0VID/download/clip.mp4',
+  };
+
+  test('a Slack voice clip is audio, even when typed as video; a video stays video', async () => {
+    const [event] = await adapter.parse(fileShare([CLIP, VIDEO]));
+    expect(event!.attachments!.map((a) => [a.kind, a.contentType])).toEqual([
+      ['audio', 'audio/mp4'],
+      ['video', 'video/mp4'],
+    ]);
+  });
+
+  test('a Slack Connect voice clip is described as audio', async () => {
+    const m = mockFetch(
+      () =>
+        new Response(JSON.stringify({ ok: true, file: CLIP }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    restore = m.restore;
+    const stub = { id: 'F0CLIP', mode: 'file_access', file_access: 'check_file_info' };
+    expect((await attachmentFor(stub).describe!()).contentType).toBe('audio/mp4');
+  });
+
+  /** The default channel pipeline, with Slack in front and a fake Timbal client. */
+  function slackPipeline() {
+    const invocations: Record<string, unknown>[] = [];
+    const uploads: string[] = [];
+    const transcriptions: { filename: string; contentType: string }[] = [];
+    const timbal = {
+      workforce: {
+        get: () => ({
+          async *events(input: Record<string, unknown>) {
+            invocations.push(input);
+            yield { type: 'delta', delta: 'ok' };
+          },
+        }),
+      },
+      async uploadTempFileFromBuffer(_data: Uint8Array, filename: string) {
+        uploads.push(filename);
+        return { url: `https://cdn.test/tmp/${filename}` };
+      },
+      async transcribeAudio(_data: Uint8Array, filename: string, contentType: string) {
+        transcriptions.push({ filename, contentType });
+        return { text: 'the spoken words' };
+      },
+    } as unknown as Timbal;
+    const adapter = slack({
+      signingSecret: SIGNING_SECRET,
+      botToken: 'xoxb-test',
+      apiBase: 'https://slack.test/api',
+      now: () => Date.now(),
+    });
+    const app = new Elysia().use(timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }));
+    const post = async (files: unknown[]) => {
+      const signed = signedSlackReq(
+        { type: 'event_callback', event_id: 'Ev1', event: { type: 'message', subtype: 'file_share', text: '', user: 'U0USER', channel: 'D0DM', channel_type: 'im', ts: '1700000000.000100', files } },
+        Date.now(),
+      );
+      await app.handle(
+        new Request('http://localhost/channels/a/slack', {
+          method: 'POST',
+          headers: signed.headers,
+          body: signed.rawBody,
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 50));
+    };
+    return { post, invocations, uploads, transcriptions };
+  }
+
+  test('through the webhook, a voice clip is transcribed; a video gets the unsupported note', async () => {
+    const m = mockFetch((url) =>
+      url.startsWith('https://slack.test/api/')
+        ? new Response(JSON.stringify({ ok: true, ts: '1700000000.000200' }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : new Response(new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]), {
+            headers: { 'Content-Type': 'video/mp4' },
+          }),
+    );
+    restore = m.restore;
+
+    const clip = slackPipeline();
+    await clip.post([CLIP]);
+    expect(clip.transcriptions).toEqual([{ filename: 'audio_message.mp4', contentType: 'audio/mp4' }]);
+    expect(clip.uploads).toEqual([]);
+    expect(clip.invocations[0]).toEqual({ prompt: 'the spoken words' });
+
+    const video = slackPipeline();
+    await video.post([VIDEO]);
+    expect(video.transcriptions).toEqual([]);
+    expect(video.uploads).toEqual([]);
+    expect(video.invocations[0]).toEqual({
+      prompt: [{ type: 'text', text: unsupportedAttachmentNote('clip.mp4') }],
+    });
+    // Refused before download.
+    expect(m.calls.some((c) => c.url === VIDEO.url_private_download)).toBe(false);
+  });
+
+  test('a file_share message carries its files as attachments', async () => {
+    const [event] = await adapter.parse(fileShare([PDF, PNG]));
+    expect(event!.text).toBe('what do these say?');
+    expect(event!.dedupeKey).toBe('slack:C0CHAN:1700000000.000100');
+    expect(event!.attachments).toHaveLength(2);
+    expect(event!.attachments![0]).toMatchObject({
+      kind: 'document',
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: 4,
+    });
+    expect(event!.attachments![1]).toMatchObject({
+      kind: 'image',
+      fileName: 'image.png',
+      contentType: 'image/png',
+      sizeBytes: 70,
+    });
+  });
+
+  test('a file sent with no text is still an event; an audio clip is audio', async () => {
+    const clip = { ...PNG, id: 'F0CLIP', name: 'audio_message.m4a', mimetype: 'audio/mp4' };
+    const [event] = await adapter.parse(fileShare([clip], { text: '' }));
+    expect(event!.text).toBe('');
+    expect(event!.attachments![0]).toMatchObject({ kind: 'audio', fileName: 'audio_message.m4a' });
+  });
+
+  test('an unnamed file falls back to its title, then its id', async () => {
+    const [event] = await adapter.parse(
+      fileShare([
+        { ...PNG, name: null, title: 'Screenshot' },
+        { ...PNG, id: 'F0BARE', name: null, title: null },
+      ]),
+    );
+    expect(event!.attachments!.map((a) => a.fileName)).toEqual(['Screenshot', 'file_F0BARE']);
+  });
+
+  test('an app_mention with files carries them too', async () => {
+    const [event] = await adapter.parse(
+      req({
+        type: 'event_callback',
+        event: {
+          type: 'app_mention',
+          text: '<@U0BOT> summarize this',
+          user: 'U0USER',
+          channel: 'C0CHAN',
+          ts: '1700000000.000100',
+          files: [PDF],
+        },
+      }),
+    );
+    expect(event!.text).toBe('summarize this');
+    expect(event!.attachments![0]!.fileName).toBe('invoice.pdf');
+  });
+
+  // The agent is told why such a file is missing instead of never hearing of it.
+  test('external, hidden and post files are marked unavailable, with the reason', async () => {
+    const cases: [Record<string, unknown>, string][] = [
+      [
+        { ...PDF, mode: 'external', is_external: true, url_private: 'https://drive.example/f' },
+        "it is hosted outside Slack, where the bot can't read it",
+      ],
+      [{ ...PDF, is_hidden_by_limit: 1 }, "it is hidden by the Slack workspace's plan limit"],
+      [{ ...PDF, mode: 'post' }, "Slack doesn't offer a download for this kind of file"],
+      [
+        { ...PDF, url_private: undefined, url_private_download: undefined },
+        "Slack doesn't offer a download for this kind of file",
+      ],
+    ];
+    for (const [file, reason] of cases) {
+      // A file on its own is still an event, so the user gets an answer.
+      const [event] = await adapter.parse(fileShare([file], { text: '' }));
+      expect(event!.attachments).toHaveLength(1);
+      expect(event!.attachments![0]).toMatchObject({ fileName: 'invoice.pdf', unavailable: reason });
+    }
+  });
+
+  test('id-less files are skipped', async () => {
+    expect(await adapter.parse(fileShare([{ ...PDF, id: undefined }], { text: '' }))).toHaveLength(0);
+    const [withText] = await adapter.parse(fileShare([{ ...PDF, id: undefined }]));
+    expect(withText!.attachments).toBeUndefined();
+  });
+
+  test('other subtypes and bot uploads are still dropped', async () => {
+    expect(await adapter.parse(fileShare([PDF], { subtype: 'message_changed' }))).toHaveLength(0);
+    expect(await adapter.parse(fileShare([PDF], { bot_id: 'B0BOT' }))).toHaveLength(0);
+  });
+
+  test('a Slack Connect stub is declared without name or type', async () => {
+    const stub = { id: 'F0EXT', mode: 'file_access', file_access: 'check_file_info', user: '' };
+    const [event] = await adapter.parse(fileShare([stub], { text: '' }));
+    const attachment = event!.attachments![0]!;
+    expect(attachment.kind).toBe('document');
+    expect(attachment.fileName).toBeUndefined();
+    expect(attachment.contentType).toBeUndefined();
+  });
+
+  test('download fetches url_private_download with the bot token', async () => {
+    const m = mockFetch(() => new Response(BYTES, { headers: { 'Content-Type': 'application/pdf' } }));
+    restore = m.restore;
+    const file = await attachmentFor(PDF).download();
+    expect(Array.from(file.data)).toEqual(Array.from(BYTES));
+    expect(file.contentType).toBe('application/pdf');
+    expect(file.fileName).toBe('invoice.pdf');
+    expect(m.calls).toEqual([{ url: PDF_URL, auth: 'Bearer xoxb-test', redirect: 'manual' }]);
+  });
+
+  test('download uses url_private when there is no url_private_download', async () => {
+    const m = mockFetch(() => new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47])));
+    restore = m.restore;
+    await attachmentFor(PNG).download();
+    expect(m.calls[0]!.url).toBe(PNG.url_private);
+  });
+
+  test('the bot token is never sent off the Slack file hosts', async () => {
+    const m = mockFetch(() => new Response(BYTES));
+    restore = m.restore;
+    const offHost = { ...PDF, url_private_download: 'https://files.evil.example/invoice.pdf' };
+    await expect(attachmentFor(offHost).download()).rejects.toThrow(
+      'Slack file URL is not on a Slack file host (files.evil.example); not sending the bot token',
+    );
+    const plainHttp = { ...PDF, url_private_download: 'http://files.slack.com/invoice.pdf' };
+    await expect(attachmentFor(plainHttp).download()).rejects.toThrow('not on a Slack file host');
+    expect(m.calls).toHaveLength(0);
+  });
+
+  test('redirects keep the token on file hosts and drop it elsewhere', async () => {
+    const m = mockFetch((url) => {
+      if (url === PDF_URL) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: 'https://files.slack.com/files-pri/T0TEAM-F0PDF/moved.pdf' },
+        });
+      }
+      if (url.endsWith('/moved.pdf')) {
+        return new Response(null, { status: 302, headers: { Location: 'https://cdn.example/blob' } });
+      }
+      return new Response(BYTES);
+    });
+    restore = m.restore;
+    await attachmentFor(PDF).download();
+    expect(m.calls.map((c) => [c.url, c.auth])).toEqual([
+      [PDF_URL, 'Bearer xoxb-test'],
+      ['https://files.slack.com/files-pri/T0TEAM-F0PDF/moved.pdf', 'Bearer xoxb-test'],
+      ['https://cdn.example/blob', null],
+    ]);
+  });
+
+  test('a redirect loop fails', async () => {
+    const m = mockFetch(
+      () => new Response(null, { status: 302, headers: { Location: PDF_URL } }),
+    );
+    restore = m.restore;
+    await expect(attachmentFor(PDF).download()).rejects.toThrow(
+      'Slack file download redirected too many times',
+    );
+  });
+
+  test('fileHosts extends the hosts the token is sent to', async () => {
+    const gov = slack({
+      signingSecret: SIGNING_SECRET,
+      botToken: 'xoxb-test',
+      fileHosts: ['files.slack-gov.com'],
+    });
+    const m = mockFetch(() => new Response(BYTES));
+    restore = m.restore;
+    const file = { ...PDF, url_private_download: 'https://files.slack-gov.com/files-pri/x.pdf' };
+    await attachmentFor(file, gov).download();
+    expect(m.calls[0]!.auth).toBe('Bearer xoxb-test');
+  });
+
+  test('a sign-in page served instead of the file is refused', async () => {
+    for (const [body, contentType] of [
+      ['<!DOCTYPE html><html><head><title>Slack</title></head></html>', 'text/html; charset=utf-8'],
+      ['  <html><body>Sign in</body></html>', 'application/octet-stream'],
+    ] as const) {
+      const m = mockFetch(() => new Response(body, { headers: { 'Content-Type': contentType } }));
+      try {
+        await expect(attachmentFor(PDF).download()).rejects.toThrow(
+          'Slack file download returned a web page instead of the file (does the bot token have the files:read scope?)',
+        );
+      } finally {
+        m.restore();
+      }
+    }
+    // A text file is refused when the body is served as HTML.
+    const m = mockFetch(
+      () => new Response('<!DOCTYPE html><html></html>', { headers: { 'Content-Type': 'text/html' } }),
+    );
+    try {
+      await expect(
+        attachmentFor({ ...PDF, name: 'notes.txt', mimetype: 'text/plain' }).download(),
+      ).rejects.toThrow('returned a web page');
+    } finally {
+      m.restore();
+    }
+  });
+
+  // A `.txt` or snippet holding HTML source is the file, not a sign-in page.
+  test('a text file whose content starts with HTML still downloads', async () => {
+    const source = '<!DOCTYPE html>\n<html><body>My landing page draft</body></html>\n';
+    const m = mockFetch(() => new Response(source, { headers: { 'Content-Type': 'text/plain' } }));
+    try {
+      const file = await attachmentFor({
+        ...PDF,
+        name: 'draft.txt',
+        mimetype: 'text/plain',
+        mode: 'snippet',
+      }).download();
+      expect(new TextDecoder().decode(file.data)).toBe(source);
+      expect(file.contentType).toBe('text/plain');
+    } finally {
+      m.restore();
+    }
+  });
+
+  test('an HTML file the user sent still downloads', async () => {
+    const m = mockFetch(
+      () => new Response('<!DOCTYPE html><html></html>', { headers: { 'Content-Type': 'text/html' } }),
+    );
+    restore = m.restore;
+    const file = await attachmentFor({ ...PDF, name: 'page.html', mimetype: 'text/html' }).download();
+    expect(file.contentType).toBe('text/html');
+  });
+
+  test('a refused download fails with its status', async () => {
+    const m = mockFetch(() => new Response('forbidden', { status: 403 }));
+    restore = m.restore;
+    await expect(attachmentFor(PDF).download()).rejects.toThrow('Slack file download failed (403)');
+  });
+
+  test('a file over maxFileBytes fails, before downloading when its size is declared', async () => {
+    const capped = slack({ signingSecret: SIGNING_SECRET, botToken: 'xoxb-test', maxFileBytes: 3 });
+    const m = mockFetch(() => new Response(BYTES));
+    restore = m.restore;
+    await expect(attachmentFor(PDF, capped).download()).rejects.toThrow(
+      'Slack file is larger than the 3-byte limit (maxFileBytes)',
+    );
+    expect(m.calls).toHaveLength(0);
+    // Size not declared: the read itself is capped.
+    await expect(attachmentFor({ ...PDF, size: undefined }, capped).download()).rejects.toThrow(
+      'larger than the 3-byte limit',
+    );
+  });
+
+  test('a stalled download times out', async () => {
+    const slow = slack({ signingSecret: SIGNING_SECRET, botToken: 'xoxb-test', fileTimeoutMs: 20 });
+    const m = mockFetch(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+        }),
+    );
+    restore = m.restore;
+    await expect(attachmentFor(PDF, slow).download()).rejects.toThrow(
+      'Slack file download timed out after 20ms',
+    );
+  });
+
+  test('a Slack Connect stub is looked up with files.info, then downloaded', async () => {
+    const m = mockFetch((url) => {
+      if (url.startsWith('https://slack.test/api/files.info')) {
+        return new Response(JSON.stringify({ ok: true, file: PDF }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(BYTES);
+    });
+    restore = m.restore;
+    const stub = { id: 'F0EXT', mode: 'file_access', file_access: 'check_file_info' };
+    const file = await attachmentFor(stub).download();
+    expect(file.fileName).toBe('invoice.pdf');
+    expect(file.contentType).toBe('application/pdf');
+    expect(m.calls.map((c) => [c.url, c.auth])).toEqual([
+      ['https://slack.test/api/files.info?file=F0EXT', 'Bearer xoxb-test'],
+      [PDF_URL, 'Bearer xoxb-test'],
+    ]);
+  });
+
+  // The pipeline describes a stub before downloading it, so a file agents
+  // can't read is refused without fetching its bytes.
+  test('a Slack Connect stub describes itself; the download reuses that lookup', async () => {
+    const m = mockFetch((url) => {
+      if (url.startsWith('https://slack.test/api/files.info')) {
+        return new Response(JSON.stringify({ ok: true, file: PDF }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(BYTES);
+    });
+    restore = m.restore;
+    const stub = { id: 'F0EXT', mode: 'file_access', file_access: 'check_file_info' };
+    const attachment = attachmentFor(stub);
+    expect(await attachment.describe!()).toEqual({
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: PDF.size,
+      unavailable: undefined,
+    });
+    await attachment.download();
+    expect(m.calls.map((c) => c.url)).toEqual([
+      'https://slack.test/api/files.info?file=F0EXT',
+      PDF_URL,
+    ]);
+  });
+
+  test('a Slack Connect stub that turns out external is described as unavailable', async () => {
+    const external = { ...PDF, mode: 'external', is_external: true, url_private: 'https://drive.example/f' };
+    const m = mockFetch(
+      () =>
+        new Response(JSON.stringify({ ok: true, file: external }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+    );
+    restore = m.restore;
+    const stub = { id: 'F0EXT', mode: 'file_access', file_access: 'check_file_info' };
+    expect((await attachmentFor(stub).describe!()).unavailable).toBe(
+      "it is hosted outside Slack, where the bot can't read it",
+    );
+  });
+
+  test('a files.info refusal fails the download clearly', async () => {
+    const m = mockFetch(
+      () => new Response(JSON.stringify({ ok: false, error: 'access_denied' }), { status: 200 }),
+    );
+    restore = m.restore;
+    const stub = { id: 'F0EXT', file_access: 'check_file_info' };
+    await expect(attachmentFor(stub).download()).rejects.toThrow(
+      'Slack files.info failed (200): access_denied',
+    );
   });
 });
 
