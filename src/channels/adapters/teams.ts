@@ -65,6 +65,12 @@ export interface TeamsAdapterOptions {
   /** Time allowed for one file download, in milliseconds. @default 60000 */
   fileTimeoutMs?: number;
   /**
+   * Time allowed for one Entra token request (connector or file token), in
+   * milliseconds. A request still pending then is dropped, so the next
+   * download or reply starts a fresh one. @default 30000
+   */
+  tokenTimeoutMs?: number;
+  /**
    * Largest file downloaded, in bytes; larger ones fail that attachment.
    * Files are held in memory and re-uploaded. @default 52428800 (50 MB)
    */
@@ -103,6 +109,8 @@ interface TokenCacheEntry {
 const tokenCache = new Map<string, TokenCacheEntry>();
 /** Token requests in flight, so concurrent downloads share one. */
 const pendingTokens = new Map<string, Promise<TokenCacheEntry>>();
+/** Numbers each certificate / federated credential, to key its tokens apart. */
+let credentialSerial = 0;
 
 /** Reset the shared JWKS + token caches (tests). */
 export function clearTeamsAdapterCaches(): void {
@@ -387,6 +395,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   const now = options.now ?? Date.now;
   const fileHosts = (options.fileHosts ?? ['sharepoint.com']).map((h) => h.toLowerCase());
   const fileTimeoutMs = options.fileTimeoutMs ?? 60_000;
+  const tokenTimeoutMs = options.tokenTimeoutMs ?? 30_000;
   const maxFileBytes = options.maxFileBytes ?? 50 * 1024 * 1024;
   /** Whether `url` is on a file host or one of its subdomains. */
   const isFileHost = (url: URL): boolean => {
@@ -403,10 +412,19 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     authenticate: ClientAuthentication;
   }
   // File tokens: a certificate or federated credential only.
+  // Each adapter's credential gets its own id: two adapters for the same
+  // app (during a rotation) must not share token requests, or a failing
+  // retired credential fails the healthy one's downloads too.
   const fileCredential: Credential | undefined = options.certificate
-    ? { id: 'certificate', authenticate: certificateAuthentication(appId, options.certificate, now) }
+    ? {
+        id: `certificate#${++credentialSerial}`,
+        authenticate: certificateAuthentication(appId, options.certificate, now),
+      }
     : options.federatedToken
-      ? { id: 'federated', authenticate: federatedAuthentication(options.federatedToken) }
+      ? {
+          id: `federated#${++credentialSerial}`,
+          authenticate: federatedAuthentication(options.federatedToken),
+        }
       : undefined;
   // Connector tokens: the client secret when set (as before), else the same.
   const connectorCredential: Credential | undefined = appPassword
@@ -479,9 +497,14 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     return (await pending).token;
   }
 
-  /** An app-only token for `scope` in `tenant` (client credentials grant). */
+  /**
+   * An app-only token for `scope` in `tenant` (client credentials grant).
+   * The request, shared by concurrent callers, is limited to
+   * `tokenTimeoutMs`: a stalled one is dropped, so the next caller starts
+   * a fresh one instead of waiting on it.
+   */
   function token(tenant: string, scope: string, credential: Credential, label: string) {
-    return cachedToken(`${loginBase}|${tenant}|${appId}|${scope}|${credential.id}`, async () => {
+    const request = (signal: AbortSignal) => async (): Promise<TokenCacheEntry> => {
       const tokenUrl = `${loginBase}/${tenant}/oauth2/v2.0/token`;
       const res = await fetch(tokenUrl, {
         method: 'POST',
@@ -492,6 +515,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
           scope,
           ...(await credential.authenticate(tokenUrl)),
         }),
+        signal,
       });
       const payload = (await res.json().catch(() => null)) as {
         access_token?: string;
@@ -507,7 +531,14 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
         token: payload.access_token,
         expiresAt: now() + (payload.expires_in ?? 3600) * 1000,
       };
-    });
+    };
+    return cachedToken(`${loginBase}|${tenant}|${appId}|${scope}|${credential.id}`, () =>
+      withDeadline(
+        tokenTimeoutMs,
+        () => new Error(`${label} timed out after ${tokenTimeoutMs}ms`),
+        (signal) => request(signal)(),
+      ),
+    );
   }
 
   const getConnectorToken = (): Promise<string> =>

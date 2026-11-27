@@ -114,7 +114,7 @@ let tokenFetches: number;
 /** Every other token request: file tokens. */
 let fileTokenFetches: number;
 /** Overrides the token endpoint's answer to file-token requests. */
-let fileTokenRoute: ((body: URLSearchParams) => Response) | undefined;
+let fileTokenRoute: ((body: URLSearchParams) => Response | Promise<Response>) | undefined;
 let realFetch: typeof fetch;
 /** File URLs the mock serves, by exact URL (checked before the connector routes). */
 let fileRoutes: Map<string, (init: RequestInit | undefined) => Response | Promise<Response>>;
@@ -1278,6 +1278,67 @@ describe('teams adapter file tokens', () => {
     expect(String(error)).not.toContain('File.ReadSelected.User');
   });
 
+  // A stalled exchange is dropped after tokenTimeoutMs, so it can't hold up
+  // every later download.
+  test('a stalled token request is dropped, and the next download starts a fresh one', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    const adapter = certAdapter({ fileTimeoutMs: 20, tokenTimeoutMs: 40 });
+    fileTokenRoute = () => new Promise<Response>(() => {});
+    const [first] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    await expect(first!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download timed out after 20ms',
+    );
+
+    await new Promise((r) => setTimeout(r, 60)); // past tokenTimeoutMs
+    fileTokenRoute = undefined; // the endpoint answers again
+    const [second] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    const file = await second!.attachments![0]!.download();
+    expect(Array.from(file.data)).toEqual(Array.from(PDF_BYTES));
+    expect(fileTokenFetches).toBe(2);
+  });
+
+  // During a rotation, two adapters for the same app, tenant and scope.
+  test('adapters with different credentials do not share token requests', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    let retiringCalls = 0;
+    let healthyCalls = 0;
+    const retiring = certAdapter({
+      certificate: undefined,
+      federatedToken: async () => {
+        retiringCalls += 1;
+        return 'retired-assertion';
+      },
+    });
+    const healthy = certAdapter({
+      certificate: undefined,
+      federatedToken: async () => {
+        healthyCalls += 1;
+        return 'current-assertion';
+      },
+    });
+    fileTokenRoute = (form) =>
+      form.get('client_assertion') === 'retired-assertion'
+        ? jsonResponse({ error_description: 'AADSTS700027: Client assertion failed signature validation.' }, 401)
+        : jsonResponse({ access_token: 'file-token-current', expires_in: 3600 });
+
+    const [a] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', retiring);
+    const [b] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', healthy);
+    const [failed, succeeded] = await Promise.allSettled([
+      a!.attachments![0]!.download(),
+      b!.attachments![0]!.download(),
+    ]);
+    expect(failed.status).toBe('rejected');
+    expect(succeeded.status).toBe('fulfilled');
+    expect([retiringCalls, healthyCalls]).toEqual([1, 1]);
+
+    // Same adapter, concurrent downloads: still one shared request.
+    const before = fileTokenFetches;
+    clearTeamsAdapterCaches();
+    const [c] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL), tenantFile(BARE_DOWNLOAD_URL)], '', healthy);
+    await Promise.all(c!.attachments!.map((attachment) => attachment.download()));
+    expect(fileTokenFetches - before).toBe(1);
+  });
+
   // Off the file hosts a redirect isn't followed at all, token or not.
   test('a redirect off the file hosts is refused before it is fetched', async () => {
     const elsewhere = 'https://cdn.example.test/invoice.pdf';
@@ -1372,6 +1433,12 @@ describe('teams certificate assertions', () => {
     const hex = Buffer.from(certThumbprint, 'base64url').toString('hex').toUpperCase();
     const colons = hex.match(/../g)!.join(':');
     const assertion = await assertionFor({ privateKey: certificate.privateKey, thumbprintSha256: colons });
+    expect(decodeJwt(assertion).header['x5t#S256']).toBe(certThumbprint);
+  });
+
+  // A rotated certificate with a stale thumbprint still around: the PEM wins.
+  test('the certificate PEM decides the thumbprint over a stale thumbprintSha256', async () => {
+    const assertion = await assertionFor({ ...certificate, thumbprintSha256: 'cd'.repeat(32) });
     expect(decodeJwt(assertion).header['x5t#S256']).toBe(certThumbprint);
   });
 

@@ -27,7 +27,8 @@ export interface TeamsCertificate {
   /**
    * The certificate's SHA-256 thumbprint in hex (colons allowed), in place
    * of `certificate`: `openssl x509 -in cert.pem -noout -fingerprint -sha256`.
-   * Not the SHA-1 thumbprint the Azure portal lists.
+   * Not the SHA-1 thumbprint the Azure portal lists. Ignored when the
+   * certificate PEM is given (here or in `privateKey`).
    */
   thumbprintSha256?: string;
 }
@@ -126,7 +127,16 @@ function privateKeyInfo(pem: string): Uint8Array {
   throw new Error(`Teams certificate privateKey must be an RSA key, not ${key.label}`);
 }
 
+/**
+ * The certificate's SHA-256 thumbprint for `x5t#S256`: computed from the
+ * certificate PEM when there is one (it can't go stale), else the given
+ * `thumbprintSha256`.
+ */
 async function thumbprintSha256(cert: TeamsCertificate): Promise<string> {
+  const block = pemBlocks(`${cert.certificate ?? ''}\n${cert.privateKey}`).find(
+    (b) => b.label === 'CERTIFICATE',
+  );
+  if (block) return bytesToB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', block.der)));
   if (cert.thumbprintSha256) {
     const hex = cert.thumbprintSha256.replace(/[\s:]/g, '');
     if (/^[0-9a-f]{40}$/i.test(hex)) {
@@ -139,15 +149,9 @@ async function thumbprintSha256(cert: TeamsCertificate): Promise<string> {
     }
     return bytesToB64url(new Uint8Array(Buffer.from(hex, 'hex')));
   }
-  const block = pemBlocks(`${cert.certificate ?? ''}\n${cert.privateKey}`).find(
-    (b) => b.label === 'CERTIFICATE',
+  throw new Error(
+    'Teams certificate needs the certificate PEM (certificate) or its SHA-256 thumbprint (thumbprintSha256)',
   );
-  if (!block) {
-    throw new Error(
-      'Teams certificate needs the certificate PEM (certificate) or its SHA-256 thumbprint (thumbprintSha256)',
-    );
-  }
-  return bytesToB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', block.der)));
 }
 
 /**
@@ -213,12 +217,22 @@ export function federatedAuthentication(getToken: TeamsFederatedToken): ClientAu
 }
 
 /**
+ * A file's text: `Bun.file` on Bun, `node:fs` on Node (the `/elysia` entry
+ * point runs on both).
+ */
+async function readTextFile(path: string): Promise<string> {
+  if (typeof Bun !== 'undefined') return Bun.file(path).text();
+  const { readFile } = await import('node:fs/promises');
+  return readFile(path, 'utf8');
+}
+
+/**
  * A {@link TeamsFederatedToken} that reads the token from a file on each
  * call, as Azure Workload Identity projects it (`AZURE_FEDERATED_TOKEN_FILE`)
  * and rotates it in place.
  */
 export function federatedTokenFile(path: string): TeamsFederatedToken {
-  return async () => (await Bun.file(path).text()).trim();
+  return async () => (await readTextFile(path)).trim();
 }
 
 /** String settings (platform credentials or env) for the non-secret credentials. */

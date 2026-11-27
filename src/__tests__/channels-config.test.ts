@@ -229,3 +229,67 @@ describe('materializeChannelBindings', () => {
     expect(withNone.skipped[0]!.reason).toBe('missing-credentials');
   });
 });
+
+describe('teams certificate from the platform', () => {
+  const pem = (label: string, der: ArrayBuffer | Uint8Array): string =>
+    `-----BEGIN ${label}-----\n${(Buffer.from(der as Uint8Array).toString('base64').match(/.{1,64}/g) ?? []).join('\n')}\n-----END ${label}-----\n`;
+
+  // A rotated certificate on the platform, the previous thumbprint still in
+  // the environment: the assertion must name the new certificate.
+  test('a complete platform certificate is not paired with a stale env thumbprint', async () => {
+    const keys = await crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const newCertDer = new Uint8Array([0x30, 0x82, 0x01, 0x0a, 0x02, 0x82, 0x01, 0x01, 0x00, 0x7e]);
+    const { bindings } = materializeChannelBindings(
+      [
+        {
+          provider: 'teams',
+          workforce: 'joi',
+          credentials: {
+            app_id: 'app-1',
+            certificate_private_key: pem('PRIVATE KEY', await crypto.subtle.exportKey('pkcs8', keys.privateKey)),
+            certificate: pem('CERTIFICATE', newCertDer),
+          },
+        },
+      ],
+      { TEAMS_CERTIFICATE_THUMBPRINT_SHA256: 'ab'.repeat(32) },
+    );
+
+    const assertions: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).includes('/oauth2/v2.0/token')) {
+        assertions.push(new URLSearchParams(String(init?.body)).get('client_assertion') ?? '');
+        return new Response(JSON.stringify({ access_token: 'connector-token', expires_in: 3600 }));
+      }
+      return new Response(JSON.stringify({ id: 'sent-1' }));
+    }) as typeof fetch;
+    try {
+      const adapter = bindings[0]!.adapter;
+      const [event] = await adapter.parse({
+        rawBody: JSON.stringify({
+          type: 'message',
+          id: 'a1',
+          text: 'hi',
+          channelId: 'msteams',
+          serviceUrl: 'https://smba.test.example/emea/',
+          from: { id: '29:user' },
+          recipient: { id: '28:bot' },
+          conversation: { id: 'c1' },
+        }),
+        headers: new Headers(),
+        method: 'POST',
+      } as never);
+      await adapter.delivery(event!).send('hello');
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    const header = JSON.parse(Buffer.from(assertions[0]!.split('.')[0]!, 'base64url').toString('utf8'));
+    const newThumbprint = Buffer.from(await crypto.subtle.digest('SHA-256', newCertDer)).toString('base64url');
+    expect(header['x5t#S256']).toBe(newThumbprint);
+  });
+});

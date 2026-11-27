@@ -116,13 +116,25 @@ function buildAdapter(
       const appPassword = creds.app_password || env.TEAMS_APP_PASSWORD;
       const tenantId = creds.tenant_id || env.TEAMS_TENANT_ID;
       // Certificate / federated credential: file downloads need one once
-      // Teams file URLs lose `tempauth` (March 1, 2027).
+      // Teams file URLs lose `tempauth` (March 1, 2027). A certificate is
+      // taken whole from one source — the platform when it supplies a key,
+      // else the env — so a rotated key never pairs with a stale env
+      // certificate or thumbprint.
+      const certificateSource = creds.certificate_private_key
+        ? {
+            privateKey: creds.certificate_private_key,
+            certificate: creds.certificate,
+            thumbprint: creds.certificate_thumbprint_sha256,
+          }
+        : {
+            privateKey: env.TEAMS_CERTIFICATE_PRIVATE_KEY,
+            certificate: env.TEAMS_CERTIFICATE,
+            thumbprint: env.TEAMS_CERTIFICATE_THUMBPRINT_SHA256,
+          };
       const credentials = teamsCredentialOptions({
-        certificatePrivateKey:
-          creds.certificate_private_key || env.TEAMS_CERTIFICATE_PRIVATE_KEY,
-        certificate: creds.certificate || env.TEAMS_CERTIFICATE,
-        certificateThumbprintSha256:
-          creds.certificate_thumbprint_sha256 || env.TEAMS_CERTIFICATE_THUMBPRINT_SHA256,
+        certificatePrivateKey: certificateSource.privateKey,
+        certificate: certificateSource.certificate,
+        certificateThumbprintSha256: certificateSource.thumbprint,
         federatedTokenFile: env.TEAMS_FEDERATED_TOKEN_FILE,
       });
       if (!appId || (!appPassword && !credentials.certificate && !credentials.federatedToken)) {
