@@ -583,6 +583,34 @@ describe('timbalChannels plugin', () => {
       expect(uploads.map((u) => u.filename)).toEqual(['document_42.pdf']);
     });
 
+    test('files are uploaded under a name and type the framework recognizes', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, uploads } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [
+          {
+            name: 'Report.DOCX',
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          },
+          { name: 'photo.jpg', type: 'image/jpg' },
+        ],
+      });
+      await settle();
+
+      expect(uploads.map(({ filename, contentType }) => ({ filename, contentType }))).toEqual([
+        {
+          filename: 'Report.docx',
+          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        },
+        { filename: 'photo.jpg', contentType: 'image/jpeg' },
+      ]);
+    });
+
     test('bare attachment (no caption) sends a file-only prompt', async () => {
       const { adapter } = makeMediaAdapter();
       const { timbal, invocations } = makeUploadingTimbal();

@@ -15,16 +15,22 @@
  * unconverted, and Anthropic and OpenAI take only JPEG, PNG, GIF and WebP —
  * a BMP or TIFF would fail the run.
  */
-const AGENT_BINARY_TYPES: Record<string, string> = {
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png: 'image/png',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  pdf: 'application/pdf',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-};
+const AGENT_BINARY_TYPES = new Map<string, string>([
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
+  ['pdf', 'application/pdf'],
+  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+]);
+
+/** MIME type → the extension to give a file of that type (the first listed). */
+const AGENT_BINARY_EXTENSIONS = new Map<string, string>();
+for (const [ext, mime] of AGENT_BINARY_TYPES) {
+  if (!AGENT_BINARY_EXTENSIONS.has(mime)) AGENT_BINARY_EXTENSIONS.set(mime, ext);
+}
 
 /**
  * Extensions of text files. The framework decodes these as text whatever
@@ -62,28 +68,75 @@ function isTextual(mime: string): boolean {
   );
 }
 
-function extensionOf(fileName: string): string | undefined {
+/**
+ * Non-standard spellings clients send for supported types. The model APIs
+ * reject an image whose media type is `image/jpg`, and the framework only
+ * reads a PDF typed exactly `application/pdf`.
+ */
+const MIME_ALIASES = new Map<string, string>([
+  ['image/jpg', 'image/jpeg'],
+  ['image/pjpeg', 'image/jpeg'],
+  ['image/x-png', 'image/png'],
+  ['application/x-pdf', 'application/pdf'],
+]);
+
+/** `IMAGE/JPG; q=1` → `image/jpeg`. */
+function normalizeMime(contentType: string): string {
+  const mime = (contentType.split(';')[0] ?? '').trim().toLowerCase();
+  return MIME_ALIASES.get(mime) ?? mime;
+}
+
+/** Splits `Report.DOCX` into `Report` and `docx`; no extension → `undefined`. */
+function splitExtension(fileName: string): { base: string; ext: string } | undefined {
   const dot = fileName.lastIndexOf('.');
-  return dot > 0 && dot < fileName.length - 1 ? fileName.slice(dot + 1).toLowerCase() : undefined;
+  if (dot <= 0 || dot === fileName.length - 1) return undefined;
+  return { base: fileName.slice(0, dot), ext: fileName.slice(dot + 1).toLowerCase() };
+}
+
+/** The name and content type to upload an attachment under. */
+export interface AgentReadableUpload {
+  fileName: string;
+  contentType: string;
 }
 
 /**
- * The file name to upload an attachment under so an agent can read it, or
- * `null` when agents can't (the attachment should be skipped).
+ * The name and content type to upload an attachment under so an agent can
+ * read it, or `null` when agents can't (the attachment should be skipped).
  *
- * - A name with a supported binary extension is kept.
- * - A name without one gets the extension of its supported content type
- *   (`report` + `application/pdf` → `report.pdf`).
- * - Text keeps its name, recognized by its extension or its content type:
- *   the framework decodes it as text.
+ * The framework picks Word, Excel and email handling by a case-sensitive
+ * extension match, and the type the file is served with decides images and
+ * PDFs. So:
+ *
+ * - A name with a supported extension is kept, with the extension
+ *   lowercased (`Report.DOCX` → `Report.docx`).
+ * - A supported binary file is uploaded with its standard content type: the
+ *   declared one when that is a supported type, else the extension's
+ *   (`photo.jpg` + `image/jpg` or `application/octet-stream` → `image/jpeg`).
+ * - A name without a supported extension gets the one of its supported
+ *   content type (`report` + `application/pdf` → `report.pdf`).
+ * - Other text keeps its name, recognized by its content type: the framework
+ *   decodes it as text.
  */
-export function agentReadableFileName(fileName: string, contentType: string): string | null {
-  const ext = extensionOf(fileName);
-  if (ext && (ext in AGENT_BINARY_TYPES || TEXT_EXTENSIONS.has(ext))) return fileName;
+export function agentReadableUpload(
+  fileName: string,
+  contentType: string,
+): AgentReadableUpload | null {
+  const mime = normalizeMime(contentType);
+  const declaredExt = AGENT_BINARY_EXTENSIONS.get(mime);
+  const parts = splitExtension(fileName);
 
-  const mime = (contentType.split(';')[0] ?? '').trim().toLowerCase();
-  const typeExt = Object.keys(AGENT_BINARY_TYPES).find((e) => AGENT_BINARY_TYPES[e] === mime);
-  if (typeExt) return `${fileName}.${typeExt}`;
+  const extType = parts && AGENT_BINARY_TYPES.get(parts.ext);
+  if (parts && extType) {
+    return {
+      fileName: `${parts.base}.${parts.ext}`,
+      contentType: declaredExt ? mime : extType,
+    };
+  }
+  if (parts && TEXT_EXTENSIONS.has(parts.ext)) {
+    return { fileName: `${parts.base}.${parts.ext}`, contentType };
+  }
 
-  return isTextual(mime) ? fileName : null;
+  if (declaredExt) return { fileName: `${fileName}.${declaredExt}`, contentType: mime };
+
+  return isTextual(mime) ? { fileName, contentType } : null;
 }

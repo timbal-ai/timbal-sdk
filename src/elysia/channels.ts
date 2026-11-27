@@ -2,11 +2,7 @@ import { Elysia } from 'elysia';
 import { Timbal } from '../lib/timbal';
 import { DedupeCache } from '../channels/dedupe';
 import { StreamingReply } from '../channels/reply';
-import { agentReadableFileName } from '../channels/attachments';
-
-function unsupportedAttachment(fileName: string, contentType: string): Error {
-  return new Error(`Agents can't read this attachment type: ${fileName} (${contentType})`);
-}
+import { agentReadableUpload } from '../channels/attachments';
 import { WorkforceTextCollector } from '../channels/collect';
 import { channelBindingsFromEnv } from '../channels/env';
 import { resolvePublicOrigin } from '../channels/origin';
@@ -20,6 +16,10 @@ import { getCachedProject } from '../auth/config';
 import { registerConfigRefreshHook } from '../config/refresh';
 import type { ProjectChannelSpec } from '../types';
 import type { ChannelBinding, ChannelEvent, WebhookRequest } from '../channels/types';
+
+function unsupportedAttachment(fileName: string, contentType: string): Error {
+  return new Error(`Agents can't read this attachment type: ${fileName} (${contentType})`);
+}
 
 /**
  * Path prefixes that must bypass `timbalAuth` ingress. Webhooks authenticate
@@ -287,7 +287,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * the caption, if any), the plain `{ prompt: text }` shape is used.
    *
    * Other files are sent only when agents can read them (images, PDF, Word,
-   * Excel, text — see {@link agentReadableFileName}); anything else fails
+   * Excel, text — see {@link agentReadableUpload}); anything else fails
    * that attachment, before it is downloaded when the adapter declares its
    * name and type.
    */
@@ -306,7 +306,7 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           attachment.kind !== 'audio' &&
           attachment.fileName &&
           attachment.contentType &&
-          !agentReadableFileName(attachment.fileName, attachment.contentType)
+          !agentReadableUpload(attachment.fileName, attachment.contentType)
         ) {
           throw unsupportedAttachment(attachment.fileName, attachment.contentType);
         }
@@ -318,9 +318,11 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           transcribed = true;
           continue;
         }
-        const uploadName = agentReadableFileName(fileName, contentType);
-        if (!uploadName) throw unsupportedAttachment(fileName, contentType);
-        const tmp = await timbal.uploadTempFileFromBuffer(data, uploadName, contentType);
+        // Uploaded under a name and type the framework recognizes
+        // (`Report.DOCX` → `Report.docx`, `image/jpg` → `image/jpeg`).
+        const upload = agentReadableUpload(fileName, contentType);
+        if (!upload) throw unsupportedAttachment(fileName, contentType);
+        const tmp = await timbal.uploadTempFileFromBuffer(data, upload.fileName, upload.contentType);
         parts.push({ type: 'file', file: tmp.url });
       } catch (err) {
         // Per-attachment fail-soft: a 20MB-cap photo shouldn't sink the
