@@ -104,6 +104,8 @@ let publicJwk: JsonWebKey & { kid?: string };
 let fetches: RecordedFetch[];
 let tokenFetches: number;
 let realFetch: typeof fetch;
+/** File URLs the mock serves, by exact URL (checked before the connector routes). */
+let fileRoutes: Map<string, (init: RequestInit | undefined) => Response | Promise<Response>>;
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
@@ -117,6 +119,7 @@ beforeEach(async () => {
   publicJwk = { ...(await crypto.subtle.exportKey('jwk', keyPair.publicKey)), kid: KID };
   fetches = [];
   tokenFetches = 0;
+  fileRoutes = new Map();
   realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -130,6 +133,8 @@ beforeEach(async () => {
       headers,
       body: typeof init?.body === 'string' ? init.body : (init?.body?.toString() ?? null),
     });
+    const fileRoute = fileRoutes.get(url);
+    if (fileRoute) return fileRoute(init);
     if (url === METADATA_URL) return jsonResponse({ jwks_uri: JWKS_URL });
     if (url === JWKS_URL) return jsonResponse({ keys: [publicJwk] });
     if (url.startsWith(`${LOGIN_BASE}/`)) {
@@ -454,6 +459,226 @@ describe('teams adapter delivery', () => {
     const [event] = await adapter.parse(req(activityFixture()));
     await expect(adapter.delivery(event!).send('hi')).rejects.toThrow(
       /Teams connector POST failed \(403\): Bot is not part of the conversation roster/,
+    );
+  });
+});
+
+// ── Attachments ──
+
+const DOWNLOAD_URL =
+  'https://contoso-my.sharepoint.test/personal/dani/_layouts/15/download.aspx?UniqueId=abc-123&tempauth=v1.tempauth-token';
+const INLINE_IMAGE_URL = `${SERVICE_URL}v3/attachments/0-weu-d1-abc/views/original`;
+const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // %PDF
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function fileDownloadInfo(name: string, fileType: string, downloadUrl: string = DOWNLOAD_URL) {
+  return {
+    contentType: 'application/vnd.microsoft.teams.file.download.info',
+    contentUrl: `https://contoso-my.sharepoint.test/personal/dani/Documents/${name}`,
+    name,
+    content: { downloadUrl, uniqueId: 'abc-123', fileType },
+  };
+}
+
+const inlineImage = (contentUrl: string = INLINE_IMAGE_URL, contentType = 'image/*') => ({
+  contentType,
+  contentUrl,
+});
+
+/** The message's own HTML copy, which Teams sends alongside inline images. */
+const HTML_COPY = {
+  contentType: 'text/html',
+  content: '<div><div><span><img src="https://smba.test.example/x" /></span></div></div>',
+};
+
+async function parseAttachments(attachments: unknown[], text = '', adapter = makeAdapter()) {
+  const events = await adapter.parse(req(activityFixture({ text, attachments })));
+  return events;
+}
+
+describe('teams adapter attachments', () => {
+  test('a file sent in a personal chat is a document attachment', async () => {
+    const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')]);
+    expect(event!.text).toBe('');
+    expect(event!.attachments).toHaveLength(1);
+    expect(event!.attachments![0]).toMatchObject({
+      kind: 'document',
+      fileName: 'invoice.pdf',
+      contentType: 'application/pdf',
+    });
+  });
+
+  test('audio files are audio; unknown file types are declared as octet-stream', async () => {
+    const [event] = await parseAttachments([
+      fileDownloadInfo('memo.m4a', 'm4a'),
+      fileDownloadInfo('slides.key', 'key'),
+      fileDownloadInfo('x.constructor', 'constructor'),
+    ]);
+    expect(event!.attachments!.map((a) => [a.kind, a.contentType])).toEqual([
+      ['audio', 'audio/mp4'],
+      ['document', 'application/octet-stream'],
+      ['document', 'application/octet-stream'],
+    ]);
+  });
+
+  test('an inline image is an image; the HTML copy and cards are not files', async () => {
+    const [event] = await parseAttachments(
+      [
+        inlineImage(),
+        HTML_COPY,
+        { contentType: 'application/vnd.microsoft.card.adaptive', content: { type: 'AdaptiveCard' } },
+      ],
+      '<at>Joi</at> what is this?',
+    );
+    expect(event!.text).toBe('what is this?');
+    expect(event!.attachments).toHaveLength(1);
+    expect(event!.attachments![0]).toMatchObject({ kind: 'image', fileName: 'image_1' });
+    // Typed only `image/*`: the real type is known after the download.
+    expect(event!.attachments![0]!.contentType).toBeUndefined();
+  });
+
+  test('attachments without a usable https URL are skipped', async () => {
+    const unusable = [
+      { ...fileDownloadInfo('a.pdf', 'pdf'), content: { uniqueId: 'x', fileType: 'pdf' } },
+      fileDownloadInfo('b.pdf', 'pdf', 'http://contoso.sharepoint.test/b.pdf'),
+      inlineImage('not a url'),
+      { contentType: 'image/png' },
+      HTML_COPY,
+    ];
+    for (const attachment of unusable) {
+      expect(await parseAttachments([attachment])).toHaveLength(0);
+    }
+  });
+
+  test('a personal-chat file downloads from downloadUrl as received, without the bot token', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () =>
+      new Response(PDF_BYTES, { headers: { 'Content-Type': 'application/octet-stream' } }),
+    );
+    const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')]);
+    const file = await event!.attachments![0]!.download();
+    expect(Array.from(file.data)).toEqual(Array.from(PDF_BYTES));
+    expect(file.contentType).toBe('application/pdf');
+    expect(file.fileName).toBe('invoice.pdf');
+    const download = fetches.find((f) => f.url === DOWNLOAD_URL)!;
+    expect(download.headers.authorization).toBeUndefined();
+    expect(tokenFetches).toBe(0);
+  });
+
+  test('an unknown file type takes the type the host serves', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () =>
+      new Response('a,b\n1,2\n', { headers: { 'Content-Type': 'text/csv; charset=utf-8' } }),
+    );
+    const [event] = await parseAttachments([fileDownloadInfo('export.dat', 'dat')]);
+    expect((await event!.attachments![0]!.download()).contentType).toBe('text/csv');
+  });
+
+  test('an inline image downloads with the connector token; its type comes from the bytes', async () => {
+    fileRoutes.set(INLINE_IMAGE_URL, () =>
+      new Response(PNG_BYTES, { headers: { 'Content-Type': 'application/octet-stream' } }),
+    );
+    const [event] = await parseAttachments([inlineImage()]);
+    const file = await event!.attachments![0]!.download();
+    expect(file.contentType).toBe('image/png');
+    expect(file.fileName).toBe('image_1');
+    const download = fetches.find((f) => f.url === INLINE_IMAGE_URL)!;
+    expect(download.headers.authorization).toBe('Bearer connector-token-1');
+  });
+
+  test('the connector token is not sent to media hosted elsewhere', async () => {
+    const elsewhere = 'https://cdn.example.test/cat.png';
+    fileRoutes.set(elsewhere, () => new Response(PNG_BYTES, { headers: { 'Content-Type': 'image/png' } }));
+    const [event] = await parseAttachments([inlineImage(elsewhere, 'image/png')]);
+    const file = await event!.attachments![0]!.download();
+    expect(file.contentType).toBe('image/png');
+    expect(fetches.find((f) => f.url === elsewhere)!.headers.authorization).toBeUndefined();
+    expect(tokenFetches).toBe(0);
+  });
+
+  test('a redirect off the connector host drops the token', async () => {
+    const blob = 'https://blob.example.test/image';
+    fileRoutes.set(INLINE_IMAGE_URL, () =>
+      new Response(null, { status: 302, headers: { Location: blob } }),
+    );
+    fileRoutes.set(blob, () => new Response(PNG_BYTES));
+    const [event] = await parseAttachments([inlineImage()]);
+    await event!.attachments![0]!.download();
+    const hops = fetches.filter((f) => f.url === INLINE_IMAGE_URL || f.url === blob);
+    expect(hops.map((f) => [f.url, f.headers.authorization])).toEqual([
+      [INLINE_IMAGE_URL, 'Bearer connector-token-1'],
+      [blob, undefined],
+    ]);
+  });
+
+  test('a refused download fails with its status; a URL without tempauth says why', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () => new Response('expired', { status: 403 }));
+    const [withTempauth] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')]);
+    await expect(withTempauth!.attachments![0]!.download()).rejects.toThrow(
+      /^Teams file download failed \(403\)$/,
+    );
+
+    const bare = 'https://contoso-my.sharepoint.test/personal/dani/_layouts/15/download.aspx?UniqueId=abc';
+    fileRoutes.set(bare, () => new Response('unauthorized', { status: 401 }));
+    const [withoutTempauth] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf', bare)]);
+    await expect(withoutTempauth!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download failed (401): the URL has no tempauth credential and needs an access token, which this adapter does not send',
+    );
+  });
+
+  test('an error page served instead of the file is refused', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () =>
+      new Response('<!DOCTYPE html><html><body>Sign in</body></html>', {
+        headers: { 'Content-Type': 'text/html' },
+      }),
+    );
+    const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')]);
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download returned a web page instead of the file',
+    );
+  });
+
+  test('an HTML file the user sent still downloads', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () =>
+      new Response('<!DOCTYPE html><html></html>', { headers: { 'Content-Type': 'text/html' } }),
+    );
+    const [event] = await parseAttachments([fileDownloadInfo('menu.html', 'html')]);
+    expect((await event!.attachments![0]!.download()).contentType).toBe('text/html');
+  });
+
+  test('a file over maxFileBytes is refused', async () => {
+    fileRoutes.set(DOWNLOAD_URL, () => new Response(PDF_BYTES));
+    const capped = teams({
+      appId: APP_ID,
+      appPassword: APP_PASSWORD,
+      openIdMetadataUrl: METADATA_URL,
+      loginBase: LOGIN_BASE,
+      now: () => NOW,
+      maxFileBytes: 3,
+    });
+    const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')], '', capped);
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file is larger than the 3-byte limit (maxFileBytes)',
+    );
+  });
+
+  test('a stalled download times out', async () => {
+    fileRoutes.set(
+      DOWNLOAD_URL,
+      (init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason));
+        }),
+    );
+    const slow = teams({
+      appId: APP_ID,
+      appPassword: APP_PASSWORD,
+      openIdMetadataUrl: METADATA_URL,
+      loginBase: LOGIN_BASE,
+      now: () => NOW,
+      fileTimeoutMs: 20,
+    });
+    const [event] = await parseAttachments([fileDownloadInfo('invoice.pdf', 'pdf')], '', slow);
+    await expect(event!.attachments![0]!.download()).rejects.toThrow(
+      'Teams file download timed out after 20ms',
     );
   });
 });

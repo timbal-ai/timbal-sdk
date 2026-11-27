@@ -1,9 +1,21 @@
 import type {
   ChannelAdapter,
+  ChannelAttachment,
+  ChannelAttachmentData,
   ChannelDelivery,
   ChannelEvent,
   WebhookRequest,
 } from '../types';
+import {
+  attachmentKind,
+  baseMimeType,
+  fetchFollowingRedirects,
+  isHtmlType,
+  looksLikeHtml,
+  readCapped,
+  sniffImageType,
+  withDeadline,
+} from '../download';
 
 export interface TeamsAdapterOptions {
   /** Entra Application (client) ID — JWT `aud` + connector token client_id. */
@@ -20,6 +32,13 @@ export interface TeamsAdapterOptions {
   openIdMetadataUrl?: string;
   /** Entra login origin for connector tokens (tests). @default https://login.microsoftonline.com */
   loginBase?: string;
+  /** Time allowed for one file download, in milliseconds. @default 60000 */
+  fileTimeoutMs?: number;
+  /**
+   * Largest file downloaded, in bytes; larger ones fail that attachment.
+   * Files are held in memory and re-uploaded. @default 52428800 (50 MB)
+   */
+  maxFileBytes?: number;
   /** Max accepted JWT clock skew, in seconds. @default 300 */
   maxSkewSeconds?: number;
   /** Injectable clock (tests). @default Date.now */
@@ -95,6 +114,70 @@ interface TeamsActivity {
   recipient?: { id?: string; name?: string };
   conversation?: { id?: string; conversationType?: string };
   entities?: TeamsMentionEntity[];
+  attachments?: TeamsAttachment[];
+}
+
+/** Bot Framework attachment: `content` and `contentUrl` are alternatives. */
+interface TeamsAttachment {
+  contentType?: string;
+  contentUrl?: string;
+  content?: unknown;
+  name?: string;
+}
+
+/** `content` of a {@link FILE_DOWNLOAD_INFO} attachment. */
+interface TeamsFileDownloadInfo {
+  downloadUrl?: string;
+  uniqueId?: string;
+  /** The file's extension (`pdf`, `docx`, ...). */
+  fileType?: string;
+}
+
+/**
+ * A file the user sent in a personal chat (bots whose manifest sets
+ * `supportsFiles`). `content.downloadUrl` is a short-lived URL that carries
+ * its own credential (`tempauth`), so the bot token is not sent to it.
+ */
+const FILE_DOWNLOAD_INFO = 'application/vnd.microsoft.teams.file.download.info';
+
+/**
+ * Extension → MIME type, for files Teams sends with only an extension. Lets
+ * the pipeline skip files agents can't read before downloading them, and
+ * marks audio for transcription.
+ */
+const FILE_TYPES = new Map<string, string>([
+  ['jpg', 'image/jpeg'],
+  ['jpeg', 'image/jpeg'],
+  ['png', 'image/png'],
+  ['gif', 'image/gif'],
+  ['webp', 'image/webp'],
+  ['pdf', 'application/pdf'],
+  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  ['txt', 'text/plain'],
+  ['csv', 'text/csv'],
+  ['md', 'text/markdown'],
+  ['html', 'text/html'],
+  ['htm', 'text/html'],
+  ['json', 'application/json'],
+  ['mp3', 'audio/mpeg'],
+  ['m4a', 'audio/mp4'],
+  ['wav', 'audio/wav'],
+  ['ogg', 'audio/ogg'],
+  ['mp4', 'video/mp4'],
+  ['mov', 'video/quicktime'],
+]);
+
+/** `url` when it is an `https:` URL, else `undefined`. */
+function httpsUrl(url: unknown): URL | undefined {
+  if (typeof url !== 'string') return undefined;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 interface TeamsMentionEntity {
@@ -171,6 +254,12 @@ function cleanTeamsMentionText(
  *   reactions, typing, etc. return `[]`. Teams bakes the thread into
  *   `conversation.id` for channel messages, so thread-scoped memory needs no
  *   extra composition (unlike Slack).
+ * - Attachments: files sent in a personal chat
+ *   (`application/vnd.microsoft.teams.file.download.info`) download from
+ *   `content.downloadUrl` as received; inline images (`image/*` with a
+ *   `contentUrl`) download with the connector token, which is sent only to
+ *   the activity's `serviceUrl` host. Cards and the message's `text/html`
+ *   copy are not files.
  * - Replies go to the **inbound** activity's `serviceUrl` via the Bot
  *   Connector REST API, authenticated with a client-credentials token
  *   (cached until expiry). `edit` maps to activity PUT, so streaming can be
@@ -188,6 +277,8 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
   const loginBase = options.loginBase ?? 'https://login.microsoftonline.com';
   const maxSkewSeconds = options.maxSkewSeconds ?? 300;
   const now = options.now ?? Date.now;
+  const fileTimeoutMs = options.fileTimeoutMs ?? 60_000;
+  const maxFileBytes = options.maxFileBytes ?? 50 * 1024 * 1024;
   // Multi-tenant bots request connector tokens against the shared
   // botframework.com tenant; single-tenant must use their own.
   const tokenTenant = tenantId || 'botframework.com';
@@ -293,6 +384,125 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     return payload;
   }
 
+  const tooLarge = () =>
+    new Error(`Teams file is larger than the ${maxFileBytes}-byte limit (maxFileBytes)`);
+
+  function deadline(run: (signal: AbortSignal) => Promise<ChannelAttachmentData>) {
+    return withDeadline(
+      fileTimeoutMs,
+      () => new Error(`Teams file download timed out after ${fileTimeoutMs}ms`),
+      run,
+    );
+  }
+
+  /**
+   * GET an attachment's bytes. With `withToken`, the connector token goes
+   * to `url`'s origin only, never to a redirect elsewhere. An HTML body is
+   * refused unless `declared` is an HTML type: it is an error page.
+   */
+  async function fetchAttachment(
+    url: URL,
+    opts: { withToken: boolean; declared: string | undefined; signal: AbortSignal },
+  ): Promise<{ data: Uint8Array; served: string | undefined }> {
+    const token = opts.withToken ? await getConnectorToken() : undefined;
+    const res = await fetchFollowingRedirects(url, {
+      signal: opts.signal,
+      headersFor: (hop): Record<string, string> =>
+        token && hop.origin === url.origin ? { Authorization: `Bearer ${token}` } : {},
+      label: 'Teams file download',
+    });
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      // File URLs carry a `tempauth` credential; Microsoft drops it on
+      // March 1, 2027, after which downloads need a token this adapter
+      // can't get with a client secret.
+      const hint =
+        res.status === 401 && !opts.withToken && !url.searchParams.has('tempauth')
+          ? ': the URL has no tempauth credential and needs an access token, which this adapter does not send'
+          : '';
+      throw new Error(`Teams file download failed (${res.status})${hint}`);
+    }
+    const served = baseMimeType(res.headers.get('content-type'));
+    const data = await readCapped(res, maxFileBytes, tooLarge);
+    if (!isHtmlType(opts.declared) && (served === 'text/html' || looksLikeHtml(data))) {
+      throw new Error('Teams file download returned a web page instead of the file');
+    }
+    return { data, served };
+  }
+
+  function parseAttachments(activity: TeamsActivity): ChannelAttachment[] {
+    const connectorOrigin = httpsUrl(activity.serviceUrl)?.origin;
+    const attachments: ChannelAttachment[] = [];
+    for (const attachment of activity.attachments ?? []) {
+      const type = baseMimeType(attachment.contentType);
+
+      if (type === FILE_DOWNLOAD_INFO) {
+        const info = (attachment.content ?? {}) as TeamsFileDownloadInfo;
+        const url = httpsUrl(info.downloadUrl);
+        if (!url) continue;
+        const nameExt = attachment.name?.includes('.') ? attachment.name.split('.').pop() : '';
+        const ext = (info.fileType || nameExt || '').toLowerCase();
+        const declared = FILE_TYPES.get(ext);
+        const fallbackName = `file_${info.uniqueId ?? attachments.length + 1}`;
+        const fileName = attachment.name || `${fallbackName}${ext ? `.${ext}` : ''}`;
+        attachments.push({
+          kind: attachmentKind(declared),
+          fileName,
+          // Teams sends only the extension: an unknown one is declared
+          // generic binary, so the pipeline skips it before downloading.
+          contentType: declared ?? 'application/octet-stream',
+          download: () =>
+            deadline(async (signal) => {
+              const { data, served } = await fetchAttachment(url, {
+                withToken: false,
+                declared,
+                signal,
+              });
+              return {
+                data,
+                contentType: declared ?? served ?? 'application/octet-stream',
+                fileName,
+              };
+            }),
+        });
+        continue;
+      }
+
+      // Media with a `contentUrl` (inline images). Cards, the message's own
+      // HTML copy and other Microsoft vendor types are not files.
+      if (
+        !type?.includes('/') ||
+        type === 'text/html' ||
+        type.startsWith('application/vnd.microsoft.')
+      ) {
+        continue;
+      }
+      const url = httpsUrl(attachment.contentUrl);
+      if (!url) continue;
+      // Inline images are often typed just `image/*`; the bytes tell.
+      const declared = type.endsWith('/*') ? undefined : type;
+      const kind = attachmentKind(type);
+      const fileName = attachment.name || `${kind}_${attachments.length + 1}`;
+      const withToken = url.origin === connectorOrigin;
+      attachments.push({
+        kind,
+        fileName,
+        contentType: declared,
+        download: () =>
+          deadline(async (signal) => {
+            const { data, served } = await fetchAttachment(url, { withToken, declared, signal });
+            const sniffed = kind === 'image' ? sniffImageType(data) : undefined;
+            return {
+              data,
+              contentType: declared ?? sniffed ?? served ?? 'application/octet-stream',
+              fileName,
+            };
+          }),
+      });
+    }
+    return attachments;
+  }
+
   const unauthorized = (): Response => new Response('Unauthorized', { status: 401 });
 
   return {
@@ -389,7 +599,9 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
         recipientName: activity.recipient?.name,
         entities: activity.entities,
       });
-      if (!text) return [];
+      // A bare file or image has no text — still a valid event.
+      const attachments = parseAttachments(activity);
+      if (!text && attachments.length === 0) return [];
 
       return [
         {
@@ -400,6 +612,7 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
           externalUserId: activity.from?.aadObjectId ?? fromId,
           userDisplayName: activity.from?.name,
           text,
+          ...(attachments.length > 0 ? { attachments } : {}),
           // Activity ids are only unique per conversation — scope the key.
           dedupeKey: activity.id
             ? `teams:${conversationId}:${activity.id}`

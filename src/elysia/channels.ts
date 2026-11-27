@@ -271,9 +271,10 @@ export async function resolveChannelBindings(
  * ```
  *
  * The default workforce input is `{ prompt: event.text }`. Events carrying
- * attachments (Telegram photos/documents, WhatsApp images/documents) are
- * re-uploaded to Timbal temp storage and sent as prompt content parts; audio
- * (WhatsApp voice notes) is transcribed and sent as text
+ * attachments (Telegram photos/documents, WhatsApp images/documents, Slack
+ * files, Teams files and inline images) are re-uploaded to Timbal temp
+ * storage and sent as prompt content parts; audio (WhatsApp voice notes,
+ * audio files) is transcribed and sent as text
  * (`{ prompt: [{type:'text',...}, {type:'file', file: url}] }`) — the same
  * shape the platform chat UI produces. Use `binding.buildInput` to thread
  * conversation/user context into components with richer input schemas (e.g.
