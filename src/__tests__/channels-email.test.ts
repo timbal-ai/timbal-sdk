@@ -215,6 +215,25 @@ describe('parseEmail', () => {
     expect(text).not.toContain('-->');
   });
 
+  // Template content is never shown to the recipient.
+  test('skips template contents, nested ones included', () => {
+    const html = (body: string) =>
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', body])).text;
+    expect(
+      html(
+        '<head><title>Order</title><template id="refund"><p>Your order was refunded.</p></template></head>' +
+          '<body><p>Your order shipped.</p></body>',
+      ),
+    ).toBe('Subject: x\n\nYour order shipped.');
+    expect(
+      html('<p>a</p><template><template><p>x</p></template><p>y</p></template><p>after</p>'),
+    ).toBe('Subject: x\n\na\nafter');
+    expect(html('<p>a</p><Template >hidden</TEMPLATE><p>b</p>')).toBe('Subject: x\n\na\nb');
+    expect(html('<p>a</p><template><p>never closed')).toBe('Subject: x\n\na');
+    // `<templates>` is another element.
+    expect(html('<templates>shown</templates>')).toBe('Subject: x\n\nshown');
+  });
+
   // As in browsers: `</styles-x>` or a `"</scripted"` string doesn't end them.
   test('ends a script or style only at its own end tag', () => {
     const html = (body: string) =>
@@ -249,6 +268,8 @@ describe('parseEmail', () => {
       '<!--'.repeat(100_000),
       '<!'.repeat(100_000),
       '</'.repeat(100_000) + '<script>',
+      '<template>'.repeat(100_000),
+      '<template>'.repeat(50_000) + '</template>'.repeat(50_000),
     ];
     for (const body of crafted) {
       const started = Date.now();

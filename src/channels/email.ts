@@ -366,20 +366,41 @@ function linkSuffix(label: string, href: string): string {
  */
 function endTagIndex(html: string, name: string, from: number): number {
   for (let j = html.indexOf('</', from); j >= 0; j = html.indexOf('</', j + 2)) {
-    const after = html.charAt(j + 2 + name.length);
-    if (
-      html.slice(j + 2, j + 2 + name.length).toLowerCase() === name &&
-      (after === '' || after === '>' || after === '/' || isSpace(after))
-    ) {
-      return j;
+    if (isTagAt(html, j + 2, name)) return j;
+  }
+  return -1;
+}
+
+/** Whether `<name` or `</name` (any case) at `at` is that tag, not a longer name. */
+function isTagAt(html: string, at: number, name: string): boolean {
+  const after = html.charAt(at + name.length);
+  return (
+    html.slice(at, at + name.length).toLowerCase() === name &&
+    (after === '' || after === '>' || after === '/' || isSpace(after))
+  );
+}
+
+/**
+ * The index just past the `</template>` closing the template whose content
+ * starts at `from`, counting nested templates; -1 when it never closes.
+ * Template content is never shown, so it is skipped whole.
+ */
+function templateEnd(html: string, from: number): number {
+  let depth = 1;
+  for (let j = html.indexOf('<', from); j >= 0; j = html.indexOf('<', j + 1)) {
+    if (isTagAt(html, j + 1, 'template')) {
+      depth++;
+    } else if (html.charAt(j + 1) === '/' && isTagAt(html, j + 2, 'template') && --depth === 0) {
+      const gt = html.indexOf('>', j);
+      return gt < 0 ? html.length : gt + 1;
     }
   }
   return -1;
 }
 
 /**
- * HTML → text: tags and comments dropped (scripts, styles and the title
- * with their content), line breaks for `<br>` and block ends, links as
+ * HTML → text: tags and comments dropped (scripts, styles, the title and
+ * templates with their content), line breaks for `<br>` and block ends, links as
  * `label (destination)`. One forward scan, so crafted input — unclosed
  * tags, a run of `<` — costs linear time instead of blocking the server.
  */
@@ -444,7 +465,11 @@ function htmlToText(html: string): string {
     while (nameEnd < tag.length && !isSpace(tag[nameEnd]) && tag[nameEnd] !== '/') nameEnd++;
     const name = tag.slice(0, nameEnd).toLowerCase();
 
-    if (!closing && SKIPPED_TAGS.has(name)) {
+    if (!closing && name === 'template') {
+      const end = templateEnd(html, i);
+      if (end < 0) break; // unclosed: the rest is its content
+      i = end;
+    } else if (!closing && SKIPPED_TAGS.has(name)) {
       const end = missingEndTags.has(name) ? -1 : endTagIndex(html, name, i);
       if (end < 0) {
         missingEndTags.add(name);
