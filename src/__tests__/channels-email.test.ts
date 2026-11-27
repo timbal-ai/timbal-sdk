@@ -164,6 +164,32 @@ describe('parseEmail', () => {
     );
   });
 
+  test('reads malformed HTML: unclosed links and styles, stray <', () => {
+    const html = (body: string) =>
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', body])).text;
+    expect(html('<a href="https://a.example">first <a href="https://b.example">second')).toBe(
+      'Subject: x\n\nfirst (https://a.example) second (https://b.example)',
+    );
+    expect(html('<p>kept</p><style>p { color: red }')).toBe('Subject: x\n\nkept');
+    expect(html('1 < 2 and 3 &lt; 4')).toBe('Subject: x\n\n1 < 2 and 3 < 4');
+    expect(html('<!-- note --><!DOCTYPE html>text')).toBe('Subject: x\n\ntext');
+  });
+
+  // The regex version took 20-35 s on ~200-400 KB of these, blocking the server.
+  test('converts crafted HTML in linear time', () => {
+    const crafted = [
+      '<style>'.repeat(50_000),
+      '<a href="https://x">'.repeat(50_000),
+      '<'.repeat(1_000_000),
+      `<p>${' '.repeat(1_000_000)}x</p>`,
+    ];
+    for (const body of crafted) {
+      const started = Date.now();
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', body]));
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
+  });
+
   test('reads a part that has no headers', () => {
     const email = parseEmail(
       crlf(['Subject: Note', 'Content-Type: multipart/mixed; boundary=m', '', '--m', '', 'Please arrive by noon', '--m--']),

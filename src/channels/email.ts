@@ -260,38 +260,103 @@ const ENTITIES: Record<string, string> = {
   nbsp: ' ',
 };
 
-/**
- * `<a href="https://x">Join</a>` → `Join (https://x)`, so the agent can
- * give the destination. Only web, mail and phone links; a label that
- * already shows the destination stays as is.
- */
-function linkText(_match: string, dq?: string, sq?: string, bare?: string, label = ''): string {
-  const href = (dq ?? sq ?? bare ?? '').trim();
-  if (!/^(https?:|mailto:|tel:)/i.test(href)) return label;
-  const visible = label.replace(/<[^>]*>/g, '').trim();
-  if (!visible) return href;
-  const shown = href.replace(/^(mailto|tel):/i, '');
-  return visible === href || visible === shown ? label : `${label} (${href})`;
+function decodeEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
+    if (code[0] === '#') {
+      const n = code[1] === 'x' || code[1] === 'X' ? parseInt(code.slice(2), 16) : Number(code.slice(1));
+      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : match;
+    }
+    return ENTITIES[code.toLowerCase()] ?? match;
+  });
 }
 
+/** Tags dropped with their content. */
+const SKIPPED_TAGS = new Set(['script', 'style', 'head']);
+/** Tags whose end starts a new line. */
+const BLOCK_TAGS = new Set([
+  'p', 'div', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'blockquote',
+]);
+
+/** The `href` of a tag's source (`a href="…"`), entities decoded. */
+function hrefOf(tag: string): string {
+  const m = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+  return decodeEntities((m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim());
+}
+
+/**
+ * What follows a link's label so the agent can give the destination:
+ * ` (https://x)` for `<a href="https://x">Join</a>`. Only web, mail and
+ * phone links, and nothing when the label already shows the destination.
+ */
+function linkSuffix(label: string, href: string): string {
+  if (!/^(https?:|mailto:|tel:)/i.test(href)) return '';
+  if (!label) return ` ${href}`;
+  const shown = href.replace(/^(mailto|tel):/i, '');
+  return label === href || label === shown ? '' : ` (${href})`;
+}
+
+/**
+ * HTML → text: tags dropped (scripts, styles and the head with their
+ * content), line breaks for `<br>` and block ends, links as
+ * `label (destination)`. One forward scan, so crafted input — unclosed
+ * tags, a run of `<` — costs linear time instead of blocking the server.
+ */
 function htmlToText(html: string): string {
-  return html
-    .replace(/<(script|style|head)\b[\s\S]*?<\/\1\s*>/gi, '')
-    .replace(
-      /<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a\s*>/gi,
-      linkText,
-    )
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)\s*>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, code: string) => {
-      if (code[0] === '#') {
-        const n = code[1] === 'x' || code[1] === 'X' ? parseInt(code.slice(2), 16) : Number(code.slice(1));
-        return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : match;
-      }
-      return ENTITIES[code.toLowerCase()] ?? match;
-    })
-    .replace(/[ \t]+\n/g, '\n')
+  const lower = html.toLowerCase();
+  // Chunks, joined once at the end: a link only touches its own chunks.
+  const out: string[] = [];
+  let link: { href: string; start: number } | undefined;
+  const closeLink = (): void => {
+    if (!link) return;
+    const label = out.slice(link.start).join('');
+    const suffix = linkSuffix(label.trim(), link.href);
+    if (suffix) {
+      // `Join (https://x) ` rather than `Join  (https://x)`.
+      const text = label.trimEnd();
+      out.splice(link.start, out.length - link.start, text, suffix, label.slice(text.length));
+    }
+    link = undefined;
+  };
+
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf('<', i);
+    const gt = lt < 0 ? -1 : html.indexOf('>', lt + 1);
+    if (gt < 0) {
+      // No tag left: the rest is text.
+      out.push(decodeEntities(html.slice(i)));
+      break;
+    }
+    out.push(decodeEntities(html.slice(i, lt)));
+    i = gt + 1;
+    const tag = html.slice(lt + 1, gt);
+    const m = /^(\/?)([a-z][a-z0-9]*)/i.exec(tag);
+    if (!m) continue; // comment, doctype or a stray `<`
+    const closing = m[1] === '/';
+    const name = (m[2] ?? '').toLowerCase();
+
+    if (!closing && SKIPPED_TAGS.has(name)) {
+      const end = lower.indexOf(`</${name}`, i);
+      if (end < 0) break; // unclosed: the rest is its content
+      const endGt = html.indexOf('>', end);
+      i = endGt < 0 ? html.length : endGt + 1;
+    } else if (name === 'a') {
+      closeLink(); // links don't nest; an unclosed one ends here
+      const href = closing ? '' : hrefOf(tag);
+      if (href) link = { href, start: out.length };
+    } else if (name === 'br') {
+      out.push('\n');
+    } else if (closing && BLOCK_TAGS.has(name)) {
+      out.push('\n');
+    }
+  }
+  closeLink();
+
+  return out
+    .join('')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
