@@ -662,6 +662,52 @@ describe('timbalChannels plugin', () => {
       for (const text of uploadedTexts) expect(text).not.toContain('JVBER');
     });
 
+    test('a digest entry without Content-Type is read as an email, with its files', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, uploads, uploaded, uploadedTexts } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+      const pdf = Buffer.from('%PDF-1.4 report').toString('base64');
+      const digest = [
+        'Subject: Digest',
+        'Content-Type: multipart/digest; boundary=d',
+        '',
+        '--d',
+        '',
+        'Subject: inner',
+        'Content-Type: multipart/mixed; boundary=m',
+        '',
+        '--m',
+        'Content-Type: text/plain',
+        '',
+        'inner body',
+        '--m',
+        'Content-Type: application/pdf',
+        'Content-Disposition: attachment; filename="report.pdf"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        pdf,
+        '--m--',
+        '--d--',
+      ].join('\r\n');
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'Digest.eml', type: 'message/rfc822', content: digest }],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual([
+        'Digest.eml.txt',
+        'forwarded-1.eml.txt',
+        'report.pdf',
+      ]);
+      expect(uploaded.get('forwarded-1.eml.txt')).toContain('inner body');
+      expect(uploaded.get('report.pdf')).toBe('%PDF-1.4 report');
+      for (const text of uploadedTexts.slice(0, 2)) expect(text).not.toContain(pdf);
+    });
+
     test('UTF-16 text is uploaded as UTF-8, in both byte orders', async () => {
       const { adapter } = makeMediaAdapter();
       const { timbal, uploads, uploadedTexts } = makeUploadingTimbal();

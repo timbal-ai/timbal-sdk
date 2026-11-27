@@ -270,17 +270,82 @@ function decodeEntities(text: string): string {
   });
 }
 
-/** Tags dropped with their content. */
-const SKIPPED_TAGS = new Set(['script', 'style', 'head']);
+/**
+ * Elements dropped with their content. `head` isn't one: its end tag may be
+ * omitted (`<head><title>…</title><body>…`), so only what it holds that
+ * shows no text — the title, scripts, styles — is dropped.
+ */
+const SKIPPED_TAGS = new Set(['script', 'style', 'title']);
 /** Tags whose end starts a new line. */
 const BLOCK_TAGS = new Set([
   'p', 'div', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'blockquote',
 ]);
 
-/** The `href` of a tag's source (`a href="…"`), entities decoded. */
-function hrefOf(tag: string): string {
-  const m = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
-  return decodeEntities((m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim());
+function isSpace(c: string | undefined): boolean {
+  return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+}
+
+function isLetter(c: string | undefined): boolean {
+  return c !== undefined && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+}
+
+/**
+ * The index of the `>` ending the tag whose name starts at `from`, past
+ * quoted attribute values (`title="a > b"`), or -1 when a quote never
+ * closes.
+ */
+function tagEnd(html: string, from: number): number {
+  let quote = '';
+  let valueNext = false;
+  for (let j = from; j < html.length; j++) {
+    const c = html.charAt(j);
+    if (quote) {
+      if (c === quote) quote = '';
+    } else if (c === '>') {
+      return j;
+    } else if (c === '=') {
+      valueNext = true;
+    } else if (valueNext && (c === '"' || c === "'")) {
+      quote = c;
+      valueNext = false;
+    } else if (!isSpace(c)) {
+      valueNext = false;
+    }
+  }
+  return -1;
+}
+
+/** A tag's attributes (`a data-href="x" href=y` → data-href, href), names lowercased. */
+function attributesOf(tag: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  let j = 0;
+  while (j < tag.length && !isSpace(tag[j]) && tag[j] !== '/') j++; // the tag name
+  while (j < tag.length) {
+    while (j < tag.length && (isSpace(tag[j]) || tag[j] === '/')) j++;
+    const nameStart = j;
+    while (j < tag.length && !isSpace(tag[j]) && tag[j] !== '=' && tag[j] !== '/') j++;
+    const name = tag.slice(nameStart, j).toLowerCase();
+    while (j < tag.length && isSpace(tag[j])) j++;
+    let value = '';
+    if (tag[j] === '=') {
+      j++;
+      while (j < tag.length && isSpace(tag[j])) j++;
+      const quote = tag[j];
+      if (quote === '"' || quote === "'") {
+        const close = tag.indexOf(quote, j + 1);
+        const valueEnd = close < 0 ? tag.length : close;
+        value = tag.slice(j + 1, valueEnd);
+        j = valueEnd + 1;
+      } else {
+        const valueStart = j;
+        while (j < tag.length && !isSpace(tag[j])) j++;
+        value = tag.slice(valueStart, j);
+      }
+    }
+    // The first of a repeated attribute wins, as in browsers.
+    if (name && !attributes.has(name)) attributes.set(name, value);
+  }
+  return attributes;
 }
 
 /**
@@ -295,14 +360,21 @@ function linkSuffix(label: string, href: string): string {
   return label === href || label === shown ? '' : ` (${href})`;
 }
 
+/** The index of `</name` (any case) from `from`, or -1. */
+function endTagIndex(html: string, name: string, from: number): number {
+  for (let j = html.indexOf('</', from); j >= 0; j = html.indexOf('</', j + 2)) {
+    if (html.slice(j + 2, j + 2 + name.length).toLowerCase() === name) return j;
+  }
+  return -1;
+}
+
 /**
- * HTML → text: tags dropped (scripts, styles and the head with their
- * content), line breaks for `<br>` and block ends, links as
+ * HTML → text: tags and comments dropped (scripts, styles and the title
+ * with their content), line breaks for `<br>` and block ends, links as
  * `label (destination)`. One forward scan, so crafted input — unclosed
  * tags, a run of `<` — costs linear time instead of blocking the server.
  */
 function htmlToText(html: string): string {
-  const lower = html.toLowerCase();
   // Chunks, joined once at the end: a link only touches its own chunks.
   const out: string[] = [];
   let link: { href: string; start: number } | undefined;
@@ -318,31 +390,63 @@ function htmlToText(html: string): string {
     link = undefined;
   };
 
+  // An end tag not found from one point isn't found from any later one.
+  const missingEndTags = new Set<string>();
   let i = 0;
   while (i < html.length) {
     const lt = html.indexOf('<', i);
-    const gt = lt < 0 ? -1 : html.indexOf('>', lt + 1);
-    if (gt < 0) {
-      // No tag left: the rest is text.
+    if (lt < 0) {
       out.push(decodeEntities(html.slice(i)));
       break;
     }
     out.push(decodeEntities(html.slice(i, lt)));
+
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      if (end < 0) break; // unclosed: the rest is the comment
+      i = end + 3;
+      continue;
+    }
+    const next = html.charAt(lt + 1);
+    if (next === '!' || next === '?') {
+      // Doctype, CDATA, processing instruction.
+      const end = html.indexOf('>', lt + 2);
+      if (end < 0) break;
+      i = end + 1;
+      continue;
+    }
+    const closing = next === '/';
+    const nameStart = closing ? lt + 2 : lt + 1;
+    if (!isLetter(html[nameStart])) {
+      // `1 < 2`: a `<` that starts no tag is text.
+      out.push('<');
+      i = lt + 1;
+      continue;
+    }
+    let gt = tagEnd(html, nameStart);
+    if (gt < 0) gt = html.indexOf('>', nameStart); // a quote that never closes
+    if (gt < 0) {
+      out.push(decodeEntities(html.slice(lt)));
+      break;
+    }
     i = gt + 1;
-    const tag = html.slice(lt + 1, gt);
-    const m = /^(\/?)([a-z][a-z0-9]*)/i.exec(tag);
-    if (!m) continue; // comment, doctype or a stray `<`
-    const closing = m[1] === '/';
-    const name = (m[2] ?? '').toLowerCase();
+    const tag = html.slice(nameStart, gt);
+    let nameEnd = 0;
+    while (nameEnd < tag.length && !isSpace(tag[nameEnd]) && tag[nameEnd] !== '/') nameEnd++;
+    const name = tag.slice(0, nameEnd).toLowerCase();
 
     if (!closing && SKIPPED_TAGS.has(name)) {
-      const end = lower.indexOf(`</${name}`, i);
-      if (end < 0) break; // unclosed: the rest is its content
+      const end = missingEndTags.has(name) ? -1 : endTagIndex(html, name, i);
+      if (end < 0) {
+        missingEndTags.add(name);
+        if (name === 'title') continue; // a title left open: keep what follows
+        break; // an unclosed script or style: the rest is its content
+      }
       const endGt = html.indexOf('>', end);
       i = endGt < 0 ? html.length : endGt + 1;
     } else if (name === 'a') {
       closeLink(); // links don't nest; an unclosed one ends here
-      const href = closing ? '' : hrefOf(tag);
+      const href = closing ? '' : decodeEntities((attributesOf(tag).get('href') ?? '').trim());
       if (href) link = { href, start: out.length };
     } else if (name === 'br') {
       out.push('\n');
@@ -361,10 +465,14 @@ function htmlToText(html: string): string {
     .trim();
 }
 
-function contentTypeOf(part: Part): HeaderValue {
+/**
+ * A part's type. Without a `Content-Type` it is `text/plain`, except in a
+ * `multipart/digest`, where each entry is an email (RFC 2046 §5.1.5).
+ */
+function contentTypeOf(part: Part, defaultType = 'text/plain'): HeaderValue {
   const header = part.headers.get('content-type');
-  const parsed = parseHeaderValue(header ?? 'text/plain');
-  return parsed.value ? parsed : { value: 'text/plain', params: parsed.params };
+  const parsed = parseHeaderValue(header ?? defaultType);
+  return parsed.value ? parsed : { value: defaultType, params: parsed.params };
 }
 
 interface Collected {
@@ -379,9 +487,15 @@ interface Budget {
   parts: number;
 }
 
-function collect(part: Part, depth: number, out: Collected, budget: Budget): void {
+function collect(
+  part: Part,
+  depth: number,
+  out: Collected,
+  budget: Budget,
+  defaultType = 'text/plain',
+): void {
   if (++budget.parts > MAX_PARTS) return;
-  const type = contentTypeOf(part);
+  const type = contentTypeOf(part, defaultType);
   const disposition = parseHeaderValue(part.headers.get('content-disposition') ?? '');
   const name = decodeWords(disposition.params.get('filename') ?? type.params.get('name') ?? '').trim();
 
@@ -391,8 +505,9 @@ function collect(part: Part, depth: number, out: Collected, budget: Budget): voi
     if (type.value === 'multipart/alternative') {
       collectAlternative(children, depth + 1, out, budget);
     } else {
-      // `mixed`, `related`, ...: every section, in order.
-      for (const child of children) collect(child, depth + 1, out, budget);
+      // `mixed`, `related`, `digest`, ...: every section, in order.
+      const childType = type.value === 'multipart/digest' ? 'message/rfc822' : 'text/plain';
+      for (const child of children) collect(child, depth + 1, out, budget, childType);
     }
     return;
   }
@@ -425,12 +540,15 @@ function collectAlternative(children: Part[], depth: number, out: Collected, bud
   const pick = withText.find((v) => v.plain) ?? withText.at(-1);
   if (pick) out.bodies.push(...pick.version.bodies);
 
-  const seen = new Set<string>();
+  // The same file repeated across versions is kept once; files that only
+  // share a name, type and size (two `chart.gif`) are both kept.
+  const seen = new Map<string, Uint8Array[]>();
   for (const { version } of versions) {
     for (const file of version.attachments) {
       const key = `${file.fileName}\0${file.contentType}\0${file.data.byteLength}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const same = seen.get(key) ?? [];
+      if (same.some((data) => Buffer.from(data).equals(file.data))) continue;
+      seen.set(key, [...same, file.data]);
       out.attachments.push(file);
     }
   }

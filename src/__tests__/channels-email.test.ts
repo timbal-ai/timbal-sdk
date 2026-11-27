@@ -175,6 +175,55 @@ describe('parseEmail', () => {
     expect(html('<!-- note --><!DOCTYPE html>text')).toBe('Subject: x\n\ntext');
   });
 
+  test('reads the real href, past data-href and quoted >', () => {
+    const html = (body: string) =>
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', body])).text;
+    for (const anchor of [
+      '<a data-href="https://example.org/old" href="https://example.org/join">Join</a>',
+      '<a title="Orders > 10" href="https://example.org/join">Join</a>',
+      "<a title='a > b' href=https://example.org/join>Join</a>",
+    ]) {
+      expect(html(anchor)).toBe('Subject: x\n\nJoin (https://example.org/join)');
+    }
+  });
+
+  test('keeps the body when </head> is left out', () => {
+    const text = parseEmail(
+      crlf([
+        'Subject: x',
+        'Content-Type: text/html',
+        '',
+        '<head><title>Shipping</title><body><p>Your order ships Friday.</p></body>',
+      ]),
+    ).text;
+    expect(text).toContain('Your order ships Friday.');
+    expect(text).not.toContain('Shipping');
+  });
+
+  test('drops comments, including the tags inside them', () => {
+    const text = parseEmail(
+      crlf([
+        'Subject: x',
+        'Content-Type: text/html',
+        '',
+        '<p>Price €9</p><!-- <b>Previous price €15</b> --><p>Ships Friday</p>',
+      ]),
+    ).text;
+    expect(text).toBe('Subject: x\n\nPrice €9\nShips Friday');
+    expect(text).not.toContain('€15');
+    expect(text).not.toContain('<!--');
+    expect(text).not.toContain('-->');
+  });
+
+  // Lowercasing can lengthen a string (İ → i̇), so positions must come from
+  // the original text.
+  test('finds end tags after text that lowercases to a different length', () => {
+    const text = parseEmail(
+      crlf(['Subject: x', 'Content-Type: text/html', '', `<p>${'İ'.repeat(40)}</p><style>x</style><p>after</p>`]),
+    ).text;
+    expect(text).toBe(`Subject: x\n\n${'İ'.repeat(40)}\nafter`);
+  });
+
   // The regex version took 20-35 s on ~200-400 KB of these, blocking the server.
   test('converts crafted HTML in linear time', () => {
     const crafted = [
@@ -182,6 +231,11 @@ describe('parseEmail', () => {
       '<a href="https://x">'.repeat(50_000),
       '<'.repeat(1_000_000),
       `<p>${' '.repeat(1_000_000)}x</p>`,
+      '<title>'.repeat(50_000),
+      '<a x="'.repeat(50_000),
+      '<!--'.repeat(100_000),
+      '<!'.repeat(100_000),
+      '</'.repeat(100_000) + '<script>',
     ];
     for (const body of crafted) {
       const started = Date.now();
@@ -195,6 +249,95 @@ describe('parseEmail', () => {
       crlf(['Subject: Note', 'Content-Type: multipart/mixed; boundary=m', '', '--m', '', 'Please arrive by noon', '--m--']),
     );
     expect(email.text).toBe('Subject: Note\n\nPlease arrive by noon');
+  });
+
+  test('keeps two different inline images that share a name, type and size', () => {
+    const gif = (bytes: string) => Buffer.from(bytes).toString('base64');
+    const image = (cid: string, bytes: string) => [
+      'Content-Type: image/gif; name="chart.gif"',
+      `Content-ID: <${cid}>`,
+      'Content-Transfer-Encoding: base64',
+      '',
+      gif(bytes),
+    ];
+    const email = (images: string[][]) =>
+      parseEmail(
+        crlf([
+          'Subject: Charts',
+          'Content-Type: multipart/alternative; boundary=a',
+          '',
+          '--a',
+          'Content-Type: text/plain',
+          '',
+          'charts',
+          '--a',
+          'Content-Type: multipart/related; boundary=r',
+          '',
+          '--r',
+          'Content-Type: text/html',
+          '',
+          '<img src="cid:c1"><img src="cid:c2">',
+          ...images.flatMap((lines) => ['--r', ...lines]),
+          '--r--',
+          '--a',
+          'Content-Type: multipart/related; boundary=s',
+          '',
+          '--s',
+          'Content-Type: text/html',
+          '',
+          '<p>charts, again</p><img src="cid:c1">',
+          '--s',
+          ...image('c1', 'GIF89aAAAA'),
+          '--s--',
+          '--a--',
+        ]),
+      );
+
+    const bytesOf = (e: ReturnType<typeof parseEmail>) =>
+      e.attachments.map((a) => new TextDecoder().decode(a.data));
+
+    // c1 also appears in the last version: that identical copy is kept once.
+    expect(bytesOf(email([image('c1', 'GIF89aAAAA'), image('c2', 'GIF89aBBBB')]))).toEqual([
+      'GIF89aAAAA',
+      'GIF89aBBBB',
+    ]);
+    // Only the identical copy across the two HTML versions: one file.
+    expect(bytesOf(email([image('c1', 'GIF89aAAAA')]))).toEqual(['GIF89aAAAA']);
+  });
+
+  test('reads a digest entry without Content-Type as an email', () => {
+    const pdf = Buffer.from('%PDF-1.4 report').toString('base64');
+    const digest = parseEmail(
+      crlf([
+        'Subject: Digest',
+        'Content-Type: multipart/digest; boundary=d',
+        '',
+        '--d',
+        '',
+        'Subject: inner',
+        'Content-Type: multipart/mixed; boundary=m',
+        '',
+        '--m',
+        'Content-Type: text/plain',
+        '',
+        'inner body',
+        '--m',
+        'Content-Type: application/pdf',
+        'Content-Disposition: attachment; filename="report.pdf"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        pdf,
+        '--m--',
+        '--d--',
+      ]),
+    );
+    expect(digest.text).not.toContain(pdf);
+    expect(digest.attachments.map((a) => [a.fileName, a.contentType])).toEqual([
+      ['forwarded-1.eml', 'message/rfc822'],
+    ]);
+    const inner = parseEmail(digest.attachments[0]!.data);
+    expect(inner.text).toBe('Subject: inner\nAttachments: report.pdf\n\ninner body');
+    expect(new TextDecoder().decode(inner.attachments[0]!.data)).toBe('%PDF-1.4 report');
   });
 
   test('decodes quoted-printable bodies in their charset', () => {
