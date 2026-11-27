@@ -515,6 +515,74 @@ describe('timbalChannels plugin', () => {
       });
     });
 
+    test('an attachment agents cannot read is refused before download', async () => {
+      const { adapter, sent } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          errorMessage: 'cannot read that file',
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        // `fail` would throw on download: the refusal must come first.
+        files: [{ name: 'deck.pptx', type: 'application/vnd.ms-powerpoint', fail: true }],
+      });
+      await settle();
+
+      expect(uploads).toEqual([]);
+      expect(invocations).toHaveLength(0);
+      expect(String(errors[0])).toContain("Agents can't read this attachment type: deck.pptx");
+      expect(sent).toEqual(['cannot read that file']);
+    });
+
+    test('an unreadable attachment next to a caption still runs on the caption', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, invocations, uploads } = makeUploadingTimbal();
+      const errors: unknown[] = [];
+      const app = new Elysia().use(
+        timbalChannels({
+          timbal,
+          bindings: [{ adapter, workforce: 'a' }],
+          onError: (err) => errors.push(err),
+        }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        text: 'see attached',
+        files: [{ name: 'archive.zip', type: 'application/zip' }],
+      });
+      await settle();
+
+      expect(uploads).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(invocations[0]!.input).toEqual({
+        prompt: [{ type: 'text', text: 'see attached' }],
+      });
+    });
+
+    test('a supported file without an extension is uploaded with one', async () => {
+      const { adapter } = makeMediaAdapter();
+      const { timbal, uploads } = makeUploadingTimbal();
+      const app = new Elysia().use(
+        timbalChannels({ timbal, bindings: [{ adapter, workforce: 'a' }] }),
+      );
+
+      await post(app, channelPath('a', 'media'), {
+        id: 'e1',
+        files: [{ name: 'document_42', type: 'application/pdf' }],
+      });
+      await settle();
+
+      expect(uploads.map((u) => u.filename)).toEqual(['document_42.pdf']);
+    });
+
     test('bare attachment (no caption) sends a file-only prompt', async () => {
       const { adapter } = makeMediaAdapter();
       const { timbal, invocations } = makeUploadingTimbal();

@@ -2,6 +2,11 @@ import { Elysia } from 'elysia';
 import { Timbal } from '../lib/timbal';
 import { DedupeCache } from '../channels/dedupe';
 import { StreamingReply } from '../channels/reply';
+import { agentReadableFileName } from '../channels/attachments';
+
+function unsupportedAttachment(fileName: string, contentType: string): Error {
+  return new Error(`Agents can't read this attachment type: ${fileName} (${contentType})`);
+}
 import { WorkforceTextCollector } from '../channels/collect';
 import { channelBindingsFromEnv } from '../channels/env';
 import { resolvePublicOrigin } from '../channels/origin';
@@ -280,6 +285,11 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
    * agents accept few audio formats (voice notes are Ogg/Opus) and most chat
    * models take no audio at all. When a transcript is all there is (with
    * the caption, if any), the plain `{ prompt: text }` shape is used.
+   *
+   * Other files are sent only when agents can read them (images, PDF, Word,
+   * Excel, text — see {@link agentReadableFileName}); anything else fails
+   * that attachment, before it is downloaded when the adapter declares its
+   * name and type.
    */
   async function buildDefaultInput(event: ChannelEvent): Promise<Record<string, unknown>> {
     const attachments = event.attachments ?? [];
@@ -291,6 +301,15 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
     let transcribed = false;
     for (const attachment of attachments) {
       try {
+        // Skip the download when the declared name and type already rule it out.
+        if (
+          attachment.kind !== 'audio' &&
+          attachment.fileName &&
+          attachment.contentType &&
+          !agentReadableFileName(attachment.fileName, attachment.contentType)
+        ) {
+          throw unsupportedAttachment(attachment.fileName, attachment.contentType);
+        }
         const { data, contentType, fileName } = await attachment.download();
         if (attachment.kind === 'audio') {
           const { text } = await timbal.transcribeAudio(data, fileName, contentType);
@@ -299,7 +318,9 @@ export function timbalChannels(options: TimbalChannelsOptions = {}): any {
           transcribed = true;
           continue;
         }
-        const tmp = await timbal.uploadTempFileFromBuffer(data, fileName, contentType);
+        const uploadName = agentReadableFileName(fileName, contentType);
+        if (!uploadName) throw unsupportedAttachment(fileName, contentType);
+        const tmp = await timbal.uploadTempFileFromBuffer(data, uploadName, contentType);
         parts.push({ type: 'file', file: tmp.url });
       } catch (err) {
         // Per-attachment fail-soft: a 20MB-cap photo shouldn't sink the
