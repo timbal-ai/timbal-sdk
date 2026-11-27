@@ -215,6 +215,24 @@ describe('parseEmail', () => {
     expect(text).not.toContain('-->');
   });
 
+  // HTML closes `<!-->` and `<!--->` at once, and a comment also ends at `--!>`.
+  test('ends comments where HTML does, so no text is swallowed', () => {
+    const html = (body: string) =>
+      parseEmail(crlf(['Subject: x', 'Content-Type: text/html', '', body])).text;
+    expect(html('<p>a</p><!--><p>Your order shipped.</p><!-- old -->b')).toBe(
+      'Subject: x\n\na\nYour order shipped.\nb',
+    );
+    expect(html('<p>a</p><!---><p>Your order shipped.</p>')).toBe(
+      'Subject: x\n\na\nYour order shipped.',
+    );
+    expect(html('<p>a</p><!-- x --!><p>Your order shipped.</p>')).toBe(
+      'Subject: x\n\na\nYour order shipped.',
+    );
+    expect(html('<p>a</p><!-- x --!><!-- y --><p>b</p><!-- z --!>c')).toBe(
+      'Subject: x\n\na\nb\nc',
+    );
+  });
+
   // Template content is never shown to the recipient.
   test('skips template contents, nested ones included', () => {
     const html = (body: string) =>
@@ -270,6 +288,8 @@ describe('parseEmail', () => {
       '</'.repeat(100_000) + '<script>',
       '<template>'.repeat(100_000),
       '<template>'.repeat(50_000) + '</template>'.repeat(50_000),
+      '<!-- x -->'.repeat(100_000) + '--!>',
+      '<!-->'.repeat(200_000),
     ];
     for (const body of crafted) {
       const started = Date.now();
