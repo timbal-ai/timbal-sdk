@@ -422,18 +422,25 @@ function htmlToText(html: string): string {
 
   // An end tag not found from one point isn't found from any later one.
   const missingEndTags = new Set<string>();
-  // Where the next `--!>` is, from the last search (-2: not searched yet,
-  // -1: there is none left), so comments don't each scan for it again.
-  let bangEndAt = -2;
+  // Where the next `-->` and `--!>` are, from the last search of each (-2:
+  // not searched yet, -1: none left). Comments end at either, so without
+  // this a run of comments closed by one would each scan the rest of the
+  // input for the other.
+  const nextEnd = { '-->': -2, '--!>': -2 };
+  const findEnd = (marker: '-->' | '--!>', from: number): number => {
+    const at = nextEnd[marker];
+    if (at === -1 || at >= from) return at;
+    return (nextEnd[marker] = html.indexOf(marker, from));
+  };
   /** The index just past the comment whose text starts at `from`, or -1. */
   const commentEnd = (from: number): number => {
     // `<!-->` and `<!--->` are empty comments, closed at once.
     if (html.charAt(from) === '>') return from + 1;
     if (html.startsWith('->', from)) return from + 2;
-    const dash = html.indexOf('-->', from);
-    if (bangEndAt !== -1 && bangEndAt < from) bangEndAt = html.indexOf('--!>', from);
-    // A comment also ends at `--!>`; whichever comes first.
-    if (bangEndAt >= 0 && (dash < 0 || bangEndAt < dash)) return bangEndAt + 4;
+    // A comment ends at `-->` or `--!>`, whichever comes first.
+    const dash = findEnd('-->', from);
+    const bang = findEnd('--!>', from);
+    if (bang >= 0 && (dash < 0 || bang < dash)) return bang + 4;
     return dash < 0 ? -1 : dash + 3;
   };
   let i = 0;

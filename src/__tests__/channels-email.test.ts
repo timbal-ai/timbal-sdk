@@ -289,6 +289,8 @@ describe('parseEmail', () => {
       '<template>'.repeat(100_000),
       '<template>'.repeat(50_000) + '</template>'.repeat(50_000),
       '<!-- x -->'.repeat(100_000) + '--!>',
+      '<!-- x --!>'.repeat(100_000),
+      '<!-- x --!>'.repeat(100_000) + '-->',
       '<!-->'.repeat(200_000),
     ];
     for (const body of crafted) {
