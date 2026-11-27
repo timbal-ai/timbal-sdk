@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   ChannelAdapter,
   ChannelAttachment,
@@ -109,8 +110,43 @@ interface TokenCacheEntry {
 const tokenCache = new Map<string, TokenCacheEntry>();
 /** Token requests in flight, so concurrent downloads share one. */
 const pendingTokens = new Map<string, Promise<TokenCacheEntry>>();
-/** Numbers each certificate / federated credential, to key its tokens apart. */
-let credentialSerial = 0;
+/**
+ * Ids for federated token callbacks, by function: the same callback keeps
+ * its id across adapters (dynamic mode rebuilds them per webhook), a
+ * different one gets its own.
+ */
+const federatedIds = new WeakMap<TeamsFederatedToken, number>();
+let federatedSerial = 0;
+
+/*
+ * A credential's cache identity: stable across adapter instances built
+ * from the same settings, so they share cached tokens, and distinct for a
+ * different credential, so a failing one (mid-rotation) can't fail another.
+ */
+
+/** A certificate's identity: a digest of its settings. */
+function certificateId(cert: TeamsCertificate): string {
+  const { privateKey, certificate = '', thumbprintSha256 = '' } = cert;
+  const digest = createHash('sha256')
+    .update(`${privateKey}\0${certificate}\0${thumbprintSha256}`)
+    .digest('base64url');
+  return `certificate:${digest}`;
+}
+
+/** A federated token callback's identity: one id per function. */
+function federatedId(callback: TeamsFederatedToken): string {
+  let id = federatedIds.get(callback);
+  if (id === undefined) {
+    id = ++federatedSerial;
+    federatedIds.set(callback, id);
+  }
+  return `federated:${id}`;
+}
+
+/** How many tokens are cached (tests). */
+export function teamsTokenCacheSize(): number {
+  return tokenCache.size;
+}
 
 /** Reset the shared JWKS + token caches (tests). */
 export function clearTeamsAdapterCaches(): void {
@@ -412,17 +448,16 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     authenticate: ClientAuthentication;
   }
   // File tokens: a certificate or federated credential only.
-  // Each adapter's credential gets its own id: two adapters for the same
-  // app (during a rotation) must not share token requests, or a failing
-  // retired credential fails the healthy one's downloads too.
+  // Keyed by the credential itself (certificateId, federatedId), not the adapter:
+  // rebuilt adapters share tokens; a different credential never does.
   const fileCredential: Credential | undefined = options.certificate
     ? {
-        id: `certificate#${++credentialSerial}`,
+        id: certificateId(options.certificate),
         authenticate: certificateAuthentication(appId, options.certificate, now),
       }
     : options.federatedToken
       ? {
-          id: `federated#${++credentialSerial}`,
+          id: federatedId(options.federatedToken),
           authenticate: federatedAuthentication(options.federatedToken),
         }
       : undefined;
@@ -488,6 +523,10 @@ export function teams(options: TeamsAdapterOptions): ChannelAdapter {
     if (!pending) {
       pending = request()
         .then((entry) => {
+          // Drop expired tokens as new ones arrive, so the cache holds only
+          // live ones (tenants, hosts and credentials come and go).
+          const nowMs = now();
+          for (const [k, e] of tokenCache) if (e.expiresAt <= nowMs) tokenCache.delete(k);
           tokenCache.set(key, entry);
           return entry;
         })

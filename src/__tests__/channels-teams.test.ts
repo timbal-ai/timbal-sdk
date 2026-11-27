@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { Elysia } from 'elysia';
 import { generateKeyPairSync } from 'node:crypto';
-import { teams, clearTeamsAdapterCaches } from '../channels/adapters/teams';
-import { certificateAuthentication } from '../channels/adapters/teams-auth';
+import { teams, clearTeamsAdapterCaches, teamsTokenCacheSize } from '../channels/adapters/teams';
+import { certificateAuthentication, federatedTokenFile } from '../channels/adapters/teams-auth';
 import { unsupportedAttachmentNote } from '../channels/attachments';
 import { webmTrackKinds } from '../channels/download';
 import type { WebhookRequest } from '../channels/types';
@@ -1337,6 +1337,53 @@ describe('teams adapter file tokens', () => {
     const [c] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL), tenantFile(BARE_DOWNLOAD_URL)], '', healthy);
     await Promise.all(c!.attachments!.map((attachment) => attachment.download()));
     expect(fileTokenFetches - before).toBe(1);
+  });
+
+  // Dynamic mode rebuilds adapters on every webhook: tokens must survive that.
+  test('a rebuilt adapter with the same certificate reuses the cached token', async () => {
+    serveFile(BARE_DOWNLOAD_URL);
+    for (let i = 0; i < 3; i++) {
+      const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', certAdapter());
+      await event!.attachments![0]!.download();
+    }
+    expect(fileTokenFetches).toBe(1);
+
+    // A different certificate is a different credential: its own token.
+    const otherKeys = await crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const other = certAdapter({
+      certificate: {
+        privateKey: pem('PRIVATE KEY', await crypto.subtle.exportKey('pkcs8', otherKeys.privateKey)),
+        certificate: pem('CERTIFICATE', CERT_DER),
+      },
+    });
+    const [event] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', other);
+    await event!.attachments![0]!.download();
+    expect(fileTokenFetches).toBe(2);
+  });
+
+  test('federatedTokenFile returns one reader per path, so rebuilt adapters share tokens', () => {
+    expect(federatedTokenFile('/var/run/token')).toBe(federatedTokenFile('/var/run/token'));
+    expect(federatedTokenFile('/var/run/token')).not.toBe(federatedTokenFile('/var/run/other'));
+  });
+
+  test('expired tokens are dropped from the cache as new ones arrive', async () => {
+    let clock = NOW;
+    const adapter = certAdapter({ now: () => clock });
+    const other = BARE_DOWNLOAD_URL.replace('contoso-my.sharepoint.test', 'fabrikam-my.sharepoint.test');
+    serveFile(BARE_DOWNLOAD_URL);
+    serveFile(other);
+    const [first] = await parseAttachments([tenantFile(BARE_DOWNLOAD_URL)], '', adapter);
+    await first!.attachments![0]!.download();
+    expect(teamsTokenCacheSize()).toBe(1);
+
+    clock += 2 * 3600 * 1000; // past the first token's expiry
+    const [second] = await parseAttachments([tenantFile(other)], '', adapter);
+    await second!.attachments![0]!.download();
+    expect(teamsTokenCacheSize()).toBe(1);
   });
 
   // Off the file hosts a redirect isn't followed at all, token or not.

@@ -232,8 +232,17 @@ async function readTextFile(path: string): Promise<string> {
  * and rotates it in place.
  */
 export function federatedTokenFile(path: string): TeamsFederatedToken {
-  return async () => (await readTextFile(path)).trim();
+  // One reader per path: adapters rebuilt from the same settings (dynamic
+  // mode) then share their cached tokens.
+  let reader = fileTokenReaders.get(path);
+  if (!reader) {
+    reader = async () => (await readTextFile(path)).trim();
+    fileTokenReaders.set(path, reader);
+  }
+  return reader;
 }
+
+const fileTokenReaders = new Map<string, TeamsFederatedToken>();
 
 /** String settings (platform credentials or env) for the non-secret credentials. */
 export interface TeamsCredentialSettings {
